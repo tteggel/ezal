@@ -146,6 +146,66 @@ firmware-side strategy is therefore a hysteretic / deadband controller:
 read the current angle, compare with the target, energise the appropriate
 direction transistor until the error is within tolerance, stop.
 
+## Calibration
+
+The position-feedback chain has *two* calibration stages — one inside
+the G-5500, one inside ezal — and both matter.
+
+### Stage 1: G-5500 hardware trim (one-off, on the bench)
+
+Two trimpots inside the controller set the gain of the position-feedback
+amplifier so each axis's mechanical end-stops produce the documented
+2.0 V and 4.5 V at the external DIN feedback pins. The schematic calls
+them:
+
+- **VR0003** (elevation) with R0002 = 22 K
+- **VR0004** (azimuth) with R0004 = 3.9 K
+
+(The different fixed resistors compensate for the two axes' different
+travel ranges — 180° vs 450° — so both end up in the same 2.0–4.5 V
+window after scaling.)
+
+They're accessible from the **rear panel** of the controller, labelled
+**FULL SCALE ADJ**, above the corresponding antenna terminals. The
+manual's procedure is:
+
+- **Azimuth** — drive the rotator to its LEFT end-stop and mark its
+  housing. Press RIGHT to slew a full turn back to the mark; the meter
+  should read 360°. Adjust VR0004 until it does. Continue clockwise to
+  the right end-stop; the meter should read 90° at the right edge of
+  the scale (controller wraps at 360° + 90° = 450°).
+- **Elevation** — drive the elevation rotator UP to its 180° mark; the
+  meter should read 180° at the right edge of the scale. If not, adjust
+  VR0003.
+
+This is a one-time step. Once set, the trimpots stay put — the only
+time to revisit them is if the front-panel meter visibly disagrees with
+where the antenna is actually pointed.
+
+### Stage 2: ezal software calibration (one-off, at first install)
+
+Even with the G-5500 perfectly trimmed, ezal's own signal path has
+sources of unknown offset and gain — divider resistor tolerance (~1 %),
+ADS1015 PGA offset (~ 1 mV), op-amp aging in the G-5500 over time — so
+we can't simply assume that an ADC reading of *X* counts means *Y*
+degrees. ezal therefore captures its own ADC → angle calibration
+against the *mechanical* end-stops, which are repeatable to within a
+few arcminutes:
+
+1. Slew azimuth to its CCW end-stop and record the ADC code (`az_min`).
+2. Slew azimuth fully CW to its other end-stop and record `az_max`.
+3. Same for elevation: `el_min` at the down end-stop, `el_max` at the
+   up end-stop.
+4. Persist all four to flash. From then on, angle = linear interpolation
+   between the two stored endpoints.
+
+This makes the system insensitive to G-5500 trimpot drift, divider
+tolerance, ADC offset, and slow degradation of the rotator's position
+pots over time. It is *not* a substitute for the G-5500 trim above,
+though, because that trim is what keeps the ADC operating near full
+scale — pinching the input range below ~70 % of FSR starts to eat into
+our angular resolution.
+
 ## Debug probe
 
 The recommended probe is the [Raspberry Pi Debug Probe](https://www.raspberrypi.com/products/debug-probe/)
