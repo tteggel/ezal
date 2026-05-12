@@ -5,40 +5,58 @@ on a fresh machine, and explains the day-to-day workflow.
 
 ## One-time setup
 
-### 1. Install `rustup`
+ezal pins every host-side tool — Rust, probe-rs, flip-link, picotool,
+the Python + schemdraw stack used to re-render the schematic — into a
+single `flake.nix` so every contributor gets the same toolchain on every
+platform. The flake is loaded automatically by [direnv](https://direnv.net)
+the moment you `cd` into the workspace; you don't run any "install
+this, then that" script.
 
-[`rustup`](https://rustup.rs) manages Rust toolchains. The first time you
-`cd` into the workspace, rustup reads `rust-toolchain.toml` and
-automatically downloads the pinned compiler, components, and ARM target.
+### 1. Install Nix, direnv, and nix-direnv
+
+If you don't already have them:
+
+- **Nix with flakes enabled** — the
+  [Determinate Systems installer](https://install.determinate.systems/)
+  is the smoothest path on Linux and macOS and enables flakes by default.
+  On NixOS use your system config as usual.
+- **direnv** — from your distribution's package manager, or
+  [direnv.net/docs/installation.html](https://direnv.net/docs/installation.html).
+- **nix-direnv** — the glue that lets direnv load Nix flakes;
+  installation guide at
+  [github.com/nix-community/nix-direnv](https://github.com/nix-community/nix-direnv#installation).
+  Make sure you've hooked direnv into your shell (the install docs cover
+  bash / zsh / fish).
+
+### 2. Activate the dev shell
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cd ezal/
+direnv allow
 ```
 
-After installation, `cargo --version` should print the pinned version
-from inside the repo.
+The first activation takes a few minutes — Nix is downloading the Rust
+toolchain, probe-rs, and so on. After that, activation is instant and
+cached.
 
-### 2. Install host-side tooling
+When the shell is loaded you have:
 
-```bash
-./scripts/install-tools.sh
-```
-
-This installs:
-
-- **`probe-rs-tools`** — flashes our firmware via a debug probe and
-  streams `defmt` logs back to the terminal. Used by `cargo run`.
-- **`flip-link`** — *optional but recommended*. A linker wrapper that
-  inverts the stack so overflows trap (MPU fault) instead of silently
-  corrupting statics. Not wired into the build by default; uncomment
-  the `linker = "flip-link"` line in `.cargo/config.toml` to enable it.
-- **`picotool`** — *optional*. Drag-and-drop UF2 flashing without a
-  debug probe.
+- `cargo`, `rustc`, `rustfmt`, `clippy` pinned to the version in
+  `rust-toolchain.toml`,
+- `probe-rs` — used by `cargo run` to flash and stream defmt logs,
+- `flip-link` — optional linker wrapper for stack-overflow trapping
+  (off by default in `.cargo/config.toml`; uncomment the `linker =`
+  line to enable it),
+- `picotool` — optional, for UF2 / BOOTSEL flashing without a probe,
+- `python3` with `schemdraw` and `matplotlib` ready to go for
+  `python3 design/circuit.py`.
 
 ### 3. Linux only: udev rules
 
-If you're on Linux, the debug probe and the Pico 2 in BOOTSEL mode need
-non-root access. Install the rules:
+If you're on a non-NixOS Linux distro, the debug probe and the Pico 2
+in BOOTSEL mode need non-root access. Probe-rs's udev rules have to
+live in `/etc/udev/rules.d` to take effect, so they aren't (and can't
+be) installed by the flake — you do this one-off, system-wide:
 
 ```bash
 sudo curl -L https://probe.rs/files/69-probe-rs.rules \
@@ -49,11 +67,36 @@ sudo udevadm trigger
 
 Then unplug and replug the probe.
 
-### 4. macOS / Windows
+On NixOS, add `services.udev.packages = [ pkgs.probe-rs-tools ];` to
+your system configuration instead and rebuild.
 
-No extra setup beyond rustup. On macOS, `probe-rs` works without drivers.
-On Windows, install Zadig and assign WinUSB to the debug probe interface
-(see the probe-rs install instructions).
+### macOS / Windows
+
+macOS needs no extra setup beyond the steps above — probe-rs uses
+IOKit on Darwin and works without drivers.
+
+Windows is not officially supported by this flake (Nix on Windows runs
+under WSL2, which works fine, but plain-Windows users would need a
+non-Nix path — see below).
+
+### Without Nix (alternative path)
+
+If you'd rather not install Nix, you can still build the project the
+old way: rustup reads `rust-toolchain.toml` automatically, and the
+embedded tools are all `cargo install`able.
+
+```bash
+rustup show                                # installs the pinned toolchain
+cargo install --locked probe-rs-tools
+cargo install --locked flip-link           # optional
+# picotool: https://github.com/raspberrypi/picotool
+# Only needed if you're re-rendering the schematic:
+pip install --user schemdraw matplotlib
+```
+
+You're then responsible for keeping versions roughly in sync with what
+the flake pins; CI uses the flake-equivalent Rust toolchain via rustup,
+so the build is the authoritative reference.
 
 ## Day-to-day workflow
 

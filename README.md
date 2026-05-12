@@ -30,6 +30,8 @@ over-commented for educational purposes.
 .
 ├── Cargo.toml                      # workspace manifest
 ├── rust-toolchain.toml             # pinned compiler version
+├── flake.nix                       # pinned host-side toolchain (probe-rs, ...)
+├── .envrc                          # `use flake` — direnv auto-loads the shell
 ├── .cargo/config.toml              # default target, linker flags, runner
 ├── crates/
 │   ├── ezal-core/                  # pure no_std logic, host-testable
@@ -56,16 +58,22 @@ over-commented for educational purposes.
 
 ## Quick start
 
-Prerequisite: [`rustup`](https://rustup.rs) installed.
+Prerequisites: [Nix with flakes](https://install.determinate.systems/),
+[direnv](https://direnv.net/), and
+[nix-direnv](https://github.com/nix-community/nix-direnv). The flake
+provides the pinned Rust toolchain, `probe-rs`, `flip-link`, `picotool`,
+and a Python+schemdraw environment so you don't have to install any of
+them yourself. See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for a rustup-
+only path if you'd rather not use Nix.
 
 ```bash
-# 1. Install host-side tooling (probe-rs, flip-link).
-./scripts/install-tools.sh
+cd ezal/
+direnv allow                        # one-time: load the dev shell
 
-# 2. Run the host-side ezal-core tests. Should be green.
+# Run the host-side ezal-core tests. Should be green.
 ./scripts/test-host.sh
 
-# 3. Build, flash, and stream defmt logs from a connected Pico 2.
+# Build, flash, and stream defmt logs from a connected Pico 2.
 cargo run -p ezal-firmware --release
 ```
 

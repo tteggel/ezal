@@ -16,6 +16,13 @@
 !.vscode/extensions.json
 !.vscode/settings.json
 
+# Nix / direnv
+# `.envrc` is committed (it just says `use flake`); the local cache that
+# direnv writes alongside it is not, and neither are `nix build` outputs.
+.direnv/
+result
+result-*
+
 # OS junk
 .DS_Store
 Thumbs.db
