@@ -41,24 +41,27 @@ Notes
   G-5500DC interface (same external-control pinout on both):
     direction channels — 2.2 K series base, 10 K base-to-emitter pull-down
                          (gives ~1.1 mA I_B, robust saturation of the 2N3904)
-    feedback dividers — 100 K upper, 82 K lower for **both** channels
-                        (ratio 0.451 → 4.5 V input → 2.03 V output, sits
-                        just under the ADS1015's ±2.048 V FSR PGA setting;
-                        sized high-Z to avoid loading the G-5500's
-                        un-buffered position pot)
+    feedback dividers — 68 K upper, 82 K lower for **both** channels.
+                        The G-5500's NJM2902 op-amp output drives a 33 K
+                        series resistor (R6010 / R6011 in the service
+                        manual) before the external DIN, so the effective
+                        ratio seen at the ADS1015 is 82 / (33 + 68 + 82)
+                        ≈ 0.448. That puts 4.5 V at the rotator's full
+                        scale into 2.02 V at the ADC — 99% of the ±2.048 V
+                        FSR PGA setting, ~1 mV LSB.
     feedback filter cap — 100 nF in parallel with R_lower
-                        (≈ 35 Hz LP with the 45 K Thévenin impedance,
+                        (≈ 35 Hz LP with the ~45 K Thévenin impedance,
                         rejects 50/60 Hz pickup at no cost to tracking
-                        bandwidth; the G-5500's own 4.7 nF / 1 kV cap
+                        bandwidth; the G-5500's own 220 µH + 0.01 µF LC
                         on the output handles the RFI-rate stuff)
     I²C pull-ups        — 4.7 K to 3.3 V on SDA and SCL
 * The ADS1015's ADDR pin is tied to GND for the default address 0x48.
 * These values assume the G-5500's direction inputs sink a few mA at
-  logic-low (typical for Yaesu controllers). The feedback divider is
-  sized for a worst-case un-buffered pot output of a few kΩ Thévenin —
-  if the service manual shows an op-amp buffer in the path we could
-  drop the dividers to 10 K / 8.2 K for a faster sample-acquire RC at
-  the ADS1015, but the higher-Z values are no-regret in the meantime.
+  logic-low (typical for Yaesu controllers).
+* The feedback-divider sizing comes from the service-manual page showing
+  an NJM2902 op-amp driving a 33 K series resistor to the external DIN.
+  If a different unit / revision shows a different series value, the
+  divider math is in the comment above the FEEDBACK_CHANNELS table.
 """
 
 import schemdraw
@@ -77,11 +80,11 @@ DIRECTION_CHANNELS = [
 
 FEEDBACK_CHANNELS = [
     # (ADS1015 input, G-5500 pin, R_upper, R_lower, what it measures)
-    # 100 K / 82 K keeps the same 0.451 ratio as 10 K / 8.2 K but loads
-    # the G-5500's (likely un-buffered) pot output by an order of magnitude
-    # less — see docs/HARDWARE.md.
-    ("A0", "pin 1", "100 K", "82 K", "elevation (0°–180°)"),
-    ("A1", "pin 6", "100 K", "82 K", "azimuth   (0°–450°)"),
+    # 68 K / 82 K accounts for the G-5500's NJM2902 op-amp + 33 K series
+    # output resistor (R6010 / R6011 in the service manual). Net divider
+    # math: V_ADC = V_pot × 82 / (33 + 68 + 82) ≈ 0.448. See HARDWARE.md.
+    ("A0", "pin 1", "68 K", "82 K", "elevation (0°–180°)"),
+    ("A1", "pin 6", "68 K", "82 K", "azimuth   (0°–450°)"),
 ]
 
 
@@ -351,8 +354,9 @@ def title(d: schemdraw.Drawing) -> None:
     d += elm.Label().label(
         "Top — 4× 2N3904 open-collector switches drive the G-5500 direction inputs (pins 2/3/4/5).\n"
         "Bottom — Adafruit ADS1015 I²C ADC reads the 2.0–4.5 V position feedback (pins 1, 6)\n"
-        "                  through 2× identical 100 K / 82 K dividers with 100 nF LP caps.\n"
-        "                  Configure PGA = ±2.048 V FSR for ~1 mV LSB across the 0.9–2.03 V range.",
+        "                  through 2× identical 68 K / 82 K dividers with 100 nF LP caps. The\n"
+        "                  G-5500's own 33 K series at its NJM2902 output sets the effective ratio;\n"
+        "                  PGA = ±2.048 V FSR gives ~1 mV LSB across the resulting 0.9–2.0 V range.",
         loc="top", fontsize=8, color="dimgray",
     ).at((X_DIN / 2, TITLE_Y - 1.4))
 

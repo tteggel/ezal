@@ -105,24 +105,36 @@ The planned circuit (canonical version in
 - **Feedback**: the Pico does **not** sample the G-5500 directly with its
   on-chip ADC. Instead an Adafruit **ADS1015** I²C ADC sits between the
   G-5500 and the Pico, with its A0 and A1 inputs fed from the G-5500's
-  feedback pins through identical **100 K (upper) / 82 K (lower)**
-  resistor-dividers. That gives a ratio of 0.451, so the G-5500's 4.5 V
-  full-scale lands at 2.03 V — just under the ADS1015's tightest useful
-  PGA setting (±2.048 V FSR), which keeps the LSB at ≈ 1 mV. The reason
-  for the high-impedance divider is that the relevant page of the G-5500
-  service manual shows the feedback path traveling through the motor /
-  relay area with no op-amp buffer visible, so we treat the pot output
-  as effectively un-buffered. At 100 K + 82 K = 182 K input impedance
-  the divider loads a few-kΩ pot by under 1.5% at worst position
-  (≈ 1° of elevation error, ≈ 6° of azimuth error — both well inside
-  the deadband we'll run, and trivially absorbed by software calibration).
+  feedback pins through identical **68 K (upper) / 82 K (lower)**
+  resistor-dividers.
 
-  A **100 nF** cap in parallel with the lower resistor forms a ≈ 35 Hz
-  low-pass against 50/60 Hz pickup; the rotator's mechanical bandwidth
-  is well under 1 Hz so this costs us nothing in tracking speed. The
-  G-5500 already has a 4.7 nF / 1 kV cap on the feedback line for RFI
-  rejection at a much higher frequency, so the two filters complement
-  rather than fight each other.
+  The sizing is driven by what the G-5500's service manual actually
+  shows on the feedback path: an **NJM2902** quad op-amp scales the
+  position-pot wiper voltage, then a **33 K series resistor** (R6010
+  for azimuth, R6011 for elevation) sits between the op-amp output and
+  the external DIN connector — almost certainly there as fault-current
+  limiting at the external pin. The series 33 K is therefore part of
+  our divider whether we like it or not, so the effective ratio at the
+  ADS1015 is:
+
+  ```
+    V_ADC / V_opamp = R_lo / (R_source + R_up + R_lo)
+                    = 82  / (33      + 68    + 82  )
+                    ≈ 0.448
+  ```
+
+  At the G-5500's 4.5 V full-scale that gives **2.02 V** into the
+  ADS1015 — 99% of the ±2.048 V FSR PGA setting, which keeps the LSB
+  at ≈ 1 mV. The 2.0 V minimum maps to 0.90 V, so we get ~1120 useful
+  codes across the working range: 0.16°/code on elevation and
+  0.40°/code on azimuth.
+
+  A **100 nF** cap in parallel with the 82 K resistor forms a ≈ 35 Hz
+  low-pass with the resulting ~45 K Thévenin, rejecting 50/60 Hz pickup
+  without costing tracking bandwidth (the rotator's mechanical bandwidth
+  is well under 1 Hz). The G-5500 already has a 220 µH + 0.01 µF LC
+  filter (L6004 / C6019 in the manual) on the same line at a much higher
+  corner (≈ 107 kHz) for RFI, so the two filters complement each other.
 
   The Pico talks to the ADS1015 over I²C0 (GP4 = SDA, GP5 = SCL) with
   **4.7 K** pull-ups to 3.3 V. The ADS1015's ADDR pin is tied to GND,
