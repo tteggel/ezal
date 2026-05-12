@@ -37,13 +37,23 @@ Notes
 * GPIO assignments are *suggestions* — pick whatever is convenient on
   the board. I²C0 defaults to GP4 (SDA) / GP5 (SCL); use any I²C-capable
   pair if those conflict.
-* Resistor values follow the prototype schematic:
-    direction channels — 39 K series base, 10 K base-to-emitter pull-down
-    elevation divider — 2.2 K upper, 8.2 K lower
-    azimuth   divider — 6.8 K upper, 6.8 K lower
-    I²C pull-ups      — 4.7 K to 3.3 V on SDA and SCL
-  Recalibrate once each unit's feedback range has been measured.
+* Resistor values are picked from first principles for the G-5500 /
+  G-5500DC interface (same external-control pinout on both):
+    direction channels — 2.2 K series base, 10 K base-to-emitter pull-down
+                         (gives ~1.1 mA I_B, robust saturation of the 2N3904)
+    feedback dividers — 10 K upper, 8.2 K lower for **both** channels
+                        (ratio 0.451 → 4.5 V input → 2.03 V output, sits
+                        just under the ADS1015's ±2.048 V FSR PGA setting)
+    feedback filter cap — 100 nF in parallel with R_lower
+                        (≈ 350 Hz LP with the 4.5 K Thévenin impedance,
+                        rejects 50/60 Hz pickup at no cost to tracking
+                        bandwidth)
+    I²C pull-ups        — 4.7 K to 3.3 V on SDA and SCL
 * The ADS1015's ADDR pin is tied to GND for the default address 0x48.
+* These values assume the G-5500's direction inputs sink a few mA at
+  logic-low (typical for Yaesu controllers) and that the feedback
+  outputs are buffered (low source impedance). The service manual would
+  confirm both; in the meantime these values are conservative.
 """
 
 import schemdraw
@@ -62,8 +72,8 @@ DIRECTION_CHANNELS = [
 
 FEEDBACK_CHANNELS = [
     # (ADS1015 input, G-5500 pin, R_upper, R_lower, what it measures)
-    ("A0", "pin 1", "2.2 K", "8.2 K", "elevation (0°–180°)"),
-    ("A1", "pin 6", "6.8 K", "6.8 K", "azimuth   (0°–450°)"),
+    ("A0", "pin 1", "10 K", "8.2 K", "elevation (0°–180°)"),
+    ("A1", "pin 6", "10 K", "8.2 K", "azimuth   (0°–450°)"),
 ]
 
 
@@ -101,13 +111,15 @@ def direction_channel(d: schemdraw.Drawing, idx: int, gpio: str,
     d += elm.Dot(open=True).at((X_PICO, y))
     d += elm.Label().label(gpio, loc="left", ofst=(0.1, 0))
 
-    # 39 K series base resistor.
-    d += elm.Resistor().endpoints((X_R_SERIES, y), (X_BASE_NODE, y)).label("39 K")
+    # 2.2 K series base resistor: gives ~1.1 mA I_B for 3.3 V GPIO drive,
+    # plenty to saturate a 2N3904 driving the G-5500 direction input.
+    d += elm.Resistor().endpoints((X_R_SERIES, y), (X_BASE_NODE, y)).label("2.2 K")
 
     # Base node.
     d += elm.Dot().at((X_BASE_NODE, y))
 
-    # 10 K base-pull-down to GND (drawn straight down from the base node).
+    # 10 K base-pull-down to GND: holds the base low while the Pico GPIO
+    # is high-Z (boot/reset) but doesn't steal appreciable I_B once on.
     d += (r_pd := elm.Resistor().down().at((X_BASE_NODE, y))
           .length(1.8).label("10 K", loc="bot"))
     d += elm.Ground().at(r_pd.end)
@@ -251,36 +263,69 @@ def i2c_bus(d: schemdraw.Drawing, ads_left: dict) -> None:
 # ── Feedback dividers ───────────────────────────────────────────────────
 def feedback_divider(d: schemdraw.Drawing, idx: int, ads_pin_xy: tuple,
                      din_pin: str, r_up: str, r_lo: str, what: str) -> None:
-    """One resistor-divider channel between an ADS1015 input and a DIN pin."""
+    """One resistor-divider channel between an ADS1015 input and a DIN pin.
+
+    Topology:
+
+        chip pin ●──tap──[R_up]──── DIN pin (G-5500 feedback, 2.0–4.5 V)
+                  │
+                  ●─────────●
+                  │         │
+                 R_lo      100 nF
+                  │         │
+                  ●─────────●
+                       │
+                      GND
+
+    The 100 nF cap in parallel with R_lo gives a ≈ 350 Hz low-pass
+    against 50/60 Hz pickup and switching noise; the corner is well
+    above any realistic mechanical bandwidth of the rotator.
+    """
     ax, ay = ads_pin_xy
-    # Stagger the divider channels vertically so they don't collide.
-    y = ay - 0.0  # the tap node lives on the ADS1015 input line itself
-
-    # Tap dot just outside the ADS1015 stub.
+    tap_y = ay
     tap_x = ax + 0.3
-    d += elm.Dot().at((tap_x, y))
 
-    # R_upper running right from the tap to the DIN pin column.
-    d += elm.Resistor().endpoints((tap_x, y), (X_DIN, y)).label(r_up)
-    d += elm.Dot(open=True).at((X_DIN, y))
+    # Tap dot on the chip pin stub.
+    d += elm.Dot().at((tap_x, tap_y))
+
+    # R_upper: tap → DIN pin (horizontal).
+    d += elm.Resistor().endpoints((tap_x, tap_y), (X_DIN, tap_y)).label(r_up)
+    d += elm.Dot(open=True).at((X_DIN, tap_y))
     d += elm.Label().label(f"DIN {din_pin}\n{what}", loc="right",
                            ofst=(0.1, 0), fontsize=9)
 
-    # R_lower running down from the tap to GND.
-    # Use a small horizontal jog so the vertical resistor doesn't sit on
-    # top of the chip pin stub.
-    jog_x = tap_x + 1.0
-    d += elm.Line().endpoints((tap_x, y), (jog_x, y))
-    d += elm.Dot().at((jog_x, y))
-    d += (r := elm.Resistor().down().at((jog_x, y))
-          .length(1.8).label(r_lo, loc="left"))
-    d += elm.Ground().at(r.end)
+    # The two parallel-to-GND elements (R_lo and 100 nF) live in a
+    # branch zone just below the tap so they don't share the y-line
+    # with R_up.
+    branch_y = tap_y - 0.6
+    r_lo_x   = tap_x + 1.0
+    cap_x    = tap_x + 2.0
+
+    # Vertical stub from the tap down to the branch bar.
+    d += elm.Line().endpoints((tap_x, tap_y), (tap_x, branch_y))
+    # Horizontal branch bar, from below the tap out to the cap column.
+    d += elm.Line().endpoints((tap_x, branch_y), (cap_x, branch_y))
+    d += elm.Dot().at((r_lo_x, branch_y))
+    d += elm.Dot().at((cap_x, branch_y))
+
+    # R_lo straight down.
+    d += (r := elm.Resistor().down().at((r_lo_x, branch_y))
+          .length(1.5).label(r_lo, loc="left"))
+
+    # 100 nF cap in parallel with R_lo.
+    d += (c := elm.Capacitor().down().at((cap_x, branch_y))
+          .length(1.5).label("100 nF", loc="right"))
+
+    # Bottom bar joining R_lo and the cap, with a single GND symbol.
+    d += elm.Line().endpoints(r.end, c.end)
+    mid_x = (r_lo_x + cap_x) / 2
+    d += elm.Ground().at((mid_x, r.end[1]))
 
 
 # ── Common ground ───────────────────────────────────────────────────────
 def common_ground(d: schemdraw.Drawing) -> None:
     """Pico GND ↔ G-5500 DIN pin 8."""
-    y = ADS_Y - 2.5
+    y = ADS_Y - 3.5
     d += elm.Dot(open=True).at((X_PICO, y))
     d += elm.Label().label("Pico GND", loc="left", ofst=(0.1, 0))
     d += elm.Line().endpoints((X_PICO, y), (X_DIN, y)).color("dimgray")
@@ -292,13 +337,14 @@ def common_ground(d: schemdraw.Drawing) -> None:
 # ── Title block ─────────────────────────────────────────────────────────
 def title(d: schemdraw.Drawing) -> None:
     d += elm.Label().label(
-        "Pico 2 ↔ Yaesu G-5500 interface",
+        "Pico 2 ↔ Yaesu G-5500 / G-5500DC interface",
         loc="top", fontsize=14,
     ).at((X_DIN / 2, TITLE_Y))
     d += elm.Label().label(
-        "Top — 4× NPN switches drive the G-5500 direction inputs (pins 2/3/4/5).\n"
-        "Bottom — ADS1015 I²C ADC reads the 2.0–4.5 V position feedback (pins 1, 6)\n"
-        "                 through 2× resistor-dividers. Pico talks to the ADS1015 over I²C0.",
+        "Top — 4× 2N3904 open-collector switches drive the G-5500 direction inputs (pins 2/3/4/5).\n"
+        "Bottom — Adafruit ADS1015 I²C ADC reads the 2.0–4.5 V position feedback (pins 1, 6)\n"
+        "                  through 2× identical 10 K / 8.2 K dividers with 100 nF LP caps.\n"
+        "                  Configure PGA = ±2.048 V FSR for ~1 mV LSB across the 0.9–2.03 V range.",
         loc="top", fontsize=8, color="dimgray",
     ).at((X_DIN / 2, TITLE_Y - 1.4))
 

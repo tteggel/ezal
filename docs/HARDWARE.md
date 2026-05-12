@@ -91,20 +91,30 @@ The planned circuit (canonical version in
 [`design/circuit.py`](../design/circuit.py) / `circuit.svg`):
 
 - **Direction**: four GPIO outputs each drive the base of a 2N3904 NPN
-  through a 39 K series resistor, with a 10 K base-to-emitter pull-down
-  for noise immunity. The collectors connect to G-5500 pins 2–5; emitters
-  to common ground. When the GPIO goes high the transistor saturates and
-  shorts its G-5500 pin to ground — electrically equivalent to pressing
-  the corresponding direction button on the controller's front panel.
+  through a **2.2 K** series resistor, with a **10 K** base-to-emitter
+  pull-down. The 2.2 K gives ≈ 1.1 mA of base current at a 3.3 V GPIO,
+  comfortably saturating the transistor for any reasonable sink current
+  from the G-5500 input. The 10 K pull-down holds the base low while the
+  Pico GPIO is high-impedance (boot or reset) but does not steal
+  appreciable base current once the GPIO drives high. Collectors connect
+  to G-5500 pins 2–5; emitters to common ground. When the GPIO goes high
+  the transistor saturates and shorts its G-5500 pin to ground —
+  electrically equivalent to pressing the corresponding direction button
+  on the controller's front panel.
 
 - **Feedback**: the Pico does **not** sample the G-5500 directly with its
   on-chip ADC. Instead an Adafruit **ADS1015** I²C ADC sits between the
   G-5500 and the Pico, with its A0 and A1 inputs fed from the G-5500's
-  feedback pins through per-channel resistor-dividers (so the 2.0–4.5 V
-  feedback lands within the ADS1015's input window). The Pico talks to
-  the ADS1015 over I²C0 (GP4/GP5) with 4.7 K pull-ups to 3.3 V. The
-  ADS1015's ADDR pin is tied to GND, giving it I²C address 0x48. Per-unit
-  calibration of the divider ratios is captured in software.
+  feedback pins through identical **10 K (upper) / 8.2 K (lower)**
+  resistor-dividers. That gives a ratio of 0.451, so the G-5500's 4.5 V
+  full-scale lands at 2.03 V — just under the ADS1015's tightest useful
+  PGA setting (±2.048 V FSR), which keeps the LSB at ≈ 1 mV. A **100 nF**
+  cap in parallel with the lower resistor forms a ≈ 350 Hz low-pass
+  against 50/60 Hz pickup, well above any plausible mechanical bandwidth
+  of the rotator. The Pico talks to the ADS1015 over I²C0 (GP4 = SDA,
+  GP5 = SCL) with **4.7 K** pull-ups to 3.3 V. The ADS1015's ADDR pin is
+  tied to GND, giving it I²C address 0x48. Per-unit calibration of the
+  divider ratios is captured in software.
 
 There is no speed control on this interface; control is bang-bang. The
 firmware-side strategy is therefore a hysteretic / deadband controller:
