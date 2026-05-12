@@ -1,0 +1,13 @@
+# rustfmt configuration.
+#
+# We keep this short on purpose: the stable rustfmt defaults are good, and
+# pinning a long list of options forces every contributor to track our
+# preferences. The few overrides below are uncontroversial.
+#
+# Run `cargo fmt --all` before committing. CI enforces this with
+# `cargo fmt --all -- --check`.
+
+edition           = "2021"
+newline_style     = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand        = true

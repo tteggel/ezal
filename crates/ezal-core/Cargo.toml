@@ -1,0 +1,43 @@
+# ────────────────────────────────────────────────────────────────────────────
+# ezal-core — pure, no_std logic
+# ────────────────────────────────────────────────────────────────────────────
+#
+# This crate is deliberately hardware-independent. It contains:
+#   * morse encoding (today) — used by the "hello LED" demo,
+#   * pointing math, Yaesu G5500 command framing, az/el slewing logic
+#     (later, as the project grows).
+#
+# Because it has no hardware dependencies, it can be:
+#   * compiled for the embedded target (no_std, no allocator),
+#   * compiled for the host and run under `cargo test`,
+#   * compiled for fuzzing, miri, or other host-only verification tools.
+#
+# Anything that needs `embassy-rp`, `embedded-hal`, or talks to actual
+# peripherals belongs in `ezal-firmware`, not here.
+
+[package]
+name        = "ezal-core"
+description = "Hardware-independent logic for the ezal antenna-tracker firmware."
+version     = "0.1.0"
+
+# Inherit metadata from the workspace so we keep one source of truth.
+edition.workspace      = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+
+[lib]
+# The default `lib` settings are fine. No proc-macro, no special crate-type.
+
+# ── Features ─────────────────────────────────────────────────────────────
+# `defmt` is an *optional* dependency. Turning on the `defmt` feature makes
+# our types derive `defmt::Format` so the firmware can log them with the
+# same compact-binary wire format as everything else. Host tests don't need
+# it (they use std's Debug / Display), so the default is off.
+[features]
+default = []
+defmt   = ["dep:defmt"]
+
+[dependencies]
+defmt = { workspace = true, optional = true }

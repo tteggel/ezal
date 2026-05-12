@@ -1,0 +1,42 @@
+# ────────────────────────────────────────────────────────────────────────────
+# Pinned Rust toolchain
+# ────────────────────────────────────────────────────────────────────────────
+#
+# rustup reads this file automatically whenever you run cargo / rustc inside
+# the workspace. Pinning a specific stable release (not the floating "stable"
+# channel) means everyone — humans and CI — builds with the same compiler,
+# library, and lint set.
+#
+# Bumping the toolchain is therefore a deliberate, reviewable change: open
+# a PR, let CI re-run with the new toolchain, observe any new lints, fix
+# them, merge.
+#
+# We use the *stable* channel. Embassy and the rp235x stack do not require
+# nightly. The pedagogical benefit is large: contributors do not have to
+# track an unstable channel, and crates.io versions of embassy are guaranteed
+# to compile with the pinned compiler.
+
+[toolchain]
+# 1.94.0 is the first stable that contains all of the language and
+# library features the modern embassy ecosystem assumes (most notably
+# Rust edition 2024, stabilised in 1.85). Bumping this is a deliberate,
+# reviewable change — bump it, run CI, fix any new lints.
+channel    = "1.94.0"
+components = ["rustfmt", "clippy", "rust-src", "llvm-tools"]
+targets    = ["thumbv8m.main-none-eabihf"]
+profile    = "minimal"
+
+# Why each component:
+#   rustfmt      — `cargo fmt` (style consistency, enforced in CI)
+#   clippy       — `cargo clippy` (lints, enforced in CI)
+#   rust-src     — required for `-Z build-std` style core/alloc rebuilds. We
+#                  do not enable that today, but several embedded tools
+#                  (probe-rs, cargo-binutils) expect it to be present.
+#   llvm-tools   — provides `llvm-objdump`, `llvm-size`, `llvm-objcopy`,
+#                  used by `cargo size`, `cargo bloat`, and by probe-rs.
+#
+# Why the target:
+#   thumbv8m.main-none-eabihf
+#     The RP2350 dual Cortex-M33 cores. `thumbv8m.main` is the M33 ISA;
+#     `none` means no operating system; `eabihf` means hard-float ABI,
+#     which the M33 supports via its single-precision FPU.

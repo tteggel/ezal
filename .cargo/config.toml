@@ -1,0 +1,70 @@
+# ────────────────────────────────────────────────────────────────────────────
+# Cargo configuration (workspace-wide)
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Cargo reads this file before any `build`, `run`, `test`, or `check` command
+# executed from anywhere inside this workspace. It pre-configures three
+# things so individual invocations stay short:
+#
+#   1. The default build target is the Pico 2's RP2350.
+#      → `cargo build` cross-compiles for thumbv8m.main-none-eabihf.
+#      → host-side tests for ezal-core need an explicit `--target <host>`
+#        (see scripts/test-host.sh and docs/DEVELOPMENT.md).
+#
+#   2. `cargo run -p ezal-firmware` flashes the firmware via probe-rs and
+#      streams defmt logs back to the terminal in one step.
+#
+#   3. Linker and codegen flags wire in `cortex-m-rt`'s memory layout and
+#      `defmt`'s log-section script.
+
+# ── Default build target ─────────────────────────────────────────────────
+# Why "default target = embedded": the project is primarily an embedded one,
+# so the common case (cargo build / cargo run) targets the chip. The host
+# tests are run via a script that overrides this with `--target <host>`.
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+# ── Embedded target settings ─────────────────────────────────────────────
+[target.thumbv8m.main-none-eabihf]
+
+# probe-rs is the modern Swiss-army knife for flashing, debugging, and
+# log streaming from Rust embedded targets. Setting it as the cargo "runner"
+# means `cargo run` will:
+#     1. build the firmware elf,
+#     2. flash it onto the chip via SWD,
+#     3. attach to RTT and stream defmt logs back to stdout,
+#     4. exit when the chip resets or you Ctrl-C.
+#
+# Alternative: if you do not have a debug probe and only want to drag-and-
+# drop a UF2 file onto the Pico 2's mass-storage bootloader, swap this for
+#     runner = "picotool load -uvx -t elf"
+# (you'll lose live log streaming.)
+runner = "probe-rs run --chip RP235x --protocol swd"
+
+# Linker flags. These are passed to the linker via `-C link-arg=`:
+#
+#   --nmagic    Disables page alignment between sections. Saves around
+#               1 KiB of flash on a typical embassy build.
+#   -Tlink.x    Use the linker script provided by cortex-m-rt. It in turn
+#               `INCLUDE`s our `memory.x` to lay out RAM and FLASH.
+#   -Tdefmt.x   Use defmt's linker script: log strings get stored in a
+#               special section of the elf (".defmt") that the host-side
+#               decoder reads to format messages. The strings never go to
+#               the chip, only their integer indices do.
+#
+# Codegen flags:
+#   target-cpu=cortex-m33   Tells LLVM the exact micro-arch, which enables
+#                           DSP/FPU instructions and better scheduling.
+rustflags = [
+    "-C", "link-arg=--nmagic",
+    "-C", "link-arg=-Tlink.x",
+    "-C", "link-arg=-Tdefmt.x",
+    "-C", "target-cpu=cortex-m33",
+]
+
+# ── Environment ──────────────────────────────────────────────────────────
+# Default log level for defmt. Override per-module like:
+#     DEFMT_LOG=ezal_firmware=trace,info cargo run -p ezal-firmware
+# to crank up just your module while leaving the rest at INFO.
+[env]
+DEFMT_LOG = "info"

@@ -1,0 +1,49 @@
+# ────────────────────────────────────────────────────────────────────────────
+# ezal-firmware — the embedded application
+# ────────────────────────────────────────────────────────────────────────────
+#
+# This crate produces the binary that actually runs on the Raspberry Pi
+# Pico 2 (RP2350). It is `no_std`, `no_main`, and depends on:
+#
+#   * `embassy-rp`        — the chip-specific HAL and async runtime glue
+#   * `embassy-executor`  — the cooperative async executor
+#   * `embassy-time`      — async-aware timers (used by `Timer::after`)
+#   * `defmt` + `defmt-rtt` — log framework + transport over the debug probe
+#   * `panic-probe`       — panic handler that funnels to defmt
+#   * `cortex-m` / `cortex-m-rt` — startup code, ISR vectors, panic plumbing
+#   * `ezal-core`         — *our* pure logic crate
+#
+# Anything that is "real-time-ish" or talks to peripherals belongs here.
+# Anything pure belongs in ezal-core.
+
+[package]
+name        = "ezal-firmware"
+description = "Embedded firmware for the ezal antenna-tracker (Raspberry Pi Pico 2 / RP2350)."
+version     = "0.1.0"
+
+edition.workspace      = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+
+# We have a custom `build.rs` that stages `memory.x` into OUT_DIR so the
+# linker can find it. See build.rs for the full story.
+build = "build.rs"
+
+# Two binary targets: a default `ezal-firmware` (whose `src/main.rs` is the
+# real application) and any future binaries (e.g. a `bench` binary) live
+# under `src/bin/`. With Cargo's default discovery this Just Works; nothing
+# more is needed in this manifest.
+
+[dependencies]
+ezal-core = { path = "../ezal-core", features = ["defmt"] }
+
+cortex-m         = { workspace = true }
+cortex-m-rt      = { workspace = true }
+defmt            = { workspace = true }
+defmt-rtt        = { workspace = true }
+panic-probe      = { workspace = true }
+embassy-executor = { workspace = true }
+embassy-rp       = { workspace = true }
+embassy-time     = { workspace = true }

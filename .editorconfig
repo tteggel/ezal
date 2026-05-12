@@ -1,0 +1,21 @@
+# EditorConfig (https://editorconfig.org) — keeps whitespace consistent across
+# editors so we don't argue about it in pull requests.
+
+root = true
+
+[*]
+charset                  = utf-8
+end_of_line              = lf
+insert_final_newline     = true
+trim_trailing_whitespace = true
+indent_style             = space
+indent_size              = 4
+
+[*.{toml,yml,yaml,json}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false  # markdown uses trailing spaces for line breaks
+
+[Makefile]
+indent_style = tab

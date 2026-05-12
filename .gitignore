@@ -1,0 +1,29 @@
+# Build artefacts
+/target/
+**/target/
+
+# Cargo lockfile policy:
+#   For *binaries* / *firmware* the lockfile SHOULD be committed so builds
+#   are reproducible bit-for-bit. ezal-firmware is the binary here, so we
+#   keep Cargo.lock under version control. (It lives at the workspace root.)
+# (No ignore entry for Cargo.lock — committed deliberately.)
+
+# Editor backups and swap files
+**/*.rs.bk
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# probe-rs / cargo-flash artefacts
+*.uf2
+*.bin
+*.hex
+
+# defmt log dumps
+*.defmt

@@ -1,0 +1,103 @@
+# ────────────────────────────────────────────────────────────────────────
+# Continuous integration for the ezal project.
+#
+# CI builds and tests on every push and pull request. It does **not** flash
+# real hardware; it only runs anything that can be executed on the CI
+# runner's host.
+#
+# The four jobs run in parallel:
+#
+#   fmt            — `cargo fmt --check` (style)
+#   test-host      — `cargo test` for ezal-core, on the host
+#   clippy-host    — clippy lints for the host build of ezal-core
+#   build-firmware — cross-compiles ezal-firmware for the Pico 2 and runs
+#                    clippy on it
+#
+# All four are required to pass before a PR can be merged (configure that
+# in GitHub's branch-protection settings).
+# ────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A single workflow run cancels older runs on the same ref so we don't
+# pile up CI minutes on rebased branches.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI is strict: any warning fails the build. Local builds are not affected
+  # because RUSTFLAGS is set only inside this workflow.
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── Formatting ────────────────────────────────────────────────────────
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        # `rustup show` reads rust-toolchain.toml and installs the toolchain
+        # + components + targets named there.
+        run: rustup show
+      - run: cargo fmt --all -- --check
+
+  # ── Host unit tests ──────────────────────────────────────────────────
+  test-host:
+    name: Test (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Run ezal-core tests
+        run: |
+          HOST=$(rustc -vV | sed -n 's/host: //p')
+          cargo test -p ezal-core --target "$HOST" --all-features
+
+  # ── Lints on the host crate ──────────────────────────────────────────
+  clippy-host:
+    name: Clippy (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: |
+          HOST=$(rustc -vV | sed -n 's/host: //p')
+          cargo clippy -p ezal-core --target "$HOST" --all-features --all-targets
+
+  # ── Cross-compile firmware ───────────────────────────────────────────
+  build-firmware:
+    name: Build firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release firmware
+        # Default target (from .cargo/config.toml) is thumbv8m.main-none-eabihf.
+        run: cargo build -p ezal-firmware --release
+      - name: Clippy on firmware
+        # Firmware is `no_std`/`no_main`; the test/bench targets can't be
+        # built for the embedded triple (they need libtest), so we limit
+        # clippy to the bin target.
+        run: cargo clippy -p ezal-firmware --bins
+      - name: Upload elf as artefact
+        # Lets reviewers download the firmware from a PR run without having
+        # to build it themselves. Useful when you don't have a Pico 2 nearby
+        # but want to flash someone else's branch.
+        uses: actions/upload-artifact@v4
+        with:
+          name: ezal-firmware-${{ github.sha }}
+          path: target/thumbv8m.main-none-eabihf/release/ezal-firmware
+          if-no-files-found: error
+          retention-days: 14

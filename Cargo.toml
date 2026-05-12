@@ -1,0 +1,101 @@
+# ────────────────────────────────────────────────────────────────────────────
+# ezal — workspace manifest
+# ────────────────────────────────────────────────────────────────────────────
+#
+# The project is organised as a Cargo *workspace* with two member crates:
+#
+#   crates/ezal-core
+#     Pure, no_std Rust: morse encoding (today), eventually the satellite
+#     pointing math, G5500 control protocol, command parsers, etc. This crate
+#     has no hardware dependencies, so it can be unit-tested on the host with
+#     a plain `cargo test`.
+#
+#   crates/ezal-firmware
+#     The embedded application that actually runs on the Raspberry Pi Pico 2
+#     (RP2350). It depends on `ezal-core` and on the `embassy-rp` HAL.
+#
+# Separating "logic" from "firmware" is a long-standing best practice in
+# embedded development. Hardware-independent code is easier to reason about,
+# easier to test, and easier to refactor; the firmware crate stays a thin
+# shell that wires up peripherals and pumps data through the logic.
+#
+# This file is the single source of truth for:
+#   * which crates make up the workspace,
+#   * pinned dependency versions (under [workspace.dependencies]),
+#   * shared package metadata (license, edition, MSRV) for both crates,
+#   * compiler profiles for debug and release builds.
+
+[workspace]
+resolver = "2"
+members  = [
+    "crates/ezal-core",
+    "crates/ezal-firmware",
+]
+# `default-members` controls which crates are built when you run `cargo build`
+# from the workspace root with no `-p <crate>` flag. We deliberately exclude
+# `ezal-firmware` because it cannot be built for the host: it is `no_std`,
+# `no_main`, and depends on RP2350-specific HALs. To work on firmware, either
+# `cd crates/ezal-firmware` or pass `-p ezal-firmware`.
+default-members = ["crates/ezal-core"]
+
+# Workspace-wide package metadata. Each member crate inherits these with
+# `field.workspace = true` in its own `Cargo.toml`, so we only edit them once.
+[workspace.package]
+edition      = "2021"
+rust-version = "1.85"
+license      = "MIT OR Apache-2.0"
+repository   = "https://github.com/tteggel/ezal"
+authors      = ["ezal contributors"]
+
+# Centralised dependency versions. Both crates refer to these with
+# `<dep>.workspace = true`, which keeps versions in lock-step automatically.
+[workspace.dependencies]
+
+# ── shared, no_std friendly ──────────────────────────────────────────────
+# `heapless` gives us fixed-capacity Vec/String/Queue types with no
+# allocator required — pretty much essential when we get to the rotator
+# command queue. Not used yet, but pinned so future crates inherit it.
+heapless = { version = "0.8", default-features = false }
+
+# ── embedded-only (consumed by ezal-firmware) ────────────────────────────
+# These are the standard "embassy + defmt" stack used by the embassy
+# upstream examples. See docs/DEVELOPMENT.md for why each one is here.
+cortex-m         = "0.7"
+cortex-m-rt      = "0.7"
+defmt            = "1.0"
+defmt-rtt        = "1.0"
+panic-probe      = { version = "1.0", features = ["print-defmt"] }
+embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread"] }
+embassy-rp       = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt", "imagedef-secure-exe"] }
+embassy-time     = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime"] }
+
+# ────────────────────────────────────────────────────────────────────────
+# Profiles
+# ────────────────────────────────────────────────────────────────────────
+#
+# Release: aggressively optimised, but with debug symbols kept *in the elf*
+# so probe-rs and defmt can decode log frames. The symbols don't end up on
+# the flashed image, only the host-side elf.
+#
+#   opt-level = "s"        → optimise for size; flash is finite.
+#   lto = "fat"            → whole-program LTO trims a lot of embassy/core glue.
+#   codegen-units = 1      → required for fat LTO to do useful work.
+#   debug = 2              → keep DWARF so defmt/probe-rs can decode.
+#   overflow-checks = true → integer overflow panics in release too — a
+#                            silent wraparound in pointing maths could send
+#                            the dish into a hard stop.
+
+[profile.release]
+opt-level       = "s"
+lto             = "fat"
+codegen-units   = 1
+debug           = 2
+overflow-checks = true
+
+# Dev: still optimised. With opt-level = 0 the binary is several times larger,
+# embassy's timing assumptions get fragile, and stack usage balloons. The
+# common embedded-rust convention is `opt-level = 1` (or higher) even in dev.
+[profile.dev]
+opt-level       = 1
+debug           = 2
+overflow-checks = true
