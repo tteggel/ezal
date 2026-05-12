@@ -105,16 +105,29 @@ The planned circuit (canonical version in
 - **Feedback**: the Pico does **not** sample the G-5500 directly with its
   on-chip ADC. Instead an Adafruit **ADS1015** I²C ADC sits between the
   G-5500 and the Pico, with its A0 and A1 inputs fed from the G-5500's
-  feedback pins through identical **10 K (upper) / 8.2 K (lower)**
+  feedback pins through identical **100 K (upper) / 82 K (lower)**
   resistor-dividers. That gives a ratio of 0.451, so the G-5500's 4.5 V
   full-scale lands at 2.03 V — just under the ADS1015's tightest useful
-  PGA setting (±2.048 V FSR), which keeps the LSB at ≈ 1 mV. A **100 nF**
-  cap in parallel with the lower resistor forms a ≈ 350 Hz low-pass
-  against 50/60 Hz pickup, well above any plausible mechanical bandwidth
-  of the rotator. The Pico talks to the ADS1015 over I²C0 (GP4 = SDA,
-  GP5 = SCL) with **4.7 K** pull-ups to 3.3 V. The ADS1015's ADDR pin is
-  tied to GND, giving it I²C address 0x48. Per-unit calibration of the
-  divider ratios is captured in software.
+  PGA setting (±2.048 V FSR), which keeps the LSB at ≈ 1 mV. The reason
+  for the high-impedance divider is that the relevant page of the G-5500
+  service manual shows the feedback path traveling through the motor /
+  relay area with no op-amp buffer visible, so we treat the pot output
+  as effectively un-buffered. At 100 K + 82 K = 182 K input impedance
+  the divider loads a few-kΩ pot by under 1.5% at worst position
+  (≈ 1° of elevation error, ≈ 6° of azimuth error — both well inside
+  the deadband we'll run, and trivially absorbed by software calibration).
+
+  A **100 nF** cap in parallel with the lower resistor forms a ≈ 35 Hz
+  low-pass against 50/60 Hz pickup; the rotator's mechanical bandwidth
+  is well under 1 Hz so this costs us nothing in tracking speed. The
+  G-5500 already has a 4.7 nF / 1 kV cap on the feedback line for RFI
+  rejection at a much higher frequency, so the two filters complement
+  rather than fight each other.
+
+  The Pico talks to the ADS1015 over I²C0 (GP4 = SDA, GP5 = SCL) with
+  **4.7 K** pull-ups to 3.3 V. The ADS1015's ADDR pin is tied to GND,
+  giving it I²C address 0x48. Per-unit calibration of the divider
+  ratios is captured in software.
 
 There is no speed control on this interface; control is bang-bang. The
 firmware-side strategy is therefore a hysteretic / deadband controller:
