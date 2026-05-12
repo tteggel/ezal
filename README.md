@@ -12,10 +12,10 @@ still to be written; see [Roadmap](#roadmap) below.
 `ezal` (read it "ez/al", for *azimuth/elevation*) drives a Yaesu **G-5500**
 az/el rotator to track a low-earth-orbit (LEO) satellite as it passes
 overhead. A separate ground-control system computes the satellite's az/el
-position from a TLE; ezal receives those targets over a serial link and
-turns them into the analog control signals the G-5500 expects, with
-smoothing and rate limiting so the rotator doesn't get shocked by step
-changes between samples.
+position from a TLE; ezal receives those targets over a serial link,
+drives the G-5500's direction inputs through transistor switches, and
+reads the controller's position feedback on two ADC channels to close
+the loop. See [HARDWARE.md](docs/HARDWARE.md) for the interface details.
 
 The firmware runs on a **Raspberry Pi Pico 2** (RP2350). The chip has
 plenty of headroom for this job — async I/O, two Cortex-M33 cores, 520 KiB
@@ -93,8 +93,8 @@ two-second pause between repeats.
 |------|----------------------------------------------------------|----------|
 | 1    | "Hello LED" morse blinker — toolchain proof              | ✅ done  |
 | 2    | USB-serial command interface (host → firmware az/el)     | planned  |
-| 3    | G-5500 control protocol & PWM/DAC output                 | planned  |
-| 4    | Rate-limited slewing with current-position feedback      | planned  |
+| 3    | Direction-switch outputs + ADC feedback for the G-5500   | planned  |
+| 4    | Deadband position controller (close the loop on-chip)    | planned  |
 | 5    | TLE-driven tracking (host-supplied az/el stream)         | planned  |
 | 6    | On-board TLE propagation (stand-alone tracking)          | maybe    |
 

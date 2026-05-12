@@ -60,50 +60,48 @@ chosen when the analog hardware is designed.
 
 ## Future: the G-5500 rotator
 
-The [Yaesu G-5500](https://www.yaesu.com/) (and the newer G-5500DC) is the
-target rotator. Pertinent facts:
+The [Yaesu G-5500](https://www.yaesu.com/) (and the -DC variant) is the
+target rotator. Its "external control" connector is an 8-pin DIN. The
+interface is **switch closures** for direction (not analog speed control;
+the speed comes from the G-5500's own controller) plus **analog
+feedback** voltages for position.
 
-- It has **two motors**: azimuth (continuous 0–450°) and elevation (0–180°).
-- The control box accepts two **analog control voltages** (0–5 V each) to
-  request a target azimuth and elevation, and provides two **analog
-  feedback voltages** (also 0–5 V) for the current position.
-- An "external control" connector exposes both pairs; this is what we
-  drive and read.
+| Pin | Direction | Function                                                     |
+|-----|-----------|--------------------------------------------------------------|
+| 1   | output    | Elevation feedback: 2.0–4.5 VDC corresponds to 0°–180°       |
+| 2   | input     | Short to pin 8 → rotate right (clockwise azimuth)            |
+| 3   | input     | Short to pin 8 → rotate up                                   |
+| 4   | input     | Short to pin 8 → rotate left (counter-clockwise azimuth)     |
+| 5   | input     | Short to pin 8 → rotate down                                 |
+| 6   | output    | Azimuth feedback: 2.0–4.5 VDC corresponds to 0°–450°         |
+| 7   | output    | Auxiliary supply: 8–13 VDC at up to 100 mA                   |
+| 8   | —         | Common ground                                                |
 
-In ezal terms, the data flow will be:
+In ezal terms, the data flow is:
 
 ```
-host PC  ──USB-serial──▶  Pico 2  ──DAC/PWM──▶  G-5500 input
-                            ▲                       │
-                            └────ADC───── G-5500 feedback
+host PC ──USB-serial──▶ Pico 2 ──×4 transistor switches──▶ G-5500 pins 2-5
+                          ▲                                     │
+                          └────────×2 ADCs ─────────────  G-5500 pins 1, 6
 ```
 
-### Analog drive
+The planned circuit (see the schematic in the design folder):
 
-The Pico 2 has no real DAC. Two options:
+- **Direction**: four GPIO outputs each drive the base of a 2N3904 NPN
+  through a 39 K series resistor, with a 10 K base-to-emitter pull-down
+  for noise immunity. The collectors connect to G-5500 pins 2–5; emitters
+  to common ground. When the GPIO goes high the transistor saturates and
+  shorts its G-5500 pin to ground — electrically equivalent to pressing
+  the corresponding direction button on the controller's front panel.
 
-1. **PWM + RC filter.** RP2350's PWM hardware can produce a low-pass-
-   filterable rectangular wave at any duty cycle. A simple RC stage turns
-   that into a smooth voltage. Cheap, no extra parts beyond two resistors
-   and two capacitors, but limited bandwidth and resolution.
-2. **External DAC.** An MCP4822 or DAC8552 over SPI gives 12–16 bits of
-   resolution with no filtering needed. More parts on the board, but
-   cleaner output.
+- **Feedback**: two ADC channels each fed via a resistor-divider that
+  scales the 2.0–4.5 V feedback range down to within the Pico 2's 3.3 V
+  ADC range. Per-unit calibration is captured in software.
 
-We will start with PWM + RC because the rotator's mechanical bandwidth is
-well under 10 Hz; the filter cutoff can be set very low and PWM ripple
-becomes invisible.
-
-### Voltage levels
-
-The Pico 2's GPIO is 3.3 V. The G-5500 expects 0–5 V. A **level shifter**
-or a **non-inverting op-amp** with gain ≈ 1.5 brings 3.3 V up to ~5 V.
-For ADC input we go the other way and divide 5 V down with a resistor
-pair to stay inside the ADC's range.
-
-These details belong on the bench, not in the firmware; the firmware
-treats the analog outputs as "0.0 to 1.0" and lets the calibration table
-map that to whatever physical voltage the hardware actually produces.
+There is no speed control on this interface; control is bang-bang. The
+firmware-side strategy is therefore a hysteretic / deadband controller:
+read the current angle, compare with the target, energise the appropriate
+direction transistor until the error is within tolerance, stop.
 
 ## Debug probe
 
@@ -120,12 +118,7 @@ power the Pico over its USB port.
 ## Power
 
 For development the Pico 2's USB-C port provides plenty. The G-5500
-rotator and its control box have their own mains supply; the *only*
-electrical connection between ezal and the rotator is the analog
-control/feedback wiring.
-
-## Workshop note
-
-Always power the rotator before connecting the analog control lines, and
-**never** apply more than 5 V to the G-5500 inputs. The G-5500's internal
-op-amps are tolerant but not unkillable.
+rotator and its control box have their own mains supply; the only
+electrical connections between ezal and the rotator are the four
+switch lines (pins 2–5) and the two feedback lines (pins 1, 6), all
+referenced to G-5500 pin 8.

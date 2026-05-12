@@ -12,9 +12,10 @@ understand the trade-offs before adding code.
 │  ┌──────────────────┐   USB-serial   ┌──────────────────────────┐   │
 │  │  ground control  │ ─────────────▶ │   ezal-firmware (Pico 2) │   │
 │  │  (orbit propag.) │   az/el        │                          │   │
-│  └──────────────────┘                └──────────────────────────┘   │
-│                                                  │                  │
-│                                                  ▼ analog 0–5 V     │
+│  └──────────────────┘                └─────────────┬────────────┘   │
+│                                                    │   ▲           │
+│                                  ×4 switch-closure │   │ ×2 ADC    │
+│                                                    ▼   │ feedback  │
 │                                          ┌──────────────────┐       │
 │                                          │  Yaesu G-5500    │       │
 │                                          │  az/el rotator   │       │
@@ -22,15 +23,16 @@ understand the trade-offs before adding code.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-The firmware is the bridge between *digital* commands from a host computer
-and the *analog* control voltages the G-5500 expects. It is responsible for:
+The firmware is the bridge between *digital* az/el commands from a host
+computer and the G-5500's *switch-closure* direction inputs, reading the
+controller's *analog* position feedback to close the loop. It is
+responsible for:
 
 - accepting az/el targets over USB-serial (or, later, UART),
-- smoothing/rate-limiting the targets,
-- driving analog outputs to the rotator,
-- reading the rotator's current-position feedback (also analog),
-- closing a small position-control loop locally so the rotator tracks
-  smoothly even when the host stream is jittery,
+- driving the G-5500's four direction inputs through transistor switches,
+- reading az/el feedback voltages on two ADC channels,
+- running a small bang-bang position controller with deadband so the
+  motors stop when the dish is close enough to the target,
 - reporting status back to the host.
 
 For step one we are doing none of that. The firmware just blinks the
@@ -85,11 +87,12 @@ There are three viable async/concurrency frameworks for the RP2350:
    peripherals; the executor sleeps the core between events. The
    programming model is the same `async` Rust you'd write on a host.
 
-ezal will be I/O-bound: serial in, PWM/DAC out, occasional ADC reads, no
-hard-realtime sub-microsecond deadlines. The Embassy model — `Timer::after`,
-`UartRx::read_until_idle`, etc. — fits cleanly and produces obvious code.
-That is the *whole reason* this architecture works for a multi-feature
-tracker without devolving into a state-machine spaghetti.
+ezal will be I/O-bound: serial in, four GPIO direction outputs, two ADC
+reads, no hard-realtime sub-microsecond deadlines. The Embassy model —
+`Timer::after`, `UartRx::read_until_idle`, `Adc::read`, etc. — fits
+cleanly and produces obvious code. That is the *whole reason* this
+architecture works for a multi-feature tracker without devolving into a
+state-machine spaghetti.
 
 If a future feature needs sub-millisecond determinism we can pin one
 core to a hard real-time loop and keep the other on Embassy.
@@ -100,39 +103,25 @@ Embedded development punishes "version drift" more than most domains
 because the same crash on a new compiler can be silent (corrupted RAM)
 rather than a panic. Pinning:
 
-- **rustup** channel to `1.83.0` (in `rust-toolchain.toml`),
+- **rustup** channel to a specific version (in `rust-toolchain.toml`),
 - every dependency version in `Cargo.toml` `[workspace.dependencies]`,
 - `Cargo.lock` checked in,
 
 means everyone — including CI and you, six months from now — builds the
 same bytes. Bumping any of these is a deliberate, reviewable change.
 
-## Future module layout (sketch)
+## Future modules
 
-Anticipating where we are headed, the code is laid out so the following
-modules can be added without restructuring:
+The workspace shape is designed so new modules can be dropped in without
+restructuring — but we'll add them when they have concrete code to hold,
+not pre-emptively. Things on the horizon:
 
-```
-crates/ezal-core/src/
-├── lib.rs
-├── morse.rs            ← exists today
-├── tracking/
-│   ├── azel.rs         ← AzEl struct, angle wrapping, unit conversions
-│   ├── slew.rs         ← rate-limited interpolation between targets
-│   └── lowpass.rs      ← small IIR filter for noisy feedback
-└── g5500/
-    ├── protocol.rs     ← if we talk GS-232B over UART later
-    └── analog_map.rs   ← angle → DAC code, with calibration
+- a host-testable angle / unit-conversion module in `ezal-core`,
+- a hysteretic position controller in `ezal-core`,
+- firmware tasks for ADC sampling and direction-switch control, wired
+  to those `ezal-core` modules via plain function calls.
 
-crates/ezal-firmware/src/
-├── main.rs             ← starts the task graph (today: just morse)
-└── bin/
-    ├── hello_morse.rs  ← the toolchain-test binary (optional split)
-    └── tracker.rs      ← the real tracker entry point (future)
-```
-
-This is a *plan*, not a promise. Modules will be added when concrete code
-needs them, not pre-emptively.
+Exact filenames and module boundaries will surface when we get there.
 
 ## Testing strategy
 
