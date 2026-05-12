@@ -14,8 +14,8 @@ understand the trade-offs before adding code.
 │  │  (orbit propag.) │   az/el        │                          │   │
 │  └──────────────────┘                └─────────────┬────────────┘   │
 │                                                    │   ▲           │
-│                                  ×4 switch-closure │   │ ×2 ADC    │
-│                                                    ▼   │ feedback  │
+│                                  ×4 switch-closure │   │ I²C ADS1015│
+│                                                    ▼   │ + dividers │
 │                                          ┌──────────────────┐       │
 │                                          │  Yaesu G-5500    │       │
 │                                          │  az/el rotator   │       │
@@ -30,7 +30,7 @@ responsible for:
 
 - accepting az/el targets over USB-serial (or, later, UART),
 - driving the G-5500's four direction inputs through transistor switches,
-- reading az/el feedback voltages on two ADC channels,
+- reading az/el feedback over I²C from an external ADC (Adafruit ADS1015),
 - running a small bang-bang position controller with deadband so the
   motors stop when the dish is close enough to the target,
 - reporting status back to the host.
@@ -87,12 +87,12 @@ There are three viable async/concurrency frameworks for the RP2350:
    peripherals; the executor sleeps the core between events. The
    programming model is the same `async` Rust you'd write on a host.
 
-ezal will be I/O-bound: serial in, four GPIO direction outputs, two ADC
-reads, no hard-realtime sub-microsecond deadlines. The Embassy model —
-`Timer::after`, `UartRx::read_until_idle`, `Adc::read`, etc. — fits
-cleanly and produces obvious code. That is the *whole reason* this
-architecture works for a multi-feature tracker without devolving into a
-state-machine spaghetti.
+ezal will be I/O-bound: serial in, four GPIO direction outputs, periodic
+I²C reads from the ADS1015, no hard-realtime sub-microsecond deadlines.
+The Embassy model — `Timer::after`, `UartRx::read_until_idle`,
+`I2c::read`, etc. — fits cleanly and produces obvious code. That is the
+*whole reason* this architecture works for a multi-feature tracker
+without devolving into a state-machine spaghetti.
 
 If a future feature needs sub-millisecond determinism we can pin one
 core to a hard real-time loop and keep the other on Embassy.
@@ -118,8 +118,8 @@ not pre-emptively. Things on the horizon:
 
 - a host-testable angle / unit-conversion module in `ezal-core`,
 - a hysteretic position controller in `ezal-core`,
-- firmware tasks for ADC sampling and direction-switch control, wired
-  to those `ezal-core` modules via plain function calls.
+- firmware tasks for I²C ADC sampling and direction-switch control,
+  wired to those `ezal-core` modules via plain function calls.
 
 Exact filenames and module boundaries will surface when we get there.
 

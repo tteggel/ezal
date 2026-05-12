@@ -13,9 +13,9 @@
 //!    in under a minute and *see* succeed without any external wiring.
 //!
 //! The eventual G-5500 rotator firmware will replace this `main` with a
-//! task graph (USB-serial in, four direction-switch GPIOs, two ADC
-//! channels for position feedback, …) but every line below should still
-//! be familiar.
+//! task graph (USB-serial in, four direction-switch GPIOs, periodic I²C
+//! reads from an ADS1015 for position feedback, …) but every line below
+//! should still be familiar.
 //!
 //! ## How it runs
 //!

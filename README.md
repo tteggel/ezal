@@ -14,8 +14,9 @@ az/el rotator to track a low-earth-orbit (LEO) satellite as it passes
 overhead. A separate ground-control system computes the satellite's az/el
 position from a TLE; ezal receives those targets over a serial link,
 drives the G-5500's direction inputs through transistor switches, and
-reads the controller's position feedback on two ADC channels to close
-the loop. See [HARDWARE.md](docs/HARDWARE.md) for the interface details.
+reads the controller's position feedback via an Adafruit ADS1015 I²C
+ADC to close the loop. See [HARDWARE.md](docs/HARDWARE.md) and the
+[design/](design/) folder for the interface details and schematic.
 
 The firmware runs on a **Raspberry Pi Pico 2** (RP2350). The chip has
 plenty of headroom for this job — async I/O, two Cortex-M33 cores, 520 KiB
@@ -44,6 +45,11 @@ over-commented for educational purposes.
 │   ├── HARDWARE.md                 # G-5500 wiring, debug probe, ...
 │   ├── DEVELOPMENT.md              # local toolchain setup
 │   └── MORSE.md                    # walkthrough of the hello demo
+├── design/
+│   ├── pinout.md                   # G-5500 8-pin DIN pinout
+│   ├── circuit.py                  # schemdraw source for the schematic
+│   ├── circuit.svg                 # rendered schematic (vector)
+│   └── circuit.png                 # rendered schematic (raster)
 ├── scripts/                        # build, test, flash helpers
 └── .github/workflows/ci.yml        # CI: fmt + clippy + tests + build
 ```
@@ -93,7 +99,7 @@ two-second pause between repeats.
 |------|----------------------------------------------------------|----------|
 | 1    | "Hello LED" morse blinker — toolchain proof              | ✅ done  |
 | 2    | USB-serial command interface (host → firmware az/el)     | planned  |
-| 3    | Direction-switch outputs + ADC feedback for the G-5500   | planned  |
+| 3    | Direction-switch outputs + I²C ADS1015 feedback          | planned  |
 | 4    | Deadband position controller (close the loop on-chip)    | planned  |
 | 5    | TLE-driven tracking (host-supplied az/el stream)         | planned  |
 | 6    | On-board TLE propagation (stand-alone tracking)          | maybe    |

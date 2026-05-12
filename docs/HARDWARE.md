@@ -81,11 +81,14 @@ In ezal terms, the data flow is:
 
 ```
 host PC ──USB-serial──▶ Pico 2 ──×4 transistor switches──▶ G-5500 pins 2-5
-                          ▲                                     │
-                          └────────×2 ADCs ─────────────  G-5500 pins 1, 6
+                        ▲ ▲                                       │
+                        │ └── I²C ── ADS1015 ──×2 R-dividers ─────┤
+                        │                                         │
+                        └─────────── shared GND ─────── G-5500 pin 8
 ```
 
-The planned circuit (see the schematic in the design folder):
+The planned circuit (canonical version in
+[`design/circuit.py`](../design/circuit.py) / `circuit.svg`):
 
 - **Direction**: four GPIO outputs each drive the base of a 2N3904 NPN
   through a 39 K series resistor, with a 10 K base-to-emitter pull-down
@@ -94,9 +97,14 @@ The planned circuit (see the schematic in the design folder):
   shorts its G-5500 pin to ground — electrically equivalent to pressing
   the corresponding direction button on the controller's front panel.
 
-- **Feedback**: two ADC channels each fed via a resistor-divider that
-  scales the 2.0–4.5 V feedback range down to within the Pico 2's 3.3 V
-  ADC range. Per-unit calibration is captured in software.
+- **Feedback**: the Pico does **not** sample the G-5500 directly with its
+  on-chip ADC. Instead an Adafruit **ADS1015** I²C ADC sits between the
+  G-5500 and the Pico, with its A0 and A1 inputs fed from the G-5500's
+  feedback pins through per-channel resistor-dividers (so the 2.0–4.5 V
+  feedback lands within the ADS1015's input window). The Pico talks to
+  the ADS1015 over I²C0 (GP4/GP5) with 4.7 K pull-ups to 3.3 V. The
+  ADS1015's ADDR pin is tied to GND, giving it I²C address 0x48. Per-unit
+  calibration of the divider ratios is captured in software.
 
 There is no speed control on this interface; control is bang-bang. The
 firmware-side strategy is therefore a hysteretic / deadband controller:
