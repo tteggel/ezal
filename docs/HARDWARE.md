@@ -206,6 +206,82 @@ though, because that trim is what keeps the ADC operating near full
 scale — pinching the input range below ~70 % of FSR starts to eat into
 our angular resolution.
 
+## Motor switching budget
+
+> **Rough notes.** Numbers below are paraphrased datasheet / typical
+> figures, not bench-measured. Worth verifying once we have hardware
+> wired up. Captured now so the order-of-magnitude doesn't get lost
+> between here and the firmware controller (roadmap step 4).
+
+### Three constraints
+
+**Relay (PL6102 = Fujitsu FTR-B4 series, DC 12 V coil)**
+
+- Operate / release time: ~5 ms each (≈ 10 ms round trip).
+- Mechanical life: ~10⁸ operations.
+- Electrical life at rated load: ~5 × 10⁵ operations.
+- Datasheet switching ceiling: ~60 operations/min = **1 Hz** for the
+  electrical-life figure. Above that, contact wear and weld risk climb
+  faster than spec.
+
+**Motor mechanical settling**
+
+The G-5500 runs an AC induction motor, the G-5500DC a brushed DC motor;
+both have a holding brake that engages when power is cut. Rough:
+
+- Start-up (apply power → full slew speed): **100–200 ms**.
+- Stop / brake (cut power → fully stopped): **100–300 ms**.
+- Minimum useful on-pulse: ~300 ms. Below this the relay clicks but the
+  rotator doesn't actually move — just judders.
+- Minimum useful cycle period: ~500 ms = **2 Hz absolute mechanical
+  ceiling**.
+
+**Snubber thermals (D6038 / D6039 + C6057 = 4.7 nF / 1 kV)**
+
+Sized for the relay's nominal duty. Not binding below ~1 Hz; listed for
+completeness.
+
+### Operating envelope
+
+| condition                     | rate                          |
+|-------------------------------|-------------------------------|
+| absolute mechanical ceiling   | ~2 Hz (500 ms period)         |
+| relay datasheet ceiling       | 1 Hz                          |
+| **target operating maximum**  | **0.5 Hz (≥ 2 s period)**     |
+| typical during a LEO pass     | 0.05 – 0.2 Hz                 |
+| idle / no satellite           | 0                             |
+
+### Implications for the controller
+
+Three rules together hold the rate inside that envelope:
+
+1. **Minimum on-time per pulse: ≥ 300 ms.** Below this the relay
+   actuates without moving the antenna; pulse is pure wear, no work.
+2. **Minimum off-time between consecutive commands: ≥ 2 s.** Hard
+   guardrail on relay life. Caps switching at 0.5 Hz regardless of
+   what the deadband logic decides.
+3. **Deadband sized for the slew rate.** The G-5500 slews at ~6 °/s
+   on both axes; a typical LEO satellite tracks at ≤ 1 °/s across the
+   sky. A **3–5 ° deadband per axis** lands typical correction rates
+   at ~0.1 Hz, well inside the budget, and is fine for any sensible
+   antenna beam-width.
+
+The min-off-time is the load-bearing rule. Deadband alone *should*
+keep us slow, but noisy feedback could otherwise oscillate the rotator
+at whatever rate the control loop ticks (which we'll want at 10+ Hz
+for responsiveness). Decoupling the *decision* rate from the
+*actuation* rate is the standard pattern and what we'll implement.
+
+### To verify on the bench
+
+- Actual motor start-up and brake-stop times for each axis (the 100–
+  300 ms ranges above are typicals, not measured).
+- Whether the Yaesu relay has any extra contact protection beyond the
+  snubber we see, which might extend the electrical-life rating.
+- Whether 3–5 ° deadband is acceptable for the antenna beam-widths
+  we'll use, or if it needs to come down (and the switching budget
+  needs to widen accordingly).
+
 ## Debug probe
 
 The recommended probe is the [Raspberry Pi Debug Probe](https://www.raspberrypi.com/products/debug-probe/)
