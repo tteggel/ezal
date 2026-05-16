@@ -98,16 +98,16 @@ FEEDBACK_CHANNELS = [
 # Vertical positions (schematic grows downwards from the title).
 TITLE_Y    = 3.0
 DIR_Y0     = 0.0
-DIR_PITCH  = 5.0
+DIR_PITCH  = 6.0   # channel-to-channel; bumped from 5 to keep labels breathable.
 I2C_Y0     = DIR_Y0 - len(DIRECTION_CHANNELS) * DIR_PITCH - 1.5  # ADS1015 zone
 FB_PITCH   = 3.5
 
 # Horizontal columns.
 X_PICO        = 0.0    # Pico pin label sits at x=0.
-X_LED_BRANCH  = 1.0    # branch point for the per-channel indicator LED.
-X_R_SERIES    = 2.5    # left end of the 2.2 K base resistor.
-X_BASE_NODE   = 5.0    # base of the NPN (and top of the pull-down).
-X_DIN         = 12.0   # DIN pin label / wire to the connector.
+X_LED_BRANCH  = 1.5    # branch point for the per-channel indicator LED.
+X_R_SERIES    = 3.0    # left end of the 2.2 K base resistor.
+X_BASE_NODE   = 5.5    # base of the NPN (and top of the pull-down).
+X_DIN         = 13.0   # DIN pin label / wire to the connector.
 
 # ADS1015 chip block (positioned in the feedback half of the schematic).
 # We make the chip deliberately tall so the two used analog pins (A0 at
@@ -133,9 +133,10 @@ def direction_channel(d: schemdraw.Drawing, idx: int, gpio: str,
     """
     y = DIR_Y0 - idx * DIR_PITCH
 
-    # Pico GPIO terminal on the left.
+    # Pico GPIO terminal on the left. The label is placed with explicit
+    # coordinates instead of loc/ofst so it sits clearly clear of the dot.
     d += elm.Dot(open=True).at((X_PICO, y))
-    d += elm.Label().label(gpio, loc="left", ofst=(0.1, 0))
+    d += elm.Label().label(gpio, fontsize=10).at((X_PICO - 0.6, y))
 
     # GPIO wire jogs through a branch point so we can hang the indicator
     # LED off it before continuing to the base-resistor network.
@@ -148,10 +149,19 @@ def direction_channel(d: schemdraw.Drawing, idx: int, gpio: str,
     # and ~2 V LED forward drop, this sinks ~2.8 mA — bright enough to
     # see in a lit room and well within the Pico GPIO's drive budget
     # (the 2.2 K base resistor below takes another ~1.1 mA, total ~4 mA).
-    d += (r_led := elm.Resistor().down().at((led_branch_x, y))
-          .length(1.1).label("470 Ω", loc="left", fontsize=8))
-    d += (led := elm.LED().down().at(r_led.end)
-          .length(0.9).label(f"D{idx + 1}", loc="left", fontsize=8))
+    #
+    # Labels for the resistor and LED are positioned with explicit .at()
+    # coords because schemdraw's loc=left placement on a vertical Resistor
+    # / LED puts the label at the body's mid-point, which for short bodies
+    # collides with the next element underneath.
+    d += (r_led := elm.Resistor().down().at((led_branch_x, y)).length(1.1))
+    d += elm.Label().label("470 Ω", fontsize=8).at(
+        (led_branch_x - 0.6, y - 0.55)
+    )
+    d += (led := elm.LED().down().at(r_led.end).length(0.9))
+    d += elm.Label().label(f"D{idx + 1}", fontsize=8).at(
+        (led_branch_x - 0.6, y - 1.55)
+    )
     d += elm.Ground().at(led.end)
 
     # 2.2 K series base resistor: gives ~1.1 mA I_B for 3.3 V GPIO drive,
@@ -163,15 +173,21 @@ def direction_channel(d: schemdraw.Drawing, idx: int, gpio: str,
 
     # 10 K base-pull-down to GND: holds the base low while the Pico GPIO
     # is high-Z (boot/reset) but doesn't steal appreciable I_B once on.
+    # Label on the LEFT to stay clear of the transistor's body and
+    # part-number labels to the right of the base node.
     d += (r_pd := elm.Resistor().down().at((X_BASE_NODE, y))
-          .length(1.8).label("10 K", loc="bot"))
+          .length(1.8).label("10 K", loc="left"))
     d += elm.Ground().at(r_pd.end)
 
     # NPN transistor, base anchored at the base node, body extending right.
     d += (q := elm.BjtNpn(circle=True).right().anchor("base")
           .at((X_BASE_NODE, y))
-          .label(f"Q{idx + 1}", loc="top", ofst=(0, 0.15))
-          .label("2N3904", loc="bot", ofst=(0, -0.25), fontsize=8))
+          .label(f"Q{idx + 1}", loc="top", ofst=(0, 0.15)))
+    # 2N3904 part-number under the body, with extra clearance so the
+    # 10 K label on the left of the pull-down resistor doesn't collide.
+    d += elm.Label().label("2N3904", fontsize=8).at(
+        ((q.collector[0] + q.emitter[0]) / 2, y - 1.5)
+    )
 
     # Emitter → GND.
     d += elm.Line().endpoints(q.emitter, (q.emitter[0], y - 1.8))
@@ -182,7 +198,7 @@ def direction_channel(d: schemdraw.Drawing, idx: int, gpio: str,
     d += elm.Line().endpoints((q.collector[0], y), (X_DIN, y))
     d += elm.Dot(open=True).at((X_DIN, y))
     d += elm.Label().label(f"DIN {din_pin}\n{what}", loc="right",
-                           ofst=(0.1, 0), fontsize=9)
+                           ofst=(0.2, 0), fontsize=9)
 
 
 # ── ADS1015 block ───────────────────────────────────────────────────────
@@ -260,13 +276,16 @@ def i2c_bus(d: schemdraw.Drawing, ads_left: dict) -> None:
     addr_x, addr_y = ads_left["ADDR"]
 
     # Horizontal SDA / SCL bus lines: ADS1015 → Pico label.
+    # Labels positioned with explicit .at() coords (and shortened from
+    # "GP4 (SDA)" to "GP4 SDA") so matplotlib's auto-bbox doesn't crop
+    # them at the canvas's left edge.
     d += elm.Line().endpoints((sda_x - 0.3, sda_y), (X_PICO, sda_y))
     d += elm.Dot(open=True).at((X_PICO, sda_y))
-    d += elm.Label().label("GP4 (SDA)", loc="left", ofst=(0.1, 0))
+    d += elm.Label().label("GP4  SDA", fontsize=10).at((X_PICO - 1.0, sda_y))
 
     d += elm.Line().endpoints((scl_x - 0.3, scl_y), (X_PICO, scl_y))
     d += elm.Dot(open=True).at((X_PICO, scl_y))
-    d += elm.Label().label("GP5 (SCL)", loc="left", ofst=(0.1, 0))
+    d += elm.Label().label("GP5  SCL", fontsize=10).at((X_PICO - 1.0, scl_y))
 
     # Common 3.3 V rail running horizontally above the SDA line. Two
     # pull-ups hang down from it onto SDA and SCL respectively.
@@ -370,11 +389,11 @@ def common_ground(d: schemdraw.Drawing) -> None:
     """Pico GND ↔ G-5500 DIN pin 8."""
     y = ADS_Y - 3.5
     d += elm.Dot(open=True).at((X_PICO, y))
-    d += elm.Label().label("Pico GND", loc="left", ofst=(0.1, 0))
+    d += elm.Label().label("Pico GND", fontsize=10).at((X_PICO - 1.0, y))
     d += elm.Line().endpoints((X_PICO, y), (X_DIN, y)).color("dimgray")
     d += elm.Dot(open=True).at((X_DIN, y))
     d += elm.Label().label("DIN pin 8\n(common ground)",
-                           loc="right", ofst=(0.1, 0), fontsize=9)
+                           loc="right", ofst=(0.2, 0), fontsize=9)
 
 
 # ── Title block ─────────────────────────────────────────────────────────
