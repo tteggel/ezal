@@ -41,6 +41,12 @@ Notes
   G-5500DC interface (same external-control pinout on both):
     direction channels — 2.2 K series base, 10 K base-to-emitter pull-down
                          (gives ~1.1 mA I_B, robust saturation of the 2N3904)
+    indicator LEDs    — 470 Ω + standard 2 V Vf LED on each GPIO. Lights
+                         up on direction command alone, so the bench
+                         shows which channel is switched without the
+                         rotator connected. Pico sinks ~4 mA total per
+                         channel (1.1 mA base + 2.8 mA LED) — within the
+                         12 mA per-pin GPIO budget.
     feedback dividers — 68 K upper, 82 K lower for **both** channels.
                         The G-5500's NJM2902 op-amp output drives a 33 K
                         series resistor (R6010 / R6011 in the service
@@ -98,9 +104,10 @@ FB_PITCH   = 3.5
 
 # Horizontal columns.
 X_PICO        = 0.0    # Pico pin label sits at x=0.
-X_R_SERIES    = 2.0    # left end of the 39 K resistor.
-X_BASE_NODE   = 4.5    # base of the NPN (and top of the pull-down).
-X_DIN         = 11.5   # DIN pin label / wire to the connector.
+X_LED_BRANCH  = 1.0    # branch point for the per-channel indicator LED.
+X_R_SERIES    = 2.5    # left end of the 2.2 K base resistor.
+X_BASE_NODE   = 5.0    # base of the NPN (and top of the pull-down).
+X_DIN         = 12.0   # DIN pin label / wire to the connector.
 
 # ADS1015 chip block (positioned in the feedback half of the schematic).
 # We make the chip deliberately tall so the two used analog pins (A0 at
@@ -115,12 +122,37 @@ ADS_Y = I2C_Y0 - ADS_H - 0.5
 # ── Direction-switch row ────────────────────────────────────────────────
 def direction_channel(d: schemdraw.Drawing, idx: int, gpio: str,
                       din_pin: str, what: str) -> None:
-    """Draw one open-collector NPN direction-switch channel."""
+    """Draw one open-collector NPN direction-switch channel.
+
+    Each channel also carries an **indicator LED** hanging off the GPIO
+    wire. The LED is driven directly by the Pico GPIO (not by the
+    switching transistor), so it lights up whenever the firmware
+    commands that direction — independent of whether the rotator is
+    actually plugged in. Handy for bench testing and for sanity-checking
+    a misbehaving deadband / hysteresis loop visually.
+    """
     y = DIR_Y0 - idx * DIR_PITCH
 
     # Pico GPIO terminal on the left.
     d += elm.Dot(open=True).at((X_PICO, y))
     d += elm.Label().label(gpio, loc="left", ofst=(0.1, 0))
+
+    # GPIO wire jogs through a branch point so we can hang the indicator
+    # LED off it before continuing to the base-resistor network.
+    led_branch_x = X_LED_BRANCH
+    d += elm.Line().endpoints((X_PICO, y), (led_branch_x, y))
+    d += elm.Dot().at((led_branch_x, y))
+    d += elm.Line().endpoints((led_branch_x, y), (X_R_SERIES, y))
+
+    # Indicator LED branch: GPIO → 470 Ω → LED → GND. At 3.3 V drive
+    # and ~2 V LED forward drop, this sinks ~2.8 mA — bright enough to
+    # see in a lit room and well within the Pico GPIO's drive budget
+    # (the 2.2 K base resistor below takes another ~1.1 mA, total ~4 mA).
+    d += (r_led := elm.Resistor().down().at((led_branch_x, y))
+          .length(1.1).label("470 Ω", loc="left", fontsize=8))
+    d += (led := elm.LED().down().at(r_led.end)
+          .length(0.9).label(f"D{idx + 1}", loc="left", fontsize=8))
+    d += elm.Ground().at(led.end)
 
     # 2.2 K series base resistor: gives ~1.1 mA I_B for 3.3 V GPIO drive,
     # plenty to saturate a 2N3904 driving the G-5500 direction input.
@@ -352,11 +384,9 @@ def title(d: schemdraw.Drawing) -> None:
         loc="top", fontsize=14,
     ).at((X_DIN / 2, TITLE_Y))
     d += elm.Label().label(
-        "Top — 4× 2N3904 open-collector switches drive the G-5500 direction inputs (pins 2/3/4/5).\n"
-        "Bottom — Adafruit ADS1015 I²C ADC reads the 2.0–4.5 V position feedback (pins 1, 6)\n"
-        "                  through 2× identical 68 K / 82 K dividers with 100 nF LP caps. The\n"
-        "                  G-5500's own 33 K series at its NJM2902 output sets the effective ratio;\n"
-        "                  PGA = ±2.048 V FSR gives ~1 mV LSB across the resulting 0.9–2.0 V range.",
+        "Top: 4× 2N3904 direction switches (G-5500 DIN pins 2/3/4/5) + per-channel indicator LEDs (D1–D4).\n"
+        "Bottom: Adafruit ADS1015 I²C ADC reads the 2.0–4.5 V position feedback (pins 1, 6) via 2× resistor dividers.\n"
+        "See docs/HARDWARE.md for component-value derivation and the G-5500-side circuit it interfaces with.",
         loc="top", fontsize=8, color="dimgray",
     ).at((X_DIN / 2, TITLE_Y - 1.4))
 

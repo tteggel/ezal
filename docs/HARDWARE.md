@@ -102,6 +102,17 @@ The planned circuit (canonical version in
   electrically equivalent to pressing the corresponding direction button
   on the controller's front panel.
 
+  Each GPIO also drives a **per-channel indicator LED** (D1–D4 in the
+  schematic) through a **470 Ω** series resistor, tapped off the GPIO
+  wire ahead of the base-resistor network. The LED is driven by the
+  Pico directly, not by the transistor — so it lights up whenever
+  the firmware *commands* that direction, regardless of whether the
+  rotator is plugged in. Useful for bench-testing the controller and
+  for eyeballing a noisy deadband loop. Drive current works out to ~2.8
+  mA per LED at 3.3 V GPIO and a typical 2 V Vf, plus ~1.1 mA into the
+  base network = ~4 mA per channel — within the Pico's 12 mA per-pin
+  GPIO budget.
+
 - **Feedback**: the Pico does **not** sample the G-5500 directly with its
   on-chip ADC. Instead an Adafruit **ADS1015** I²C ADC sits between the
   G-5500 and the Pico, with its A0 and A1 inputs fed from the G-5500's
