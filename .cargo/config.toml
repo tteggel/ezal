@@ -35,10 +35,12 @@ target = "thumbv8m.main-none-eabihf"
 #     3. attach to RTT and stream defmt logs back to stdout,
 #     4. exit when the chip resets or you Ctrl-C.
 #
-# Alternative: if you do not have a debug probe and only want to drag-and-
-# drop a UF2 file onto the Pico 2's mass-storage bootloader, swap this for
+# Alternative: with no debug probe, point the runner at the Pico 2's USB
+# bootloader instead — hold BOOTSEL while plugging in, then swap this for
 #     runner = "picotool load -uvx -t elf"
-# (you'll lose live log streaming.)
+# (you'll lose live log streaming). For a portable drag-and-drop .uf2 image
+# — no runner, nothing installed on the target machine — build one with
+# ./scripts/build-uf2.sh and copy it onto the "RP2350" drive.
 runner = "probe-rs run --chip RP235x --protocol swd"
 
 # Linker flags. These are passed to the linker via `-C link-arg=`:

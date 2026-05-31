@@ -5,13 +5,21 @@
 # real hardware; it only runs anything that can be executed on the CI
 # runner's host.
 #
+# Every job runs inside the project's Nix dev shell, so the toolchain is the
+# exact one pinned by `flake.lock` — the same `cargo`, `clippy`, and
+# `picotool` a contributor gets locally. We load the *lean* `.#ci` shell
+# (Rust toolchain + picotool, no probe-rs/python) via `nicknovitski/nix-
+# develop`, which exports the shell's environment to every later step, so
+# plain `cargo`/`picotool` commands and `Swatinem/rust-cache` all see it.
+#
 # The four jobs run in parallel:
 #
 #   fmt            — `cargo fmt --check` (style)
 #   test-host      — `cargo test` for ezal-core, on the host
 #   clippy-host    — clippy lints for the host build of ezal-core
-#   build-firmware — cross-compiles ezal-firmware for the Pico 2 and runs
-#                    clippy on it
+#   build-firmware — cross-compiles ezal-firmware for the Pico 2, runs
+#                    clippy on it, then packages a UF2 for BOOTSEL flashing
+#                    and uploads both the elf and the UF2 as artefacts
 #
 # All four are required to pass before a PR can be merged (configure that
 # in GitHub's branch-protection settings).
@@ -43,10 +51,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install pinned toolchain
-        # `rustup show` reads rust-toolchain.toml and installs the toolchain
-        # + components + targets named there.
-        run: rustup show
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: Load the .#ci dev shell
+        # Puts the flake-pinned toolchain on PATH for the steps below.
+        uses: nicknovitski/nix-develop@v1
+        with:
+          arguments: ".#ci"
       - run: cargo fmt --all -- --check
 
   # ── Host unit tests ──────────────────────────────────────────────────
@@ -55,7 +65,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup show
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: nicknovitski/nix-develop@v1
+        with:
+          arguments: ".#ci"
       - uses: Swatinem/rust-cache@v2
       - name: Run ezal-core tests
         run: |
@@ -68,20 +81,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup show
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: nicknovitski/nix-develop@v1
+        with:
+          arguments: ".#ci"
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: |
           HOST=$(rustc -vV | sed -n 's/host: //p')
           cargo clippy -p ezal-core --target "$HOST" --all-features --all-targets
 
-  # ── Cross-compile firmware ───────────────────────────────────────────
+  # ── Cross-compile firmware + package UF2 ─────────────────────────────
   build-firmware:
     name: Build firmware
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup show
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: nicknovitski/nix-develop@v1
+        with:
+          arguments: ".#ci"
       - uses: Swatinem/rust-cache@v2
       - name: Build release firmware
         # Default target (from .cargo/config.toml) is thumbv8m.main-none-eabihf.
@@ -91,13 +110,26 @@ jobs:
         # built for the embedded triple (they need libtest), so we limit
         # clippy to the bin target.
         run: cargo clippy -p ezal-firmware --bins
+      - name: Package UF2 for BOOTSEL flashing
+        # Reuses the same script contributors run locally, so the picotool
+        # convert flags live in exactly one place. Its `cargo build` is a
+        # cached no-op here — the release build above already produced the elf.
+        run: ./scripts/build-uf2.sh
       - name: Upload elf as artefact
         # Lets reviewers download the firmware from a PR run without having
-        # to build it themselves. Useful when you don't have a Pico 2 nearby
-        # but want to flash someone else's branch.
+        # to build it themselves — handy with a debug probe (probe-rs / SWD).
         uses: actions/upload-artifact@v4
         with:
           name: ezal-firmware-${{ github.sha }}
           path: target/thumbv8m.main-none-eabihf/release/ezal-firmware
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload UF2 as artefact
+        # The drag-and-drop image: hold BOOTSEL, plug the Pico 2 in, copy
+        # this onto the "RP2350" drive. No probe or extra tooling needed.
+        uses: actions/upload-artifact@v4
+        with:
+          name: ezal-firmware-uf2-${{ github.sha }}
+          path: target/thumbv8m.main-none-eabihf/release/ezal-firmware.uf2
           if-no-files-found: error
           retention-days: 14

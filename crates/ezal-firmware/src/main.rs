@@ -35,12 +35,12 @@
 //! cargo run -p ezal-firmware --release         # via probe-rs (SWD)
 //! ```
 //!
-//! Or, if you have no debug probe:
+//! Or, if you have no debug probe, build a UF2 and drag-and-drop it onto
+//! the Pico 2's BOOTSEL drive:
 //!
 //! ```text
-//! cargo build -p ezal-firmware --release
-//! picotool load -uvx -t elf \
-//!     target/thumbv8m.main-none-eabihf/release/ezal-firmware
+//! ./scripts/build-uf2.sh                       # → ezal-firmware.uf2
+//! # hold BOOTSEL, plug in, copy the .uf2 onto the "RP2350" drive
 //! ```
 //!
 //! See [`docs/DEVELOPMENT.md`](../../../../docs/DEVELOPMENT.md) for setup.

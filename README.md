@@ -53,7 +53,7 @@ over-commented for educational purposes.
 │   ├── circuit.svg                 # rendered schematic (vector)
 │   └── circuit.png                 # rendered schematic (raster)
 ├── scripts/                        # build, test, flash helpers
-└── .github/workflows/ci.yml        # CI: fmt + clippy + tests + build
+└── .github/workflows/ci.yml        # CI (Nix flake): fmt, clippy, tests, UF2
 ```
 
 ## Quick start
@@ -77,14 +77,18 @@ direnv allow                        # one-time: load the dev shell
 cargo run -p ezal-firmware --release
 ```
 
-If you don't have a debug probe handy, you can flash UF2-style by holding
-BOOTSEL while plugging the Pico 2 in and dropping the elf via `picotool`:
+If you don't have a debug probe handy, build a UF2 image and drag-and-drop
+it onto the Pico 2's BOOTSEL drive instead — no probe, and nothing extra
+installed on the machine doing the copy:
 
 ```bash
-cargo build -p ezal-firmware --release
-picotool load -uvx -t elf \
-    target/thumbv8m.main-none-eabihf/release/ezal-firmware
+./scripts/build-uf2.sh              # → target/.../release/ezal-firmware.uf2
 ```
+
+Then hold **BOOTSEL** while plugging the Pico 2 in, and copy the `.uf2`
+onto the `RP2350` drive that appears. See
+[DEVELOPMENT.md](docs/DEVELOPMENT.md#build-a-uf2-for-bootsel-flashing) for
+the details.
 
 You should see the onboard LED blink **HELLO WORLD** in international
 Morse code (∙∙∙∙ ∙ ∙−∙∙ ∙−∙∙ −−− / ∙−− −−− ∙−∙ ∙−∙∙ −∙∙), with a

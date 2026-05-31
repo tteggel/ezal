@@ -95,8 +95,9 @@ pip install --user schemdraw matplotlib
 ```
 
 You're then responsible for keeping versions roughly in sync with what
-the flake pins; CI uses the flake-equivalent Rust toolchain via rustup,
-so the build is the authoritative reference.
+the flake pins. CI runs every job inside the flake's lean `.#ci` shell
+(`nix develop .#ci`), so `flake.lock` is the authoritative pin for the
+toolchain — `picotool` and all — that the build is checked against.
 
 ## Day-to-day workflow
 
@@ -113,7 +114,8 @@ target/thumbv8m.main-none-eabihf/release/ezal-firmware
 ```
 
 (That's an ELF, not a UF2. probe-rs flashes the elf directly; picotool can
-take an elf with `-t elf`.)
+take an elf with `-t elf`. To get a drag-and-drop `.uf2` instead, see
+[Build a UF2 for BOOTSEL flashing](#build-a-uf2-for-bootsel-flashing) below.)
 
 ### Flash and watch logs
 
@@ -137,6 +139,39 @@ You should see something like:
 ```
 
 …and the onboard LED blinking.
+
+### Build a UF2 for BOOTSEL flashing
+
+If you don't have a debug probe, you can flash over the Pico 2's built-in
+USB bootloader instead. Build a UF2 image:
+
+```bash
+./scripts/build-uf2.sh                 # release; --debug for a debug build
+```
+
+The UF2 lands next to the elf:
+
+```
+target/thumbv8m.main-none-eabihf/release/ezal-firmware.uf2
+```
+
+Then flash it without any extra tooling on the target machine:
+
+1. Hold the **BOOTSEL** button while plugging the Pico 2 into USB.
+2. It mounts as a mass-storage drive named `RP2350`.
+3. Copy the `.uf2` onto that drive. The chip flashes it and reboots into
+   the new firmware automatically.
+
+The script just runs `cargo build` and then `picotool uf2 convert` on the
+resulting elf, tagging the image with the `rp2350-arm-s` family (the
+correct one for our secure-Arm build) and verifying every block lands in
+valid RP2350 flash. `picotool` comes from the dev shell.
+
+The trade-off versus `cargo run` is that there's no probe attached, so you
+won't see the live defmt log stream — the firmware still emits it over RTT,
+there's just nothing reading it. If you *do* have the Pico 2 attached over
+USB in BOOTSEL mode, `picotool load <file>.uf2` flashes the same image
+straight from the command line.
 
 ### Run the host tests
 

@@ -119,11 +119,33 @@
             echo "  python:   $(python3 --version 2>/dev/null || echo 'missing') + schemdraw"
             echo
             echo "  Build & flash : cargo run   -p ezal-firmware --release"
+            echo "  Build UF2     : ./scripts/build-uf2.sh   (BOOTSEL flashing)"
             echo "  Host tests    : ./scripts/test-host.sh"
             echo "  Re-render SVG : python3 design/circuit.py"
             echo "─────────────────────────────────────────────────────"
             echo
           '';
+        };
+
+        # ── Lean shell for CI ───────────────────────────────────────
+        # Everything the GitHub Actions workflow needs and nothing it
+        # doesn't: the pinned Rust toolchain (cargo/clippy/rustfmt plus
+        # the cross-compile target, all read from rust-toolchain.toml)
+        # and picotool for the UF2 packaging step. mkShell pulls in a
+        # host C toolchain automatically, which is all the host-side
+        # ezal-core tests need to link.
+        #
+        # Deliberately omits probe-rs, flip-link, and the
+        # python/matplotlib stack from the default shell: CI never
+        # flashes hardware or re-renders the schematic, and that closure
+        # would slow every run. `ci.yml` loads this with
+        # `nix develop .#ci`, so flake.lock is the single source of
+        # truth for CI's toolchain too.
+        devShells.ci = pkgs.mkShell {
+          packages = [
+            rustToolchain
+            pkgs.picotool
+          ];
         };
       });
 }
