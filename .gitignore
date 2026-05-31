@@ -23,6 +23,9 @@
 result
 result-*
 
+# AI tooling
+.antigravitycli/
+
 # OS junk
 .DS_Store
 Thumbs.db
