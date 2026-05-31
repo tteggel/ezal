@@ -251,10 +251,21 @@ hunting a startup-time issue.
   GND, and that probe-rs can see it: `probe-rs list`.
 - **`error: failed to find ROM resource for RP235x`** → update probe-rs.
   Older versions don't know about the RP2350 chip ID.
-- **Chip won't boot at all** → the `IMAGE_DEF` block is probably missing
-  from your binary. The macro in `src/main.rs` only takes effect with
-  the `#[link_section = ".start_block"] #[used] pub static` attributes
-  intact; don't trim them as "unused".
+- **Chip won't boot / drops back to BOOTSEL** → the boot ROM didn't find a
+  valid `IMAGE_DEF` block in the first 4 KiB of flash. Two causes: the block
+  is *missing* (the `imagedef-secure-exe` feature must be on, and a custom
+  `static` would need `#[link_section = ".start_block"] #[used]`), or — the
+  subtler one — it's *misplaced*. cortex-m-rt's `link.x` doesn't position
+  `.start_block`, so the `SECTIONS … INSERT AFTER` block in `memory.x` is
+  what pins it after the vector table; without it the linker dumps it at the
+  end of the image, out of the boot ROM's reach. Verify placement with:
+
+  ```bash
+  cargo objdump -p ezal-firmware --release -- -h | grep start_block
+  ```
+
+  The address should be just past `.vector_table` (≈ `0x10000114`), not
+  several KiB in.
 - **Stack overflow** → either bump the stack in `memory.x` *carefully*,
   or enable `flip-link` so the next overflow traps loudly.
 

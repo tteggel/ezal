@@ -84,9 +84,12 @@ use ezal_core::morse;
 //
 // We don't need to write the static manually: `embassy-rp` does it for us
 // when the `imagedef-secure-exe` feature is enabled (see the workspace
-// `Cargo.toml`). It places a `pub static IMAGE_DEF: ImageDef` in the
-// `.start_block` linker section, which cortex-m-rt's link script puts at
-// the very start of flash. If you ever need a *non-secure* or *signed*
+// `Cargo.toml`). It places a `static IMAGE_DEF: ImageDef` in the
+// `.start_block` linker section. Crucially, cortex-m-rt's `link.x` does
+// *not* place `.start_block` — our `memory.x` does, pinning it into the
+// first 4 KiB of flash where the boot ROM scans for it. (Without that the
+// section lands at the end of the image and the chip won't boot — see the
+// long note in `memory.x`.) If you ever need a *non-secure* or *signed*
 // image, swap the feature flag for `imagedef-nonsecure-exe` (or disable
 // embassy's auto-insert with `imagedef-none` and provide your own static).
 //
