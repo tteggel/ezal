@@ -339,9 +339,11 @@ def feedback_divider(d: schemdraw.Drawing, idx: int, ads_pin_xy: tuple,
                        │
                       GND
 
-    The 100 nF cap in parallel with R_lo gives a ≈ 350 Hz low-pass
-    against 50/60 Hz pickup and switching noise; the corner is well
-    above any realistic mechanical bandwidth of the rotator.
+    The 100 nF cap in parallel with R_lo gives a ≈ 35 Hz low-pass
+    with the ~45 K Thévenin impedance, rejecting 50/60 Hz pickup and
+    switching noise; the corner is still well above any realistic
+    mechanical bandwidth of the rotator. (See the module docstring and
+    docs/HARDWARE.md, which derive the same ~35 Hz figure.)
     """
     ax, ay = ads_pin_xy
     tap_y = ay

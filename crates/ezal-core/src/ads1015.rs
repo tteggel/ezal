@@ -201,6 +201,15 @@ pub const fn config_matches(written: u16, read_back: u16) -> bool {
 /// POST scratch pattern for [`Register::LoThresh`]. The two scratch patterns
 /// are bitwise complements, so a stuck-high or stuck-low data line corrupts
 /// at least one of them — a stronger link check than a bare address ACK.
+///
+/// The low nibble is load-bearing: these patterns exercise all 16 bits and the
+/// POST requires an *exact* read-back, which works only because the ADS1015's
+/// threshold registers store all 16 bits — the comparator ignores the bottom 4
+/// when comparing against a conversion, but the register still holds them.
+/// Their reset values (0x8000 / 0x7FFF) have a live low nibble, which is what
+/// confirms the register is full-width and not 12-bit-left-justified like
+/// [`Register::Conversion`]. A part that masked the low 4 bits would instead
+/// need top-nibble-only patterns (e.g. 0x5AA0 / 0xA550).
 pub const SCRATCH_LO: u16 = 0x5AA5;
 
 /// POST scratch pattern for [`Register::HiThresh`]; the complement of
