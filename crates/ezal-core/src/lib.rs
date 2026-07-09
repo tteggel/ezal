@@ -18,6 +18,8 @@
 //! * [`wifi`] — validation of the station-mode WiFi credentials that
 //!   `build.rs` bakes in from `.env`. Pure predicates the firmware's WiFi
 //!   POST checks before it powers the radio.
+//! * [`web`] — the embedded dashboard's static UI and tiny WebSocket wire
+//!   protocol: direction commands in, raw ADC millivolts out.
 //!
 //! ## What goes in this crate
 //!
@@ -48,4 +50,5 @@
 #![warn(clippy::all)]
 
 pub mod ads1015;
+pub mod web;
 pub mod wifi;

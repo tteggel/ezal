@@ -68,6 +68,8 @@ panic-probe      = { version = "1.0", features = ["print-defmt"] }
 embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread"] }
 embassy-rp       = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt", "imagedef-secure-exe"] }
 embassy-time     = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-net      = { version = "0.9.1", features = ["defmt", "dhcpv4", "tcp"] }
+embassy-sync     = "0.8"
 
 # ── WiFi: the Pico 2 W's on-module CYW43439 radio ────────────────────────
 # `cyw43` is the pure-ish driver for the Infineon CYW43439; `cyw43-pio`
@@ -80,6 +82,12 @@ embassy-time     = { version = "0.5", features = ["defmt", "defmt-timestamp-upti
 cyw43       = { version = "0.7.0", features = ["defmt"] }
 cyw43-pio   = { version = "0.10.0", features = ["defmt"] }
 static_cell = "2.1"
+
+# ── Embedded web UI ──────────────────────────────────────────────────────
+# `picoserve` is a small no_std HTTP/WebSocket server designed for Embassy
+# network stacks. It stays in firmware; ezal-core only defines the tiny wire
+# protocol and static UI payload.
+picoserve = { version = "0.18.0", default-features = false, features = ["embassy", "ws", "defmt"] }
 
 # ────────────────────────────────────────────────────────────────────────
 # Profiles

@@ -10,12 +10,10 @@
 //!  2. **ADS1015** — initialises the I²C bus to the position-feedback ADC and
 //!     round-trips its registers.
 //!
-//! If both pass it then periodically reads the two G-5500 feedback channels
-//! (A0, A1) and logs their voltages, while the CYW43439 driver task keeps the
-//! WiFi link up concurrently in the background. The four direction GPIOs are
-//! still claimed and held low, so nothing moves: this is a *sensing* bring-up,
-//! the counterpart to the earlier direction-sweep that proved the *drive*
-//! side.
+//! If both pass it then starts the web dashboard, periodically publishes the
+//! two G-5500 feedback channels (A0, A1), and applies leased direction commands
+//! from the dashboard while the CYW43439 driver task keeps the WiFi link up in
+//! the background.
 //!
 //! Why this exists:
 //!
@@ -26,9 +24,9 @@
 //!    that stores configuration and returns conversions", so a mis-wired or
 //!    wrong part fails loudly at boot instead of silently feeding garbage
 //!    into the eventual position loop.
-//!  * The periodic readout lets you turn the rotator by hand (or with its own
-//!    controller) and watch the divided feedback voltage track on the probe —
-//!    the raw material for the software calibration in `docs/HARDWARE.md`.
+//!  * The periodic telemetry lets you turn the rotator by hand (or drive it
+//!    from the dashboard) and watch the divided feedback voltage track — the
+//!    raw material for the software calibration in `docs/HARDWARE.md`.
 //!
 //! The eventual G-5500 rotator firmware will replace this `main` with a task
 //! graph (USB-serial in, four direction-switch GPIOs, the ADS1015 feedback
@@ -44,9 +42,9 @@
 //!      RAM, sets up the stack, and calls into Rust.
 //!   4. `#[embassy_executor::main]` builds a single-thread async executor and
 //!      runs our `main` future on it.
-//!   5. `main` initialises the HAL, claims the direction pins (held low),
-//!      POSTs the WiFi (join) and then the ADS1015, and finally loops reading
-//!      the feedback channels while the radio task runs concurrently.
+//!   5. `main` initialises the HAL, claims the direction pins, POSTs the WiFi
+//!      (join) and then the ADS1015, and finally starts the network, feedback,
+//!      output, and web-serving tasks.
 //!
 //! ## How to flash
 //!
@@ -70,24 +68,33 @@
 //             (which #[embassy_executor::main] wraps).
 #![no_std]
 #![no_main]
+#![recursion_limit = "256"]
 
 // ─── modules ────────────────────────────────────────────────────────────
 mod ads1015;
+mod web;
 mod wifi;
 
 // ─── imports ────────────────────────────────────────────────────────────
+use cyw43::NetDriver;
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
+use embassy_net::StackResources;
 use embassy_rp::bind_interrupts;
+use embassy_rp::clocks::RoscRng;
 use embassy_rp::dma;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::i2c::{self, I2c, InterruptHandler as I2cInterruptHandler};
 use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
-use embassy_time::{Duration, Timer};
+use embassy_time::{with_timeout, Duration, Timer};
+use static_cell::StaticCell;
 
 use ads1015::Ads1015;
 use ezal_core::ads1015::Mux;
+use ezal_core::web::{
+    AzimuthDirection, Command, DriveCommand, ElevationDirection, PositionTelemetry,
+};
 use ezal_core::wifi::Credentials;
 use wifi::Wifi;
 
@@ -151,10 +158,104 @@ bind_interrupts!(struct Irqs {
 const WIFI_SSID: &str = env!("EZAL_WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("EZAL_WIFI_PASSWORD");
 
-/// How often to sample and log the feedback channels once POST has passed.
+/// How often to sample and publish the feedback channels once POST has passed.
 /// The rotator's mechanical bandwidth is well under 1 Hz, so 2 Hz here is
-/// plenty for watching a hand-turned axis on the probe.
-const SAMPLE_PERIOD: Duration = Duration::from_millis(500);
+/// plenty for the dashboard.
+const SAMPLE_PERIOD: Duration = Duration::from_millis(ezal_core::web::TELEMETRY_PERIOD_MS);
+
+/// Maximum lifetime of an unrefreshed drive-state command.
+const DIRECTION_TIMEOUT: Duration = Duration::from_millis(ezal_core::web::COMMAND_TIMEOUT_MS);
+
+/// Maximum time to wait for DHCP before failing visibly instead of masking the
+/// rest of bring-up behind an unbounded network wait.
+const DHCP_TIMEOUT_SECS: u64 = 30;
+const DHCP_TIMEOUT: Duration = Duration::from_secs(DHCP_TIMEOUT_SECS);
+
+/// The four GPIO outputs that drive the G-5500 direction switch transistors.
+struct DirectionOutputs {
+    cw: Output<'static>,
+    ccw: Output<'static>,
+    up: Output<'static>,
+    down: Output<'static>,
+}
+
+impl DirectionOutputs {
+    fn apply(&mut self, command: Command) {
+        match command {
+            Command::Drive(drive) => self.apply_drive(drive),
+            Command::Stop => self.stop(),
+        }
+    }
+
+    fn apply_drive(&mut self, drive: DriveCommand) {
+        self.cw.set_low();
+        self.ccw.set_low();
+        self.up.set_low();
+        self.down.set_low();
+
+        match drive.azimuth {
+            Some(AzimuthDirection::Clockwise) => self.cw.set_high(),
+            Some(AzimuthDirection::CounterClockwise) => self.ccw.set_high(),
+            None => {}
+        }
+
+        match drive.elevation {
+            Some(ElevationDirection::Up) => self.up.set_high(),
+            Some(ElevationDirection::Down) => self.down.set_high(),
+            None => {}
+        }
+    }
+
+    fn stop(&mut self) {
+        self.cw.set_low();
+        self.ccw.set_low();
+        self.up.set_low();
+        self.down.set_low();
+    }
+}
+
+/// Owns and applies direction GPIO commands. Movement is lease-based: the
+/// browser repeats the active two-axis drive state while buttons are held, and
+/// this task drops back to all-low if that refresh stream stops.
+#[embassy_executor::task]
+async fn direction_task(mut outputs: DirectionOutputs, state: &'static web::WebState) -> ! {
+    outputs.stop();
+
+    loop {
+        match with_timeout(DIRECTION_TIMEOUT, state.wait_command()).await {
+            Ok(command) => {
+                outputs.apply(command);
+                state.record_applied_command(command);
+            }
+            Err(_) => {
+                outputs.stop();
+                state.record_applied_command(Command::Stop);
+            }
+        }
+    }
+}
+
+/// Owns the ADS1015 and publishes the latest raw millivolt readings.
+#[embassy_executor::task]
+async fn feedback_task(mut adc: Ads1015<'static>, state: &'static web::WebState) -> ! {
+    loop {
+        match (
+            adc.read_channel_mv(Mux::Ain0).await,
+            adc.read_channel_mv(Mux::Ain1).await,
+        ) {
+            (Ok(a0_mv), Ok(a1_mv)) => state.store_position(PositionTelemetry { a0_mv, a1_mv }),
+            _ => warn!("feedback: I²C read failed"),
+        }
+
+        Timer::after(SAMPLE_PERIOD).await;
+    }
+}
+
+/// Drives the Embassy TCP/IP stack.
+#[embassy_executor::task]
+async fn net_task(mut runner: embassy_net::Runner<'static, NetDriver<'static>>) -> ! {
+    runner.run().await
+}
 
 // ─── entry point ────────────────────────────────────────────────────────
 
@@ -166,22 +267,20 @@ async fn main(spawner: Spawner) {
     // semantics — you cannot accidentally talk to a pin from two places.
     let p = embassy_rp::init(Default::default());
 
-    // Direction-switch outputs, held low so we never assert a direction (no
-    // motion at boot, and none during this sensing bring-up). They're still
-    // claimed here so the pins are owned and the 2N3904 switches stay off; the
-    // walking direction *sweep* that proved the drive side now lives in git
-    // history. Ordered to match the schematic:
+    // Direction-switch outputs, held low until the dashboard begins sending
+    // leased drive states. Ordered to match the schematic:
     //
     //   GP10 → DIN 2  CW  (right)   D1
     //   GP11 → DIN 4  CCW (left)    D2
     //   GP20 → DIN 3  UP            D3
     //   GP21 → DIN 5  DOWN          D4
-    let _directions = [
-        Output::new(p.PIN_10, Level::Low),
-        Output::new(p.PIN_11, Level::Low),
-        Output::new(p.PIN_20, Level::Low),
-        Output::new(p.PIN_21, Level::Low),
-    ];
+    let directions = DirectionOutputs {
+        cw: Output::new(p.PIN_10, Level::Low),
+        ccw: Output::new(p.PIN_11, Level::Low),
+        up: Output::new(p.PIN_20, Level::Low),
+        down: Output::new(p.PIN_21, Level::Low),
+    };
+    spawner.must_spawn(direction_task(directions, &web::STATE));
 
     // ─── WiFi: bring up the CYW43439 and join the AP (station mode) ───
     // The Pico 2 W's on-module radio. `Wifi::init` powers it and spawns its
@@ -220,6 +319,30 @@ async fn main(spawner: Spawner) {
         }
     }
 
+    // ─── TCP/IP: run DHCP over the CYW43439 data plane ──────────────────
+    static NET_RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
+    let net_config = embassy_net::Config::dhcpv4(Default::default());
+    let mut rng = RoscRng;
+    let seed = rng.next_u64();
+    let (stack, runner) = embassy_net::new(
+        wifi.into_net_device(),
+        net_config,
+        NET_RESOURCES.init(StackResources::new()),
+        seed,
+    );
+    spawner.must_spawn(net_task(runner));
+
+    info!("ezal net: waiting for DHCP");
+    match with_timeout(DHCP_TIMEOUT, stack.wait_config_up()).await {
+        Ok(()) => info!("ezal net: DHCP OK"),
+        Err(_) => {
+            error!("ezal net: DHCP timed out after {=u64}s", DHCP_TIMEOUT_SECS);
+            loop {
+                Timer::after(Duration::from_secs(1)).await;
+            }
+        }
+    }
+
     // I²C0 to the ADS1015: GP5 = SCL, GP4 = SDA (the schematic's fixed
     // feedback pins), with 4.7 K pull-ups to 3.3 V on the interface board.
     // Default config is 100 kHz standard mode, which the ADS1015 handles
@@ -232,10 +355,16 @@ async fn main(spawner: Spawner) {
         ezal_core::ads1015::I2C_ADDR
     );
     match adc.post().await {
-        Ok(r) => info!(
-            "ADS1015 POST OK: config=0x{=u16:x}, A0={=i32} mV, A1={=i32} mV",
-            r.config, r.a0_mv, r.a1_mv
-        ),
+        Ok(r) => {
+            web::STATE.store_position(PositionTelemetry {
+                a0_mv: r.a0_mv,
+                a1_mv: r.a1_mv,
+            });
+            info!(
+                "ADS1015 POST OK: config=0x{=u16:x}, A0={=i32} mV, A1={=i32} mV",
+                r.config, r.a0_mv, r.a1_mv
+            );
+        }
         Err(e) => {
             // A failed POST means the feedback path is untrustworthy, so we do
             // not fall through into the readout loop. Report it and idle; the
@@ -247,20 +376,8 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    // POST passed. Periodically read both feedback channels and log the
-    // divided voltages. `Timer::after(..).await` is non-blocking: while we
-    // wait the executor is free to run other tasks (it has none yet, but the
-    // shape is what the rotator controller will need).
-    loop {
-        match (
-            adc.read_channel_mv(Mux::Ain0).await,
-            adc.read_channel_mv(Mux::Ain1).await,
-        ) {
-            (Ok(a0_mv), Ok(a1_mv)) => {
-                info!("feedback: A0={=i32} mV, A1={=i32} mV", a0_mv, a1_mv)
-            }
-            _ => warn!("feedback: I²C read failed"),
-        }
-        Timer::after(SAMPLE_PERIOD).await;
-    }
+    spawner.must_spawn(feedback_task(adc, &web::STATE));
+
+    info!("ezal web: listening on http://<dhcp-address>/");
+    web::serve(spawner, stack).await;
 }

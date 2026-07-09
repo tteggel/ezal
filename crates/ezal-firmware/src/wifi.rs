@@ -42,24 +42,32 @@
 //! which is what "connect to an AP" means at the link layer.
 
 use cyw43::aligned_bytes;
-use cyw43::{Control, JoinError, JoinOptions, PowerManagementMode};
+use cyw43::{Control, JoinError, JoinOptions, NetDriver, PowerManagementMode};
 use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
-use defmt::Format;
+use defmt::{warn, Format};
 use embassy_executor::Spawner;
 use embassy_rp::dma::Channel;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{PIN_23, PIN_24, PIN_25, PIN_29, PIO0};
 use embassy_rp::pio::Pio;
 use embassy_rp::Peri;
+use embassy_time::{with_timeout, Duration, Timer};
 use static_cell::StaticCell;
 
 use ezal_core::wifi::{Credentials, Security};
 
-/// The power-management profile we run the radio in. `PowerSave` lets the chip
-/// nap between beacons — the right default for a mostly-idle link. When the
-/// tracker starts streaming az/el targets and latency matters, this is the
-/// knob to revisit (e.g. `PowerManagementMode::None`).
-const POWER_MODE: PowerManagementMode = PowerManagementMode::PowerSave;
+/// The power-management profile we run the radio in. The dashboard sends
+/// direction leases over a WebSocket, so command latency matters more than
+/// squeezing out the lowest idle power.
+const POWER_MODE: PowerManagementMode = PowerManagementMode::Performance;
+
+/// Maximum time to wait for the CYW43 association event before treating the
+/// attempt as stale. `cyw43::Control::join` has no built-in timeout, so a
+/// missed event can otherwise pin boot forever.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Number of association attempts before POST fails.
+const JOIN_ATTEMPTS: usize = 3;
 
 /// The CYW43439's long-lived driver task: it owns the PIO/DMA gSPI bus and
 /// pumps the chip's events for the life of the program. Spawned once by
@@ -80,6 +88,7 @@ async fn cyw43_task(
 /// Built by [`Wifi::init`]; [`Wifi::post`] then joins the configured AP.
 pub struct Wifi<'d> {
     control: Control<'d>,
+    net_device: NetDriver<'d>,
 }
 
 /// What a successful [`Wifi::post`] established, for logging.
@@ -101,6 +110,10 @@ pub enum PostError {
     /// The credentials were well-formed but the join failed — wrong password,
     /// AP out of range, or no AP with that SSID. Carries the driver's reason.
     Join(JoinError),
+    /// The driver did not report association success or failure before the
+    /// timeout. Usually means the chip/AP state got wedged across a debugger
+    /// reset, or the expected join event was missed.
+    JoinTimeout,
 }
 
 impl Wifi<'static> {
@@ -165,10 +178,9 @@ impl Wifi<'static> {
         static STATE: StaticCell<cyw43::State> = StaticCell::new();
         let state = STATE.init(cyw43::State::new());
 
-        // `_net_device` is the data-plane (ethernet) handle an IP stack would
-        // consume. We only exercise the control plane (join) for now, so we
-        // drop it; wiring up `embassy-net` later means keeping it instead.
-        let (_net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
+        // `net_device` is the CYW43439 data-plane handle consumed by
+        // `embassy-net` after the association POST below has proved the link.
+        let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
         spawner.must_spawn(cyw43_task(runner));
 
         // Load the Country Locale Matrix (regulatory channel/power limits),
@@ -177,7 +189,10 @@ impl Wifi<'static> {
         control.init(clm).await;
         control.set_power_management(POWER_MODE).await;
 
-        Wifi { control }
+        Wifi {
+            control,
+            net_device,
+        }
     }
 
     /// Run the WiFi power-on self-test: validate the baked-in credentials,
@@ -195,17 +210,38 @@ impl Wifi<'static> {
 
         // 2. Join. An empty password means an open network; otherwise the
         //    default WPA2/WPA3 handshake with the passphrase.
-        let options = match security {
-            Security::Open => JoinOptions::new_open(),
-            Security::Protected => JoinOptions::new(creds.password.as_bytes()),
-        };
-        self.control
-            .join(creds.ssid, options)
-            .await
-            .map_err(PostError::Join)?;
+        for attempt in 1..=JOIN_ATTEMPTS {
+            self.control.leave().await;
 
-        Ok(PostReport {
-            protected: matches!(security, Security::Protected),
-        })
+            let options = match security {
+                Security::Open => JoinOptions::new_open(),
+                Security::Protected => JoinOptions::new(creds.password.as_bytes()),
+            };
+            match with_timeout(JOIN_TIMEOUT, self.control.join(creds.ssid, options)).await {
+                Ok(Ok(())) => {
+                    return Ok(PostReport {
+                        protected: matches!(security, Security::Protected),
+                    });
+                }
+                Ok(Err(error)) => return Err(PostError::Join(error)),
+                Err(_) if attempt < JOIN_ATTEMPTS => {
+                    warn!(
+                        "WiFi join timed out; retrying ({=usize}/{=usize})",
+                        attempt, JOIN_ATTEMPTS
+                    );
+                    self.control.leave().await;
+                    Timer::after(Duration::from_millis(500)).await;
+                }
+                Err(_) => return Err(PostError::JoinTimeout),
+            }
+        }
+
+        unreachable!()
+    }
+
+    /// Consume the WiFi wrapper and return the data-plane device for
+    /// `embassy-net`.
+    pub fn into_net_device(self) -> NetDriver<'static> {
+        self.net_device
     }
 }
