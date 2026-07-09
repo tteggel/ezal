@@ -69,6 +69,18 @@ embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thr
 embassy-rp       = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt", "imagedef-secure-exe"] }
 embassy-time     = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime"] }
 
+# ── WiFi: the Pico 2 W's on-module CYW43439 radio ────────────────────────
+# `cyw43` is the pure-ish driver for the Infineon CYW43439; `cyw43-pio`
+# bit-bangs its gSPI bus on a PIO state machine (the chip has no dedicated
+# SPI pins for it). `cyw43-pio` links against `embassy-rp`, so its version
+# tracks embassy-rp's — 0.10 here; bump the two together. `static_cell`
+# hands out the single `'static` `cyw43::State` the driver's background task
+# borrows for the life of the program. `defmt` on both mirrors the rest of
+# the stack so join errors and bus traces decode on the probe.
+cyw43       = { version = "0.7.0", features = ["defmt"] }
+cyw43-pio   = { version = "0.10.0", features = ["defmt"] }
+static_cell = "2.1"
+
 # ────────────────────────────────────────────────────────────────────────
 # Profiles
 # ────────────────────────────────────────────────────────────────────────

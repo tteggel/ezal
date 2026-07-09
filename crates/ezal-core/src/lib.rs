@@ -15,6 +15,9 @@
 //!   ADC: Config-register packing, conversion-result decoding, and the
 //!   power-on self-test predicates. The bus transactions that use it live in
 //!   the firmware crate.
+//! * [`wifi`] — validation of the station-mode WiFi credentials that
+//!   `build.rs` bakes in from `.env`. Pure predicates the firmware's WiFi
+//!   POST checks before it powers the radio.
 //!
 //! ## What goes in this crate
 //!
@@ -45,3 +48,4 @@
 #![warn(clippy::all)]
 
 pub mod ads1015;
+pub mod wifi;

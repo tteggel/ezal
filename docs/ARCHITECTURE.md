@@ -161,9 +161,12 @@ To keep the project tractable, the following are explicitly out of scope
 for the early phases:
 
 - TLE propagation on the chip (the host does the orbit math).
-- Web UI / WiFi (the Pico 2 W variant is supported but not the target;
-  we use the wired Pico 2).
-- OTA firmware updates.
+- Network layers *above* the WiFi link. The firmware now brings up the
+  Pico 2 W's radio and joins an access point in station mode (see
+  [`wifi.rs`](../crates/ezal-firmware/src/wifi.rs)), so the target board is
+  the **W** — but an IP stack (DHCP/TCP over `embassy-net`), a web UI, and
+  OTA updates all remain out of scope for now. The join is the foundation
+  those would build on.
 - Closed-loop control with encoder feedback finer than the G-5500's
   built-in pot.
 

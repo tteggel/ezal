@@ -40,16 +40,31 @@ You need:
 - *optionally* the [interface board](../design/circuit.svg), if you want to
   watch the D1–D4 indicator LEDs walk without a probe.
 
-### A note on the Pico 2 W
+### The board is the Pico 2 W
 
-The bring-up sweep uses ordinary GPIOs (GP10 / GP11 / GP20 / GP21), so it
-runs identically on a Pico 2 or a Pico 2 **W** — nothing here touches the
-onboard LED.
+The firmware now brings up the Pico 2 W's onboard **CYW43439** radio at boot
+and joins WiFi in station mode (see
+[`wifi.rs`](../crates/ezal-firmware/src/wifi.rs) and
+[WiFi credentials](#wifi-credentials) below), so the target is specifically
+the **W** variant. On a plain (non-W) Pico 2 the WiFi POST has no radio to
+talk to and the bring-up stalls there.
 
-That LED is worth flagging for later, though: on the **W** it is wired to
-the CYW43439 wireless co-processor rather than to GPIO 25, so a future
-on-board *status* indicator will need the CYW43 stack brought up first.
-Track that in [the roadmap](../README.md#roadmap).
+The CYW43439 hangs off four RP2350 GPIOs that are *not* brought out to the
+module's header — they're dedicated to the radio — plus (on the W) the
+onboard LED, which is wired to the CYW43439's own GPIO 0 rather than to
+RP2350 GPIO 25. None of these collide with the direction, I²C, or debug pins:
+
+| signal        | RP2350 GPIO | role                                  |
+|---------------|------------:|---------------------------------------|
+| WL_ON (`pwr`) |     23      | radio power-on / regulator enable     |
+| gSPI CS       |     25      | chip-select                           |
+| gSPI DIO      |     24      | bidirectional data                    |
+| gSPI CLK      |     29      | clock                                 |
+
+The CYW43439's bus is a "gSPI" link the RP2350 has no dedicated peripheral
+for, so the firmware emulates it on a **PIO** state machine (`PIO0`) fed by
+one DMA channel — that's what the `PIO0_IRQ_0` / `DMA_IRQ_0` bindings and the
+`cyw43-pio` dependency are for.
 
 ### Pinout reference (for the curious)
 
@@ -59,7 +74,7 @@ Track that in [the roadmap](../README.md#roadmap).
 | direction CCW   |     15     |     11      | → G-5500 DIN 4, LED D2       |
 | direction up    |     26     |     20      | → G-5500 DIN 3, LED D3       |
 | direction down  |     27     |     21      | → G-5500 DIN 5, LED D4       |
-| onboard LED     |     —      |     25      | active high; unused for now  |
+| CYW43 gSPI CS   |     —      |     25      | radio chip-select on the W — see above |
 | SWCLK           |     —      |      —      | dedicated debug pin          |
 | SWDIO           |     —      |      —      | dedicated debug pin          |
 | GND             | many       |      —      |                              |
@@ -71,6 +86,24 @@ feedback pins (GP4 = SDA, GP5 = SCL, to the ADS1015 at 0x48) are driven by
 the firmware's ADS1015 driver
 ([`crates/ezal-firmware/src/ads1015.rs`](../crates/ezal-firmware/src/ads1015.rs)),
 which self-tests (POSTs) the ADC at boot and then samples both channels.
+
+### WiFi credentials
+
+The radio joins your access point in **station mode**. The Pico has no
+filesystem to read credentials from at runtime, so they are baked into the
+firmware image at *build* time: copy [`.env.example`](../.env.example) to
+`.env` at the repo root and set `EZAL_WIFI_SSID` / `EZAL_WIFI_PASSWORD`.
+`crates/ezal-firmware/build.rs` reads that file and the WiFi POST joins the
+network at boot (an empty password selects an open network). `.env` is
+git-ignored, but note the credentials do end up in the flashed `.elf`/`.uf2`
+in the clear — there's no secure element on the board.
+
+The CYW43439 also needs three firmware blobs uploaded at every boot
+(MAC firmware, regulatory table, board NVRAM). These are vendored in-tree
+under [`crates/ezal-firmware/cyw43-firmware/`](../crates/ezal-firmware/cyw43-firmware/)
+and `include_bytes!`d into the image, so there's nothing extra to flash — the
+same single `.elf`/`.uf2` is self-contained. See that directory's README for
+their provenance and licence.
 
 ## Future: the G-5500 rotator
 

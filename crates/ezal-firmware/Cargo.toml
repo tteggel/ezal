@@ -47,3 +47,9 @@ panic-probe      = { workspace = true }
 embassy-executor = { workspace = true }
 embassy-rp       = { workspace = true }
 embassy-time     = { workspace = true }
+
+# WiFi (Pico 2 W CYW43439). See the workspace manifest for why each is here
+# and why cyw43-pio's version is kept in lock-step with embassy-rp.
+cyw43            = { workspace = true }
+cyw43-pio        = { workspace = true }
+static_cell      = { workspace = true }

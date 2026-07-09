@@ -70,6 +70,25 @@ Then unplug and replug the probe.
 On NixOS, add `services.udev.packages = [ pkgs.probe-rs-tools ];` to
 your system configuration instead and rebuild.
 
+### 4. WiFi credentials
+
+The firmware joins your WiFi in station mode, and — since the Pico has no
+filesystem — the SSID and password are baked in at build time. Copy the
+template and fill it in:
+
+```bash
+cp .env.example .env
+$EDITOR .env          # set EZAL_WIFI_SSID and EZAL_WIFI_PASSWORD
+```
+
+`.env` is git-ignored. `crates/ezal-firmware/build.rs` reads it at compile
+time (and the dev shell also exports it into your environment via direnv's
+`dotenv`, so a fresh `direnv allow` picks it up). Leave the password blank
+for an open network. Building *without* a `.env` still compiles — CI does
+exactly that — but the firmware's WiFi POST then fails at boot until the
+credentials are set. The CYW43439's own firmware blobs are vendored in-tree
+(`crates/ezal-firmware/cyw43-firmware/`), so there's nothing else to fetch.
+
 ### macOS / Windows
 
 macOS needs no extra setup beyond the steps above — probe-rs uses
@@ -134,17 +153,20 @@ This is the *one command you'll run most*. It:
 You should see something like:
 
 ```
-0.000123 INFO  ezal gpio-sweep: starting
-0.000456 INFO  sweep: GP10 CW high
-3.150789 INFO  sweep: GP11 CCW high
-6.301012 INFO  sweep: GP20 UP high
-9.451345 INFO  sweep: GP21 DOWN high
+0.000123 INFO  ezal wifi-bringup: joining "my-network" in STA mode
+2.310456 INFO  WiFi POST OK: joined "my-network" (secured)
+2.320789 INFO  ezal adc-bringup: POSTing ADS1015 at 0x48
+2.335012 INFO  ADS1015 POST OK: config=0xc583, A0=902 mV, A1=1974 mV
+2.835345 INFO  feedback: A0=903 mV, A1=1975 mV
+3.335678 INFO  feedback: A0=902 mV, A1=1974 mV
 ```
 
-…repeating forever. If you have built the interface board, the D1–D4
-indicator LEDs walk in sequence in step with those log lines; on a bare
-Pico 2 there is nothing external to see (the sweep drives GP10 / GP11 /
-GP20 / GP21, not the onboard LED).
+The two POSTs run once at boot (each a hard gate — a failure is logged and
+the firmware idles there), then the feedback line repeats twice a second
+while the CYW43439 driver task keeps the WiFi link up in the background. The
+four direction GPIOs are held low, so nothing moves and — unlike the earlier
+direction-sweep — the interface board's D1–D4 LEDs stay dark; this bring-up
+is about *sensing*, not driving.
 
 ### Build a UF2 for BOOTSEL flashing
 

@@ -3,10 +3,11 @@
 > A satellite-tracking antenna rotator controller, written in Rust for the
 > Raspberry Pi Pico 2.
 
-**Status: pre-alpha.** This is step one — a bring-up firmware that sweeps
-the four G-5500 direction GPIOs in sequence and exercises the toolchain end
-to end. The real tracking firmware is still to be written; see
-[Roadmap](#roadmap) below.
+**Status: pre-alpha.** This is early bring-up firmware: at boot it joins
+WiFi in station mode and self-tests the ADS1015 position-feedback ADC, then
+streams the feedback voltages — exercising the toolchain and the board's
+peripherals end to end. The real tracking firmware is still to be written;
+see [Roadmap](#roadmap) below.
 
 ## What this project will be
 
@@ -32,15 +33,22 @@ over-commented for educational purposes.
 ├── Cargo.toml                      # workspace manifest
 ├── rust-toolchain.toml             # pinned compiler version
 ├── flake.nix                       # pinned host-side toolchain (probe-rs, ...)
-├── .envrc                          # `use flake` — direnv auto-loads the shell
+├── .envrc                          # `use flake` + `.env` — direnv loads the shell
+├── .env.example                    # template for WiFi credentials (copy to .env)
 ├── .cargo/config.toml              # default target, linker flags, runner
 ├── crates/
 │   ├── ezal-core/                  # pure no_std logic, host-testable
-│   │   └── src/lib.rs             # (pure logic will live here)
+│   │   └── src/
+│   │       ├── ads1015.rs         # ADS1015 register model + POST predicates
+│   │       └── wifi.rs            # WiFi credential validation
 │   └── ezal-firmware/              # the on-chip application
-│       ├── build.rs
+│       ├── build.rs                # stages memory.x; bakes .env creds in
 │       ├── memory.x                # linker memory layout
-│       └── src/main.rs             # sweeps the direction GPIOs (GP10/11/20/21)
+│       ├── cyw43-firmware/         # vendored CYW43439 radio blobs
+│       └── src/
+│           ├── main.rs            # POSTs WiFi + ADS1015, then reads feedback
+│           ├── wifi.rs            # CYW43439 bring-up + STA-join POST
+│           └── ads1015.rs         # ADS1015 I²C driver + POST
 ├── docs/
 │   ├── ARCHITECTURE.md             # how the pieces fit together
 │   ├── HARDWARE.md                 # G-5500 wiring, debug probe, ...
@@ -71,7 +79,10 @@ direnv allow                        # one-time: load the dev shell
 # Run the host-side ezal-core tests. Should be green.
 ./scripts/test-host.sh
 
-# Build, flash, and stream defmt logs from a connected Pico 2.
+# One-time: set your WiFi credentials for the station-mode POST.
+cp .env.example .env && $EDITOR .env
+
+# Build, flash, and stream defmt logs from a connected Pico 2 W.
 cargo run -p ezal-firmware --release
 ```
 
@@ -88,11 +99,13 @@ onto the `RP2350` drive that appears. See
 [DEVELOPMENT.md](docs/DEVELOPMENT.md#build-a-uf2-for-bootsel-flashing) for
 the details.
 
-With the interface board built, the **D1–D4 indicator LEDs walk in
-sequence** — GP10 → GP11 → GP20 → GP21 — looping forever. Over a debug
-probe (`cargo run`) you'll also see each step logged (`sweep: GP10 CW
-high`, …). On a bare Pico 2 with no probe the firmware still runs; there is
-just nothing external to watch.
+Over a debug probe (`cargo run`) you'll see the two boot POSTs and then the
+feedback readout: the firmware joins WiFi, self-tests the ADS1015, and logs
+both G-5500 feedback channels twice a second (there's a sample in
+[DEVELOPMENT.md](docs/DEVELOPMENT.md#flash-and-watch-logs)). The four
+direction GPIOs are held low, so nothing moves and the interface board's
+D1–D4 LEDs stay dark — this is a *sensing* bring-up. On a bare Pico 2 W with
+no probe the firmware still runs; there's just nothing external to watch.
 
 ## Documentation
 
@@ -113,6 +126,12 @@ just nothing external to watch.
 | 4    | Deadband position controller (close the loop on-chip)    | planned  |
 | 5    | TLE-driven tracking (host-supplied az/el stream)         | planned  |
 | 6    | On-board TLE propagation (stand-alone tracking)          | maybe    |
+
+Alongside these steps, supporting infrastructure lands as it's needed: the
+ADS1015 position-feedback POST and the Pico 2 W **WiFi station-mode bring-up**
+(radio init + AP join, credentials from `.env`) are both in already. A
+network transport for az/el targets would build on that WiFi link — see
+[ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## License
 

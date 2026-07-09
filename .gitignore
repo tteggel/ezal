@@ -23,6 +23,12 @@
 result
 result-*
 
+# Secrets: WiFi credentials for STA mode live in .env, which build.rs bakes
+# into the firmware at compile time. Never commit it — the committed template
+# is .env.example. (`.env.example` is re-included so it stays tracked.)
+.env
+!.env.example
+
 # AI tooling
 .antigravitycli/
 
@@ -34,6 +40,10 @@ Thumbs.db
 *.uf2
 *.bin
 *.hex
+# …but the vendored CYW43439 radio firmware blobs ARE tracked — they're a
+# build input (`include_bytes!`d into the image), not a build artefact. See
+# crates/ezal-firmware/cyw43-firmware/README.md for their provenance.
+!crates/ezal-firmware/cyw43-firmware/*.bin
 
 # defmt log dumps
 *.defmt

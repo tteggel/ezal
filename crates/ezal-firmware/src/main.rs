@@ -1,11 +1,21 @@
-//! # ezal-firmware — `adc-bringup`
+//! # ezal-firmware — `wifi + adc bring-up`
 //!
-//! The project's position-feedback bring-up firmware. At boot it initialises
-//! the I²C bus to the ADS1015, runs a power-on self-test (POST) on it, and —
-//! if that passes — periodically reads the two G-5500 feedback channels (A0,
-//! A1) and logs their voltages. The four direction GPIOs are still claimed
-//! and held low, so nothing moves: this is a *sensing* bring-up, the
-//! counterpart to the earlier direction-sweep that proved the *drive* side.
+//! The project's bring-up firmware. At boot it runs two power-on self-tests
+//! (POSTs) in turn, each a hard gate — on failure it reports the reason and
+//! idles rather than limping on:
+//!
+//!  1. **WiFi** — powers the Pico 2 W's CYW43439 radio and joins, in station
+//!     (STA) mode, the access point whose SSID/password were baked in from
+//!     `.env` at build time (see `build.rs` and `wifi.rs`).
+//!  2. **ADS1015** — initialises the I²C bus to the position-feedback ADC and
+//!     round-trips its registers.
+//!
+//! If both pass it then periodically reads the two G-5500 feedback channels
+//! (A0, A1) and logs their voltages, while the CYW43439 driver task keeps the
+//! WiFi link up concurrently in the background. The four direction GPIOs are
+//! still claimed and held low, so nothing moves: this is a *sensing* bring-up,
+//! the counterpart to the earlier direction-sweep that proved the *drive*
+//! side.
 //!
 //! Why this exists:
 //!
@@ -34,9 +44,9 @@
 //!      RAM, sets up the stack, and calls into Rust.
 //!   4. `#[embassy_executor::main]` builds a single-thread async executor and
 //!      runs our `main` future on it.
-//!   5. `main` initialises the HAL, claims the direction pins (held low) and
-//!      the I²C bus, POSTs the ADS1015, then loops reading the feedback
-//!      channels.
+//!   5. `main` initialises the HAL, claims the direction pins (held low),
+//!      POSTs the WiFi (join) and then the ADS1015, and finally loops reading
+//!      the feedback channels while the radio task runs concurrently.
 //!
 //! ## How to flash
 //!
@@ -63,18 +73,23 @@
 
 // ─── modules ────────────────────────────────────────────────────────────
 mod ads1015;
+mod wifi;
 
 // ─── imports ────────────────────────────────────────────────────────────
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
+use embassy_rp::dma;
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::i2c::{self, I2c, InterruptHandler};
-use embassy_rp::peripherals::I2C0;
+use embassy_rp::i2c::{self, I2c, InterruptHandler as I2cInterruptHandler};
+use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0};
+use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
 use embassy_time::{Duration, Timer};
 
 use ads1015::Ads1015;
 use ezal_core::ads1015::Mux;
+use ezal_core::wifi::Credentials;
+use wifi::Wifi;
 
 // `use foo as _` keeps the crate linked in even though we never name any of
 // its items. These two carry essential runtime plumbing:
@@ -114,14 +129,27 @@ use panic_probe as _;
 
 // ─── interrupts ─────────────────────────────────────────────────────────
 //
-// The async I²C driver completes transfers from the I2C0 interrupt, so we
-// bind that vector to embassy-rp's handler. `bind_interrupts!` generates the
-// `Irqs` type we hand to `I2c::new_async` below.
+// Each async driver completes its transfers from an interrupt, so we bind the
+// vectors they use to embassy-rp's handlers. `bind_interrupts!` generates the
+// single `Irqs` type we hand to each `::new` below:
+//
+//   I2C0_IRQ    — the ADS1015 I²C bus.
+//   PIO0_IRQ_0  — the CYW43439's gSPI, emulated on PIO0 (see wifi.rs).
+//   DMA_IRQ_0   — the DMA channel that PIO gSPI streams through.
 bind_interrupts!(struct Irqs {
-    I2C0_IRQ => InterruptHandler<I2C0>;
+    I2C0_IRQ => I2cInterruptHandler<I2C0>;
+    PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
+    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
 });
 
 // ─── tunables ───────────────────────────────────────────────────────────
+
+/// Station-mode WiFi credentials, baked in from `.env` at build time by
+/// `build.rs` (there's no filesystem on the Pico to read them at runtime).
+/// They're empty until you copy `.env.example` to `.env` and fill it in; the
+/// WiFi POST validates them and fails loudly at boot if they're unusable.
+const WIFI_SSID: &str = env!("EZAL_WIFI_SSID");
+const WIFI_PASSWORD: &str = env!("EZAL_WIFI_PASSWORD");
 
 /// How often to sample and log the feedback channels once POST has passed.
 /// The rotator's mechanical bandwidth is well under 1 Hz, so 2 Hz here is
@@ -131,7 +159,7 @@ const SAMPLE_PERIOD: Duration = Duration::from_millis(500);
 // ─── entry point ────────────────────────────────────────────────────────
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     // `embassy_rp::init` consumes the global Peripherals singleton and hands
     // us a struct of every chip resource (`p.PIN_10`, `p.I2C0`, …). After
     // this point, peripheral ownership is tracked by Rust's normal move
@@ -154,6 +182,43 @@ async fn main(_spawner: Spawner) {
         Output::new(p.PIN_20, Level::Low),
         Output::new(p.PIN_21, Level::Low),
     ];
+
+    // ─── WiFi: bring up the CYW43439 and join the AP (station mode) ───
+    // The Pico 2 W's on-module radio. `Wifi::init` powers it and spawns its
+    // driver task; `wifi.post` joins the access point whose SSID/password were
+    // baked in from `.env` at build time. GP23/24/25/29, PIO0 and one DMA
+    // channel are wired to the CYW43439 on the module and clash with nothing
+    // else here. main owns `Irqs`, so it builds the two peripherals that
+    // consume interrupts — the PIO block and the DMA channel — and hands them
+    // over; the four radio pins go with them.
+    let creds = Credentials {
+        ssid: WIFI_SSID,
+        password: WIFI_PASSWORD,
+    };
+    let pio = Pio::new(p.PIO0, Irqs);
+    let dma = dma::Channel::new(p.DMA_CH0, Irqs);
+    let mut wifi = Wifi::init(spawner, pio, dma, p.PIN_23, p.PIN_25, p.PIN_24, p.PIN_29).await;
+
+    info!(
+        "ezal wifi-bringup: joining \"{=str}\" in STA mode",
+        WIFI_SSID
+    );
+    match wifi.post(&creds).await {
+        Ok(r) => info!(
+            "WiFi POST OK: joined \"{=str}\" ({=str})",
+            WIFI_SSID,
+            if r.protected { "secured" } else { "open" }
+        ),
+        Err(e) => {
+            // A failed join means the link is untrustworthy, so — as with the
+            // ADS1015 below — we do not fall through. Report and idle; the
+            // operator fixes `.env` (or the AP) and re-flashes.
+            error!("WiFi POST FAILED: {}", e);
+            loop {
+                Timer::after(Duration::from_secs(1)).await;
+            }
+        }
+    }
 
     // I²C0 to the ADS1015: GP5 = SCL, GP4 = SDA (the schematic's fixed
     // feedback pins), with 4.7 K pull-ups to 3.3 V on the interface board.
