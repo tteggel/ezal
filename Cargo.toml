@@ -5,7 +5,7 @@
 # The project is organised as a Cargo *workspace* with two member crates:
 #
 #   crates/ezal-core
-#     Pure, no_std Rust: morse encoding (today), eventually the satellite
+#     Pure, no_std Rust: eventually the satellite
 #     pointing math, G5500 control protocol, command parsers, etc. This crate
 #     has no hardware dependencies, so it can be unit-tested on the host with
 #     a plain `cargo test`.

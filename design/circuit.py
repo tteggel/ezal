@@ -80,8 +80,8 @@ DIRECTION_CHANNELS = [
     # (Pico pin label, G-5500 pin label, label for what this does)
     ("GP10", "pin 2", "CW  (right)"),
     ("GP11", "pin 4", "CCW (left)"),
-    ("GP12", "pin 3", "UP"),
-    ("GP13", "pin 5", "DOWN"),
+    ("GP20", "pin 3", "UP"),
+    ("GP21", "pin 5", "DOWN"),
 ]
 
 FEEDBACK_CHANNELS = [

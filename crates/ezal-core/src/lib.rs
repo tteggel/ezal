@@ -11,8 +11,10 @@
 //!
 //! ## Modules
 //!
-//! - [`morse`] — International Morse Code encoder. Used by the "hello LED"
-//!   firmware demo to blink "HELLO WORLD" on the onboard LED.
+//! * [`ads1015`] — the pure register model for the ADS1015 position-feedback
+//!   ADC: Config-register packing, conversion-result decoding, and the
+//!   power-on self-test predicates. The bus transactions that use it live in
+//!   the firmware crate.
 //!
 //! ## What goes in this crate
 //!
@@ -42,4 +44,4 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
-pub mod morse;
+pub mod ads1015;

@@ -2,10 +2,9 @@
 # ezal-core — pure, no_std logic
 # ────────────────────────────────────────────────────────────────────────────
 #
-# This crate is deliberately hardware-independent. It contains:
-#   * morse encoding (today) — used by the "hello LED" demo,
-#   * pointing math, Yaesu G5500 command framing, az/el slewing logic
-#     (later, as the project grows).
+# This crate is deliberately hardware-independent. It will hold the
+# project's pure logic — pointing math, Yaesu G5500 command framing, az/el
+# slewing — as the firmware grows. It is empty for now.
 #
 # Because it has no hardware dependencies, it can be:
 #   * compiled for the embedded target (no_std, no allocator),
@@ -30,14 +29,6 @@ rust-version.workspace = true
 [lib]
 # The default `lib` settings are fine. No proc-macro, no special crate-type.
 
-# ── Features ─────────────────────────────────────────────────────────────
-# `defmt` is an *optional* dependency. Turning on the `defmt` feature makes
-# our types derive `defmt::Format` so the firmware can log them with the
-# same compact-binary wire format as everything else. Host tests don't need
-# it (they use std's Debug / Display), so the default is off.
-[features]
-default = []
-defmt   = ["dep:defmt"]
-
 [dependencies]
-defmt = { workspace = true, optional = true }
+# (none yet — pure logic with no external deps. A `defmt` optional feature
+# will come back once there are types the firmware wants to log.)

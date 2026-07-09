@@ -134,11 +134,17 @@ This is the *one command you'll run most*. It:
 You should see something like:
 
 ```
-0.000123 INFO  ezal hello-morse: starting (dit = 150 ms)
-0.000456 INFO  Transmitting: HELLO WORLD
+0.000123 INFO  ezal gpio-sweep: starting
+0.000456 INFO  sweep: GP10 CW high
+3.150789 INFO  sweep: GP11 CCW high
+6.301012 INFO  sweep: GP20 UP high
+9.451345 INFO  sweep: GP21 DOWN high
 ```
 
-…and the onboard LED blinking.
+…repeating forever. If you have built the interface board, the D1–D4
+indicator LEDs walk in sequence in step with those log lines; on a bare
+Pico 2 there is nothing external to see (the sweep drives GP10 / GP11 /
+GP20 / GP21, not the onboard LED).
 
 ### Build a UF2 for BOOTSEL flashing
 

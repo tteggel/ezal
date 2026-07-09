@@ -3,9 +3,10 @@
 > A satellite-tracking antenna rotator controller, written in Rust for the
 > Raspberry Pi Pico 2.
 
-**Status: pre-alpha.** This is step one — a "hello world" blinky firmware
-that exercises the toolchain end to end. The real tracking firmware is
-still to be written; see [Roadmap](#roadmap) below.
+**Status: pre-alpha.** This is step one — a bring-up firmware that sweeps
+the four G-5500 direction GPIOs in sequence and exercises the toolchain end
+to end. The real tracking firmware is still to be written; see
+[Roadmap](#roadmap) below.
 
 ## What this project will be
 
@@ -35,18 +36,15 @@ over-commented for educational purposes.
 ├── .cargo/config.toml              # default target, linker flags, runner
 ├── crates/
 │   ├── ezal-core/                  # pure no_std logic, host-testable
-│   │   ├── src/lib.rs
-│   │   ├── src/morse.rs            # Morse code encoder
-│   │   └── tests/morse.rs          # behavioural tests
+│   │   └── src/lib.rs             # (pure logic will live here)
 │   └── ezal-firmware/              # the on-chip application
 │       ├── build.rs
 │       ├── memory.x                # linker memory layout
-│       └── src/main.rs             # blinks HELLO WORLD on GPIO 25
+│       └── src/main.rs             # sweeps the direction GPIOs (GP10/11/20/21)
 ├── docs/
 │   ├── ARCHITECTURE.md             # how the pieces fit together
 │   ├── HARDWARE.md                 # G-5500 wiring, debug probe, ...
-│   ├── DEVELOPMENT.md              # local toolchain setup
-│   └── MORSE.md                    # walkthrough of the hello demo
+│   └── DEVELOPMENT.md              # local toolchain setup
 ├── design/
 │   ├── pinout.md                   # G-5500 8-pin DIN pinout
 │   ├── circuit.py                  # schemdraw source for the schematic
@@ -90,9 +88,11 @@ onto the `RP2350` drive that appears. See
 [DEVELOPMENT.md](docs/DEVELOPMENT.md#build-a-uf2-for-bootsel-flashing) for
 the details.
 
-You should see the onboard LED blink **HELLO WORLD** in international
-Morse code (∙∙∙∙ ∙ ∙−∙∙ ∙−∙∙ −−− / ∙−− −−− ∙−∙ ∙−∙∙ −∙∙), with a
-two-second pause between repeats.
+With the interface board built, the **D1–D4 indicator LEDs walk in
+sequence** — GP10 → GP11 → GP20 → GP21 — looping forever. Over a debug
+probe (`cargo run`) you'll also see each step logged (`sweep: GP10 CW
+high`, …). On a bare Pico 2 with no probe the firmware still runs; there is
+just nothing external to watch.
 
 ## Documentation
 
@@ -102,14 +102,12 @@ two-second pause between repeats.
   the debug probe, expected wiring.
 - **[DEVELOPMENT.md](docs/DEVELOPMENT.md)** — setting up a working
   development environment from scratch.
-- **[MORSE.md](docs/MORSE.md)** — line-by-line walkthrough of the hello
-  demo, aimed at someone new to embedded Rust.
 
 ## Roadmap
 
 | step | description                                              | status   |
 |------|----------------------------------------------------------|----------|
-| 1    | "Hello LED" morse blinker — toolchain proof              | ✅ done  |
+| 1    | Direction-GPIO sweep bring-up — toolchain proof          | ✅ done  |
 | 2    | USB-serial command interface (host → firmware az/el)     | planned  |
 | 3    | Direction-switch outputs + I²C ADS1015 feedback          | planned  |
 | 4    | Deadband position controller (close the loop on-chip)    | planned  |

@@ -37,7 +37,7 @@ build = "build.rs"
 # more is needed in this manifest.
 
 [dependencies]
-ezal-core = { path = "../ezal-core", features = ["defmt"] }
+ezal-core = { path = "../ezal-core" }
 
 cortex-m         = { workspace = true }
 cortex-m-rt      = { workspace = true }

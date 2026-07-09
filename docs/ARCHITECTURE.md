@@ -35,12 +35,12 @@ responsible for:
   motors stop when the dish is close enough to the target,
 - reporting status back to the host.
 
-For step one we are doing none of that. The firmware just blinks the
-onboard LED, but the architectural shape of the project is already in
-place — `main` is an async function on the Embassy executor, the morse
-encoder is in a separately-testable crate, and timing comes from
-`embassy_time` rather than busy-loops. Every later feature slots in as
-another async task.
+For step one we are doing none of that. The firmware just walks the four
+direction GPIOs in a repeating sweep, but the architectural shape of the
+project is already in place — `main` is an async function on the Embassy
+executor, pure logic lives in a separately-testable crate (`ezal-core`),
+and timing comes from `embassy_time` rather than busy-loops. Every later
+feature slots in as another async task.
 
 ## Workspace layout
 
@@ -67,9 +67,8 @@ trade-offs are:
 | flashed onto the chip    | yes (as a dep)           | yes                       |
 
 The rule of thumb: **if you can write it without thinking about a register
-or a pin, it goes in `ezal-core`**. That covers morse encoding today, and
-will cover pointing math, command parsing, slew planning, and the G-5500
-protocol later.
+or a pin, it goes in `ezal-core`**. That will cover pointing math, command
+parsing, slew planning, and the G-5500 protocol as the firmware grows.
 
 The firmware crate stays a thin shell that wires pure logic to peripherals.
 

@@ -7,7 +7,9 @@ firmware architecture.
 
 ## Today: just the Pico 2
 
-For the step-one "hello morse" demo, the entire hardware setup is:
+For the step-one bring-up firmware — the direction-GPIO sweep — the
+hardware is just the Pico 2, plus either the interface board or a debug
+probe so you can watch it run:
 
 ```
 ┌──────────────────────────┐
@@ -16,10 +18,10 @@ For the step-one "hello morse" demo, the entire hardware setup is:
 │                          │
 │  USB ────────── host PC  │
 │                          │
-│  GPIO 25 ─┐              │
-│           │ onboard LED  │
-│           ▼              │
-│         (light)          │
+│  GP10 ─┐                 │
+│  GP11 ─┼─▶ interface     │
+│  GP20 ─┤   board (D1–D4) │
+│  GP21 ─┘                 │
 │                          │
 │  SWCLK ──┐               │
 │  SWDIO ──┼── debug probe │
@@ -27,36 +29,48 @@ For the step-one "hello morse" demo, the entire hardware setup is:
 └──────────────────────────┘
 ```
 
-You only need:
+You need:
 
-- one Raspberry Pi **Pico 2** (the wired variant, not Pico 2 W),
+- one Raspberry Pi **Pico 2** — the wired or the **W** variant both work,
+  since the sweep drives ordinary GPIOs, not the onboard LED,
 - a USB-C cable for power,
 - *optionally* a Raspberry Pi Debug Probe (or any CMSIS-DAP probe) for
   flashing + log streaming with `probe-rs`. Without one you can still
-  flash via the BOOTSEL UF2 mechanism, but you won't see live logs.
+  flash via the BOOTSEL UF2 mechanism, but you won't see the live sweep log,
+- *optionally* the [interface board](../design/circuit.svg), if you want to
+  watch the D1–D4 indicator LEDs walk without a probe.
 
-### Why not Pico 2 W?
+### A note on the Pico 2 W
 
-The Pico 2 W's onboard LED is wired to the CYW43439 wireless co-processor,
-not directly to GPIO 25. Lighting that LED requires bringing up the CYW43
-stack, which is more involved than this demo warrants. The current
-firmware assumes the plain Pico 2.
+The bring-up sweep uses ordinary GPIOs (GP10 / GP11 / GP20 / GP21), so it
+runs identically on a Pico 2 or a Pico 2 **W** — nothing here touches the
+onboard LED.
 
-If you only have a Pico 2 W: most of the build still works, but the LED
-will not blink. Add the CYW43 driver and we can fix that — track that work
-in [the roadmap](../README.md#roadmap).
+That LED is worth flagging for later, though: on the **W** it is wired to
+the CYW43439 wireless co-processor rather than to GPIO 25, so a future
+on-board *status* indicator will need the CYW43 stack brought up first.
+Track that in [the roadmap](../README.md#roadmap).
 
 ### Pinout reference (for the curious)
 
-| signal     | Pico 2 pin | RP2350 GPIO | notes                       |
-|------------|-----------:|------------:|-----------------------------|
-| onboard LED|     —      |     25      | active high                 |
-| SWCLK      |     —      |      —      | dedicated debug pin         |
-| SWDIO      |     —      |      —      | dedicated debug pin         |
-| GND        | many       |      —      |                             |
+| signal          | Pico 2 pin | RP2350 GPIO | notes                        |
+|-----------------|-----------:|------------:|------------------------------|
+| direction CW    |     14     |     10      | → G-5500 DIN 2, LED D1       |
+| direction CCW   |     15     |     11      | → G-5500 DIN 4, LED D2       |
+| direction up    |     26     |     20      | → G-5500 DIN 3, LED D3       |
+| direction down  |     27     |     21      | → G-5500 DIN 5, LED D4       |
+| onboard LED     |     —      |     25      | active high; unused for now  |
+| SWCLK           |     —      |      —      | dedicated debug pin          |
+| SWDIO           |     —      |      —      | dedicated debug pin          |
+| GND             | many       |      —      |                              |
 
-The future rotator-control pins are unassigned at this point; they will be
-chosen when the analog hardware is designed.
+The four direction pins above are claimed by the firmware (held low in the
+current position-feedback bring-up, so nothing moves); their G-5500 wiring
+is in [`design/circuit.py`](../design/circuit.py) / `circuit.svg`. The I²C
+feedback pins (GP4 = SDA, GP5 = SCL, to the ADS1015 at 0x48) are driven by
+the firmware's ADS1015 driver
+([`crates/ezal-firmware/src/ads1015.rs`](../crates/ezal-firmware/src/ads1015.rs)),
+which self-tests (POSTs) the ADC at boot and then samples both channels.
 
 ## Future: the G-5500 rotator
 
