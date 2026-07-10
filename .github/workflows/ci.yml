@@ -40,9 +40,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # CI is strict: any warning fails the build. Local builds are not affected
-  # because RUSTFLAGS is set only inside this workflow.
-  RUSTFLAGS: "-D warnings"
 
 jobs:
   # ── Formatting ────────────────────────────────────────────────────────
@@ -89,7 +86,7 @@ jobs:
       - name: Clippy
         run: |
           HOST=$(rustc -vV | sed -n 's/host: //p')
-          cargo clippy -p ezal-core --target "$HOST" --all-features --all-targets
+          cargo clippy -p ezal-core --target "$HOST" --all-features --all-targets -- -D warnings
 
   # ── Cross-compile firmware + package UF2 ─────────────────────────────
   build-firmware:
@@ -109,7 +106,7 @@ jobs:
         # Firmware is `no_std`/`no_main`; the test/bench targets can't be
         # built for the embedded triple (they need libtest), so we limit
         # clippy to the bin target.
-        run: cargo clippy -p ezal-firmware --bins
+        run: cargo clippy -p ezal-firmware --bins -- -D warnings
       - name: Package UF2 for BOOTSEL flashing
         # Reuses the same script contributors run locally, so the picotool
         # convert flags live in exactly one place. Its `cargo build` is a

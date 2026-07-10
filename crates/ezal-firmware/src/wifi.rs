@@ -42,9 +42,9 @@
 //! which is what "connect to an AP" means at the link layer.
 
 use cyw43::aligned_bytes;
-use cyw43::{Control, JoinError, JoinOptions, NetDriver, PowerManagementMode};
+use cyw43::{Control, JoinAuth, JoinError, JoinOptions, NetDriver, PowerManagementMode};
 use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
-use defmt::{warn, Format};
+use defmt::{info, warn, Format};
 use embassy_executor::Spawner;
 use embassy_rp::dma::Channel;
 use embassy_rp::gpio::{Level, Output};
@@ -56,15 +56,39 @@ use static_cell::StaticCell;
 
 use ezal_core::wifi::{Credentials, Security};
 
-/// The power-management profile we run the radio in. The dashboard sends
-/// direction leases over a WebSocket, so command latency matters more than
-/// squeezing out the lowest idle power.
-const POWER_MODE: PowerManagementMode = PowerManagementMode::Performance;
+/// The power-management profile we run the radio in. This is a mains-powered
+/// controller and the dashboard sends direction leases over a WebSocket, so
+/// predictable latency matters more than idle current. `Performance` still
+/// enables CYW43 PM mode 2; `None` keeps the radio awake through the initial
+/// WPA handshake as well as normal operation.
+const POWER_MODE: PowerManagementMode = PowerManagementMode::None;
+
+/// Protected-network auth mode to request from the CYW43439. Ezal is deployed
+/// at one controlled location, so protected WiFi means WPA3/SAE only.
+const PROTECTED_JOIN_AUTH: JoinAuth = JoinAuth::Wpa3;
+
+/// Extra board-level off time before handing the power pin to `cyw43`.
+/// `probe-rs run` resets/reprograms the RP2350 without necessarily removing
+/// power from the CYW43439, and the upstream gSPI reset pulse is only 20 ms.
+/// Holding WL_ON low here gives the radio and AP state a cleaner boundary
+/// between debug-flash boots.
+const POWER_OFF_SETTLE: Duration = Duration::from_millis(250);
+
+/// Time to let a disassociation settle before starting a join. The retry path
+/// that clears intermittent UniFi/CYW43 stale state is `leave + 500ms + join`,
+/// so apply the same boundary before the first attempt as well.
+const JOIN_LEAVE_SETTLE: Duration = Duration::from_millis(500);
+
+/// WPA3/SAE can get into a stale first association on UniFi where the station
+/// reaches LINK/JOIN but never receives the PSK_SUP success event. A retry is
+/// consistently faster once the AP/chip state has been cleared, so keep the
+/// first attempt bounded below the normal retry timeout.
+const INITIAL_JOIN_TIMEOUT: Duration = Duration::from_millis(2750);
 
 /// Maximum time to wait for the CYW43 association event before treating the
 /// attempt as stale. `cyw43::Control::join` has no built-in timeout, so a
 /// missed event can otherwise pin boot forever.
-const JOIN_TIMEOUT: Duration = Duration::from_secs(15);
+const JOIN_TIMEOUT: Duration = Duration::from_millis(3500);
 
 /// Number of association attempts before POST fails.
 const JOIN_ATTEMPTS: usize = 3;
@@ -155,11 +179,14 @@ impl Wifi<'static> {
         let clm = aligned_bytes!("../cyw43-firmware/43439A0_clm.bin");
         let nvram = aligned_bytes!("../cyw43-firmware/nvram_rp2040.bin");
 
-        // Power-enable line starts low (radio off); CS idles high. The gSPI
-        // bus is a PIO program on state machine 0, clocked by the CYW43-tuned
+        // Power-enable line starts low (radio off); hold it there before
+        // giving it to the driver so debugger resets don't leave the CYW43 in
+        // a warm half-associated state. CS idles high. The gSPI bus is a PIO
+        // program on state machine 0, clocked by the CYW43-tuned
         // `RM2_CLOCK_DIVIDER` (a plain fast divider corrupts the link — see
         // embassy-rs/embassy#3960).
         let pwr = Output::new(pwr, Level::Low);
+        Timer::after(POWER_OFF_SETTLE).await;
         let cs = Output::new(cs, Level::High);
         let spi = PioSpi::new(
             &mut pio.common,
@@ -208,31 +235,54 @@ impl Wifi<'static> {
             .validate()
             .map_err(|e| PostError::InvalidCredentials(e.message()))?;
 
-        // 2. Join. An empty password means an open network; otherwise the
-        //    default WPA2/WPA3 handshake with the passphrase.
-        for attempt in 1..=JOIN_ATTEMPTS {
-            self.control.leave().await;
+        // 2. Join. An empty password means an open network; otherwise use the
+        //    configured WPA3/SAE handshake with the passphrase.
+        self.control.leave().await;
+        Timer::after(JOIN_LEAVE_SETTLE).await;
 
+        for attempt in 1..=JOIN_ATTEMPTS {
             let options = match security {
                 Security::Open => JoinOptions::new_open(),
-                Security::Protected => JoinOptions::new(creds.password.as_bytes()),
+                Security::Protected => {
+                    let mut options = JoinOptions::new(creds.password.as_bytes());
+                    options.auth = PROTECTED_JOIN_AUTH;
+                    options
+                }
             };
-            match with_timeout(JOIN_TIMEOUT, self.control.join(creds.ssid, options)).await {
+            let timeout = if attempt == 1 {
+                INITIAL_JOIN_TIMEOUT
+            } else {
+                JOIN_TIMEOUT
+            };
+
+            match with_timeout(timeout, self.control.join(creds.ssid, options)).await {
                 Ok(Ok(())) => {
                     return Ok(PostReport {
                         protected: matches!(security, Security::Protected),
                     });
                 }
-                Ok(Err(error)) => return Err(PostError::Join(error)),
-                Err(_) if attempt < JOIN_ATTEMPTS => {
-                    warn!(
-                        "WiFi join timed out; retrying ({=usize}/{=usize})",
-                        attempt, JOIN_ATTEMPTS
-                    );
+                Ok(Err(error)) => {
                     self.control.leave().await;
-                    Timer::after(Duration::from_millis(500)).await;
+                    return Err(PostError::Join(error));
                 }
-                Err(_) => return Err(PostError::JoinTimeout),
+                Err(_) if attempt < JOIN_ATTEMPTS => {
+                    if attempt == 1 && matches!(security, Security::Protected) {
+                        info!(
+                            "WiFi initial WPA3 join did not complete; clearing state and retrying"
+                        );
+                    } else {
+                        warn!(
+                            "WiFi join timed out; retrying ({=usize}/{=usize})",
+                            attempt, JOIN_ATTEMPTS
+                        );
+                    }
+                    self.control.leave().await;
+                    Timer::after(JOIN_LEAVE_SETTLE).await;
+                }
+                Err(_) => {
+                    self.control.leave().await;
+                    return Err(PostError::JoinTimeout);
+                }
             }
         }
 

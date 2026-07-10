@@ -238,10 +238,7 @@ async fn direction_task(mut outputs: DirectionOutputs, state: &'static web::WebS
 
         let next_deadline = next_direction_deadline(&debouncer, lease_deadline, now);
         let command = match next_deadline {
-            Some(deadline) => match with_deadline(deadline, state.wait_command()).await {
-                Ok(command) => Some(command),
-                Err(_) => None,
-            },
+            Some(deadline) => with_deadline(deadline, state.wait_command()).await.ok(),
             None => Some(state.wait_command().await),
         };
 

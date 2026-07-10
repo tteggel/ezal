@@ -36,6 +36,13 @@ build = "build.rs"
 # under `src/bin/`. With Cargo's default discovery this Just Works; nothing
 # more is needed in this manifest.
 
+[features]
+default = []
+
+# Diagnostic only: dumps CYW43 firmware console logs when paired with a debug
+# defmt filter, e.g. `DEFMT_LOG=debug cargo run ... --features cyw43-firmware-logs`.
+cyw43-firmware-logs = ["cyw43/firmware-logs"]
+
 [dependencies]
 ezal-core = { path = "../ezal-core" }
 

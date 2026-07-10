@@ -247,7 +247,9 @@ fn dashboard_embeds_a_favicon() {
 
 #[test]
 fn command_refresh_stays_inside_firmware_lease() {
-    assert!(COMMAND_REFRESH_MS < COMMAND_TIMEOUT_MS);
-    assert!(OUTPUT_MIN_ACTIVE_MS <= COMMAND_TIMEOUT_MS);
+    const {
+        assert!(COMMAND_REFRESH_MS < COMMAND_TIMEOUT_MS);
+        assert!(OUTPUT_MIN_ACTIVE_MS <= COMMAND_TIMEOUT_MS);
+    }
     assert!(INDEX_HTML.contains("const refreshMs = 150;"));
 }
