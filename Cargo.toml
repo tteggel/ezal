@@ -66,6 +66,7 @@ defmt            = "1.0"
 defmt-rtt        = "1.0"
 panic-probe      = { version = "1.0", features = ["print-defmt"] }
 embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread"] }
+embassy-futures  = "0.1"
 embassy-rp       = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt", "imagedef-secure-exe"] }
 embassy-time     = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-net      = { version = "0.9.1", features = ["defmt", "dhcpv4", "tcp"] }

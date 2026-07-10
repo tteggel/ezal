@@ -7,6 +7,7 @@
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
 
 use embassy_executor::Spawner;
+use embassy_futures::yield_now;
 use embassy_net::Stack;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
@@ -311,15 +312,23 @@ impl WebSocketCallback for DashboardSocket {
 
             match event {
                 Either::First(Ok(Message::Text(message))) => {
-                    match ClientMessage::parse(message) {
-                        Some(ClientMessage::TakeControl) => state.take_control(client_id),
+                    let drive_signaled = match ClientMessage::parse(message) {
+                        Some(ClientMessage::TakeControl) => {
+                            state.take_control(client_id);
+                            true
+                        }
                         Some(ClientMessage::Command(command)) => {
-                            let _ = state.accept_command(client_id, command);
+                            state.accept_command(client_id, command)
                         }
                         None if message.starts_with("drive:") && state.is_controller(client_id) => {
                             state.apply_command(Command::Stop);
+                            true
                         }
-                        None => {}
+                        None => false,
+                    };
+
+                    if drive_signaled {
+                        yield_now().await;
                     }
 
                     if let Err(error) = send_control_status(&mut tx, state, client_id).await {
