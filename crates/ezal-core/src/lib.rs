@@ -18,8 +18,16 @@
 //! * [`wifi`] — validation of the station-mode WiFi credentials that
 //!   `build.rs` bakes in from `.env`. Pure predicates the firmware's WiFi
 //!   POST checks before it powers the radio.
-//! * [`web`] — the embedded dashboard's static UI and tiny WebSocket wire
-//!   protocol: direction commands in, raw ADC millivolts out.
+//! * [`drive`] — the rotator's transport-independent motion vocabulary
+//!   (azimuth/elevation directions, the combined [`drive::DriveCommand`], the
+//!   [`drive::Command`] surface) and [`drive::Debouncer`], the pure state
+//!   machine that keeps the direction outputs from chattering. The GPIO layer
+//!   that applies it lives in the firmware crate's `drive` module.
+//! * [`protocol`] — the dashboard's WebSocket wire protocol: parsing browser
+//!   messages ([`protocol::ClientMessage`]) and framing telemetry and control
+//!   state ([`protocol::PositionTelemetry`], [`protocol::ControlStatus`]) as
+//!   compact JSON.
+//! * [`dashboard`] — the single static HTML/CSS/JS page served at `/`.
 //!
 //! ## What goes in this crate
 //!
@@ -50,5 +58,7 @@
 #![warn(clippy::all)]
 
 pub mod ads1015;
-pub mod web;
+pub mod dashboard;
+pub mod drive;
+pub mod protocol;
 pub mod wifi;
