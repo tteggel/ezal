@@ -87,13 +87,13 @@ use embassy_rp::gpio::{Level, Output};
 use embassy_rp::i2c::{self, I2c, InterruptHandler as I2cInterruptHandler};
 use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
-use embassy_time::{with_timeout, Duration, Timer};
+use embassy_time::{with_deadline, with_timeout, Duration, Instant, Timer};
 use static_cell::StaticCell;
 
 use ads1015::Ads1015;
 use ezal_core::ads1015::Mux;
 use ezal_core::web::{
-    AzimuthDirection, Command, DriveCommand, ElevationDirection, PositionTelemetry,
+    AzimuthDirection, Command, DriveCommand, DriveDebouncer, ElevationDirection, PositionTelemetry,
 };
 use ezal_core::wifi::Credentials;
 use wifi::Wifi;
@@ -177,33 +177,40 @@ struct DirectionOutputs {
     ccw: Output<'static>,
     up: Output<'static>,
     down: Output<'static>,
+    applied: DriveCommand,
 }
 
 impl DirectionOutputs {
-    fn apply(&mut self, command: Command) {
-        match command {
-            Command::Drive(drive) => self.apply_drive(drive),
-            Command::Stop => self.stop(),
-        }
-    }
-
     fn apply_drive(&mut self, drive: DriveCommand) {
-        self.cw.set_low();
-        self.ccw.set_low();
-        self.up.set_low();
-        self.down.set_low();
+        if self.applied.azimuth != drive.azimuth {
+            match self.applied.azimuth {
+                Some(AzimuthDirection::Clockwise) => self.cw.set_low(),
+                Some(AzimuthDirection::CounterClockwise) => self.ccw.set_low(),
+                None => {}
+            }
 
-        match drive.azimuth {
-            Some(AzimuthDirection::Clockwise) => self.cw.set_high(),
-            Some(AzimuthDirection::CounterClockwise) => self.ccw.set_high(),
-            None => {}
+            match drive.azimuth {
+                Some(AzimuthDirection::Clockwise) => self.cw.set_high(),
+                Some(AzimuthDirection::CounterClockwise) => self.ccw.set_high(),
+                None => {}
+            }
         }
 
-        match drive.elevation {
-            Some(ElevationDirection::Up) => self.up.set_high(),
-            Some(ElevationDirection::Down) => self.down.set_high(),
-            None => {}
+        if self.applied.elevation != drive.elevation {
+            match self.applied.elevation {
+                Some(ElevationDirection::Up) => self.up.set_low(),
+                Some(ElevationDirection::Down) => self.down.set_low(),
+                None => {}
+            }
+
+            match drive.elevation {
+                Some(ElevationDirection::Up) => self.up.set_high(),
+                Some(ElevationDirection::Down) => self.down.set_high(),
+                None => {}
+            }
         }
+
+        self.applied = drive;
     }
 
     fn stop(&mut self) {
@@ -211,6 +218,7 @@ impl DirectionOutputs {
         self.ccw.set_low();
         self.up.set_low();
         self.down.set_low();
+        self.applied = DriveCommand::IDLE;
     }
 }
 
@@ -220,18 +228,73 @@ impl DirectionOutputs {
 #[embassy_executor::task]
 async fn direction_task(mut outputs: DirectionOutputs, state: &'static web::WebState) -> ! {
     outputs.stop();
+    let mut debouncer = DriveDebouncer::new();
+    let mut lease_deadline = None;
+    state.record_applied_drive(debouncer.actual());
 
     loop {
-        match with_timeout(DIRECTION_TIMEOUT, state.wait_command()).await {
-            Ok(command) => {
-                outputs.apply(command);
-                state.record_applied_command(command);
+        let now = Instant::now();
+        apply_debounced_drive(&mut outputs, state, &mut debouncer, now.as_millis());
+
+        let next_deadline = next_direction_deadline(&debouncer, lease_deadline, now);
+        let command = match next_deadline {
+            Some(deadline) => match with_deadline(deadline, state.wait_command()).await {
+                Ok(command) => Some(command),
+                Err(_) => None,
+            },
+            None => Some(state.wait_command().await),
+        };
+
+        let now = Instant::now();
+        if let Some(command) = command {
+            lease_deadline = match command {
+                Command::Drive(drive) if drive.is_active() => Some(now + DIRECTION_TIMEOUT),
+                Command::Drive(_) | Command::Stop => None,
+            };
+            if debouncer.set_target(command, now.as_millis()) {
+                outputs.apply_drive(debouncer.actual());
+                state.record_applied_drive(debouncer.actual());
             }
-            Err(_) => {
-                outputs.stop();
-                state.record_applied_command(Command::Stop);
+            continue;
+        }
+
+        if let Some(deadline) = lease_deadline {
+            if deadline <= now {
+                lease_deadline = None;
+                if debouncer.set_target(Command::Stop, now.as_millis()) {
+                    outputs.apply_drive(debouncer.actual());
+                    state.record_applied_drive(debouncer.actual());
+                }
             }
         }
+    }
+}
+
+fn apply_debounced_drive(
+    outputs: &mut DirectionOutputs,
+    state: &'static web::WebState,
+    debouncer: &mut DriveDebouncer,
+    now_ms: u64,
+) {
+    if debouncer.update(now_ms) {
+        outputs.apply_drive(debouncer.actual());
+        state.record_applied_drive(debouncer.actual());
+    }
+}
+
+fn next_direction_deadline(
+    debouncer: &DriveDebouncer,
+    lease_deadline: Option<Instant>,
+    now: Instant,
+) -> Option<Instant> {
+    let debounce_deadline = debouncer
+        .next_transition_ms(now.as_millis())
+        .map(Instant::from_millis);
+
+    match (debounce_deadline, lease_deadline) {
+        (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
+        (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+        (None, None) => None,
     }
 }
 
@@ -279,6 +342,7 @@ async fn main(spawner: Spawner) {
         ccw: Output::new(p.PIN_11, Level::Low),
         up: Output::new(p.PIN_20, Level::Low),
         down: Output::new(p.PIN_21, Level::Low),
+        applied: DriveCommand::IDLE,
     };
     spawner.must_spawn(direction_task(directions, &web::STATE));
 

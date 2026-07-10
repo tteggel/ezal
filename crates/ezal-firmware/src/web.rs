@@ -136,27 +136,19 @@ impl WebState {
         true
     }
 
-    /// Record and signal a drive-state command to the task that owns the GPIOs.
+    /// Signal a requested drive-state command to the task that owns the GPIOs.
     pub fn apply_command(&self, command: Command) {
-        self.drive.store(encode_command(command), Ordering::Release);
         self.commands.signal(command);
     }
 
     /// Record the drive state currently applied to the output GPIOs.
-    pub fn record_applied_command(&self, command: Command) {
-        self.drive.store(encode_command(command), Ordering::Release);
+    pub fn record_applied_drive(&self, drive: DriveCommand) {
+        self.drive.store(encode_drive(drive), Ordering::Release);
     }
 
     /// Wait for the next drive-state command.
     pub async fn wait_command(&self) -> Command {
         self.commands.wait().await
-    }
-}
-
-const fn encode_command(command: Command) -> u8 {
-    match command {
-        Command::Drive(drive) => encode_drive(drive),
-        Command::Stop => encode_drive(DriveCommand::IDLE),
     }
 }
 
