@@ -24,8 +24,12 @@ pub const COMMAND_TIMEOUT_MS: u64 = 750;
 /// Minimum time a direction output stays active once energised.
 pub const OUTPUT_MIN_ACTIVE_MS: u64 = 500;
 
+/// Minimum time an axis stays inactive before it may be energised again.
+pub const OUTPUT_MIN_INACTIVE_MS: u64 = OUTPUT_MIN_ACTIVE_MS;
+
 const _: () = assert!(COMMAND_REFRESH_MS < COMMAND_TIMEOUT_MS);
 const _: () = assert!(OUTPUT_MIN_ACTIVE_MS <= COMMAND_TIMEOUT_MS);
+const _: () = assert!(OUTPUT_MIN_INACTIVE_MS <= COMMAND_TIMEOUT_MS);
 
 /// The inline dashboard served at `/`.
 pub const INDEX_HTML: &str = r#"<!doctype html>
@@ -524,20 +528,22 @@ impl DriveCommand {
     }
 }
 
-/// Minimum-on-time filter for the four physical direction outputs.
+/// Minimum active/inactive-time filter for the four physical direction outputs.
 ///
 /// The dashboard command stream is intentionally responsive, but the relay and
-/// geartrain should not see sub-500 ms off/on chatter. This pure state machine
-/// lets firmware enforce that rule at the GPIO boundary while tests exercise
-/// the timing behaviour on the host.
+/// geartrain should not see sub-500 ms on/off or off/on chatter. This pure
+/// state machine lets firmware enforce that rule at the GPIO boundary while
+/// tests exercise the timing behaviour on the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DriveDebouncer {
     target: DriveCommand,
     actual: DriveCommand,
     cw_until_ms: u64,
     ccw_until_ms: u64,
+    azimuth_off_until_ms: u64,
     up_until_ms: u64,
     down_until_ms: u64,
+    elevation_off_until_ms: u64,
 }
 
 impl DriveDebouncer {
@@ -548,8 +554,10 @@ impl DriveDebouncer {
             actual: DriveCommand::IDLE,
             cw_until_ms: 0,
             ccw_until_ms: 0,
+            azimuth_off_until_ms: 0,
             up_until_ms: 0,
             down_until_ms: 0,
+            elevation_off_until_ms: 0,
         }
     }
 
@@ -591,7 +599,7 @@ impl DriveDebouncer {
         if self.actual.azimuth != self.target.azimuth {
             let deadline = match self.actual.azimuth {
                 Some(direction) => self.azimuth_until_ms(direction),
-                None => now_ms,
+                None => self.azimuth_off_until_ms,
             };
             next = Some(min_option(next, deadline.max(now_ms)));
         }
@@ -599,7 +607,7 @@ impl DriveDebouncer {
         if self.actual.elevation != self.target.elevation {
             let deadline = match self.actual.elevation {
                 Some(direction) => self.elevation_until_ms(direction),
-                None => now_ms,
+                None => self.elevation_off_until_ms,
             };
             next = Some(min_option(next, deadline.max(now_ms)));
         }
@@ -617,6 +625,11 @@ impl DriveDebouncer {
                 return;
             }
             self.actual.azimuth = None;
+            self.azimuth_off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
+        }
+
+        if now_ms < self.azimuth_off_until_ms {
+            return;
         }
 
         if let Some(target) = self.target.azimuth {
@@ -635,6 +648,11 @@ impl DriveDebouncer {
                 return;
             }
             self.actual.elevation = None;
+            self.elevation_off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
+        }
+
+        if now_ms < self.elevation_off_until_ms {
+            return;
         }
 
         if let Some(target) = self.target.elevation {

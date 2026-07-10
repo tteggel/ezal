@@ -3,7 +3,7 @@
 use ezal_core::web::{
     AzimuthDirection, ClientMessage, Command, ControlStatus, DriveCommand, DriveDebouncer,
     ElevationDirection, PositionTelemetry, COMMAND_REFRESH_MS, COMMAND_TIMEOUT_MS, INDEX_HTML,
-    OUTPUT_MIN_ACTIVE_MS, TAKE_CONTROL_MESSAGE, WS_PATH,
+    OUTPUT_MIN_ACTIVE_MS, OUTPUT_MIN_INACTIVE_MS, TAKE_CONTROL_MESSAGE, WS_PATH,
 };
 
 #[test]
@@ -182,15 +182,57 @@ fn drive_debouncer_delays_reversals_without_conflicting_outputs() {
     );
 
     assert!(debouncer.update(OUTPUT_MIN_ACTIVE_MS));
-    assert_eq!(debouncer.actual(), ccw);
-    assert_eq!(debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS), None);
+    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+    assert_eq!(
+        debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS),
+        Some(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS)
+    );
 
-    assert!(!debouncer.set_target(Command::Stop, OUTPUT_MIN_ACTIVE_MS + 1));
+    assert!(!debouncer.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1));
+    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+
+    assert!(debouncer.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS));
     assert_eq!(debouncer.actual(), ccw);
     assert_eq!(
-        debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + 1),
-        Some(OUTPUT_MIN_ACTIVE_MS * 2)
+        debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS),
+        None
     );
+
+    assert!(!debouncer.set_target(
+        Command::Stop,
+        OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS + 1
+    ));
+    assert_eq!(debouncer.actual(), ccw);
+    assert_eq!(
+        debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS + 1),
+        Some(OUTPUT_MIN_ACTIVE_MS * 2 + OUTPUT_MIN_INACTIVE_MS)
+    );
+}
+
+#[test]
+fn drive_debouncer_holds_inactive_outputs_for_the_minimum_time() {
+    let mut debouncer = DriveDebouncer::new();
+    let cw = DriveCommand {
+        azimuth: Some(AzimuthDirection::Clockwise),
+        elevation: None,
+    };
+
+    assert!(debouncer.set_target(Command::Drive(cw), 0));
+    assert!(debouncer.set_target(Command::Stop, OUTPUT_MIN_ACTIVE_MS));
+    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+
+    assert!(!debouncer.set_target(Command::Drive(cw), OUTPUT_MIN_ACTIVE_MS + 100));
+    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+    assert_eq!(
+        debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + 100),
+        Some(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS)
+    );
+
+    assert!(!debouncer.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1));
+    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+
+    assert!(debouncer.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS));
+    assert_eq!(debouncer.actual(), cw);
 }
 
 #[test]
@@ -250,6 +292,7 @@ fn command_refresh_stays_inside_firmware_lease() {
     const {
         assert!(COMMAND_REFRESH_MS < COMMAND_TIMEOUT_MS);
         assert!(OUTPUT_MIN_ACTIVE_MS <= COMMAND_TIMEOUT_MS);
+        assert!(OUTPUT_MIN_INACTIVE_MS <= COMMAND_TIMEOUT_MS);
     }
     assert!(INDEX_HTML.contains("const refreshMs = 150;"));
 }
