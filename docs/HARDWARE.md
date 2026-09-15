@@ -1,15 +1,14 @@
 # Hardware
 
-This document describes the hardware ezal runs on and the hardware ezal
-will eventually drive. The "today" half is concrete; the "future" half is
-a sketch to make sure we don't paint ourselves into a corner with the
-firmware architecture.
+This document describes the Pico 2 W, interface board, ADS1015 feedback path,
+and Yaesu G-5500 that ezal is designed to drive.
 
-## Today: just the Pico 2
+## Pico 2 W and walking-skeleton modes
 
-For the step-one bring-up firmware — the direction-GPIO sweep — the
-hardware is just the Pico 2, plus either the interface board or a debug
-probe so you can watch it run:
+The default firmware is an end-to-end hardware walking skeleton. It requires
+the Pico 2 W, interface board, ADS1015, calibrated G-5500 feedback, and a
+connected rotator. On boot it can raise the direction pins to acquire the
+simulated METOP-C pass start:
 
 ```
 ┌──────────────────────────┐
@@ -31,14 +30,12 @@ probe so you can watch it run:
 
 You need:
 
-- one Raspberry Pi **Pico 2** — the wired or the **W** variant both work,
-  since the sweep drives ordinary GPIOs, not the onboard LED,
+- one Raspberry Pi **Pico 2 W** (WiFi is required for the dashboard),
 - a USB-C cable for power,
 - *optionally* a Raspberry Pi Debug Probe (or any CMSIS-DAP probe) for
   flashing + log streaming with `probe-rs`. Without one you can still
-  flash via the BOOTSEL UF2 mechanism, but you won't see the live sweep log,
-- *optionally* the [interface board](../design/circuit.svg), if you want to
-  watch the D1–D4 indicator LEDs walk without a probe.
+  flash via the BOOTSEL UF2 mechanism, but you won't see the live RTT log,
+- the [interface board](../design/circuit.svg), ADS1015, and G-5500.
 
 ### The board is the Pico 2 W
 
@@ -79,13 +76,14 @@ one DMA channel — that's what the `PIO0_IRQ_0` / `DMA_IRQ_0` bindings and the
 | SWDIO           |     —      |      —      | dedicated debug pin          |
 | GND             | many       |      —      |                              |
 
-The four direction pins above are claimed by the firmware (held low in the
-current position-feedback bring-up, so nothing moves); their G-5500 wiring
-is in [`design/circuit.py`](../design/circuit.py) / `circuit.svg`. The I²C
+The four direction pins above are claimed by the firmware and can be driven by
+the default walking skeleton; their G-5500 wiring is in
+[`design/circuit.py`](../design/circuit.py) / `circuit.svg`. The I²C
 feedback pins (GP4 = SDA, GP5 = SCL, to the ADS1015 at 0x48) are driven by
 the firmware's ADS1015 driver
 ([`crates/ezal-firmware/src/ads1015.rs`](../crates/ezal-firmware/src/ads1015.rs)),
-which self-tests (POSTs) the ADC at boot and then samples both channels.
+which self-tests (POSTs) the ADC at boot and samples both channels in default
+and explicit `--no-default-features` manual hardware builds.
 
 ### WiFi credentials
 
@@ -105,7 +103,7 @@ and `include_bytes!`d into the image, so there's nothing extra to flash — the
 same single `.elf`/`.uf2` is self-contained. See that directory's README for
 their provenance and licence.
 
-## Future: the G-5500 rotator
+## G-5500 rotator
 
 The [Yaesu G-5500](https://www.yaesu.com/) (and the -DC variant) is the
 target rotator. Its "external control" connector is an 8-pin DIN. The
@@ -134,7 +132,7 @@ host PC ──USB-serial──▶ Pico 2 ──×4 transistor switches──▶ 
                         └─────────── shared GND ─────── G-5500 pin 8
 ```
 
-The planned circuit (canonical version in
+The interface circuit (canonical version in
 [`design/circuit.py`](../design/circuit.py) / `circuit.svg`):
 
 - **Direction**: four GPIO outputs each drive the base of a 2N3904 NPN
@@ -254,8 +252,8 @@ few arcminutes:
 2. Slew azimuth fully CW to its other end-stop and record `az_max`.
 3. Same for elevation: `el_min` at the down end-stop, `el_max` at the
    up end-stop.
-4. Persist all four to flash. From then on, angle = linear interpolation
-   between the two stored endpoints.
+4. Enter all four in the firmware's hard-coded calibration. From then on,
+   angle = linear interpolation between the two endpoints.
 
 This makes the system insensitive to G-5500 trimpot drift, divider
 tolerance, ADC offset, and slow degradation of the rotator's position
@@ -263,6 +261,11 @@ pots over time. It is *not* a substitute for the G-5500 trim above,
 though, because that trim is what keeps the ADC operating near full
 scale — pinching the input range below ~70 % of FSR starts to eat into
 our angular resolution.
+
+The complete safety setup, channel worksheet, source location, edit example,
+and verification steps are in [CALIBRATION.md](CALIBRATION.md). Flash-backed
+calibration storage is not implemented yet; the checked-in constants are the
+source of truth for this walking skeleton.
 
 ## Motor switching budget
 

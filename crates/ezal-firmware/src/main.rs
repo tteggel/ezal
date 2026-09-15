@@ -1,37 +1,18 @@
-//! # ezal-firmware — `wifi + adc bring-up`
+//! # ezal-firmware — autonomous tracking walking skeleton
 //!
-//! The project's bring-up firmware. At boot it runs two power-on self-tests
-//! (POSTs) in turn, each a hard gate — on failure it reports the reason and
-//! idles rather than limping on:
+//! The default `simulator` feature starts a synthetic METOP-C pass immediately
+//! after the ADS1015 power-on test. It reads the installed rotator through A0
+//! and A1, acquires and settles at the pass start, then follows the target with
+//! the real direction GPIOs through the fail-safe controller and actuator
+//! guard. This is intentionally a hardware-driving walking skeleton.
 //!
-//!  1. **WiFi** — powers the Pico 2 W's CYW43439 radio and joins, in station
-//!     (STA) mode, the access point whose SSID/password were baked in from
-//!     `.env` at build time (see `build.rs` and `wifi.rs`).
-//!  2. **ADS1015** — initialises the I²C bus to the position-feedback ADC and
-//!     round-trips its registers.
+//! After network bring-up the dashboard reports target, calibrated position,
+//! raw feedback-domain values, pass/pause countdown, controller state, and the
+//! guarded logical output. Each 180-second pass is followed by an exact
+//! 30-second no-target pause before the next reversed pass.
 //!
-//! If both pass it then starts the web dashboard, periodically publishes the
-//! two G-5500 feedback channels (A0, A1), and applies leased direction commands
-//! from the dashboard while the CYW43439 driver task keeps the WiFi link up in
-//! the background.
-//!
-//! Why this exists:
-//!
-//!  * It proves the I²C wiring end-to-end — bus pull-ups, the ADS1015's
-//!    address strap, and the SDA/SCL pin mux — before any control logic
-//!    depends on the readings.
-//!  * The POST distinguishes "a device ACKs at 0x48" from "a working ADS1015
-//!    that stores configuration and returns conversions", so a mis-wired or
-//!    wrong part fails loudly at boot instead of silently feeding garbage
-//!    into the eventual position loop.
-//!  * The periodic telemetry lets you turn the rotator by hand (or drive it
-//!    from the dashboard) and watch the divided feedback voltage track — the
-//!    raw material for the software calibration in `docs/HARDWARE.md`.
-//!
-//! The eventual G-5500 rotator firmware will replace this `main` with a task
-//! graph (USB-serial in, four direction-switch GPIOs, the ADS1015 feedback
-//! reads below, a hysteretic position controller, …) but every line here
-//! should still be familiar.
+//! Building with `--no-default-features` selects manual hardware/calibration
+//! mode. See `docs/CALIBRATION.md` before driving a rotator.
 //!
 //! ## How it runs
 //!
@@ -42,9 +23,8 @@
 //!      RAM, sets up the stack, and calls into Rust.
 //!   4. `#[embassy_executor::main]` builds a single-thread async executor and
 //!      runs our `main` future on it.
-//!   5. `main` initialises the HAL, claims the direction pins, POSTs the WiFi
-//!      (join) and then the ADS1015, and finally starts the network, feedback,
-//!      output, and web-serving tasks.
+//!   5. `main` claims idle direction pins, starts the actuator and selected
+//!      feedback/control graph, then brings up WiFi, TCP/IP, and the dashboard.
 //!
 //! ## How to flash
 //!
@@ -79,22 +59,34 @@ mod wifi;
 
 // ─── imports ────────────────────────────────────────────────────────────
 use cyw43::NetDriver;
-use defmt::{error, info, warn};
+#[cfg(not(feature = "simulator"))]
+use defmt::warn;
+use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_net::StackResources;
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::dma;
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::i2c::{self, I2c, InterruptHandler as I2cInterruptHandler};
+use embassy_rp::i2c::InterruptHandler as I2cInterruptHandler;
+use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
+#[cfg(feature = "simulator")]
+use embassy_time::Instant;
 use embassy_time::{with_timeout, Duration, Timer};
 use static_cell::StaticCell;
 
 use ads1015::Ads1015;
 use ezal_core::ads1015::Mux;
-use ezal_core::protocol::PositionTelemetry;
+use ezal_core::control::ControlState;
+#[cfg(feature = "simulator")]
+use ezal_core::control::{ControlConfig, ControlDecision, TimedPointing, TrackingController};
+use ezal_core::position::{FeedbackVoltages, HARD_CODED_CALIBRATION};
+use ezal_core::protocol::{PositionTelemetry, TrackingMode, TrackingTelemetry};
+use ezal_core::simulation::PassPhase;
+#[cfg(feature = "simulator")]
+use ezal_core::simulation::{MetopPassScheduler, TrackingSequence};
 use ezal_core::wifi::Credentials;
 use state::SharedState;
 use wifi::Wifi;
@@ -162,7 +154,13 @@ const WIFI_PASSWORD: &str = env!("EZAL_WIFI_PASSWORD");
 /// How often to sample and publish the feedback channels once POST has passed.
 /// The rotator's mechanical bandwidth is well under 1 Hz, so 2 Hz here is
 /// plenty for the dashboard.
+#[cfg(not(feature = "simulator"))]
 const SAMPLE_PERIOD: Duration = Duration::from_millis(ezal_core::protocol::TELEMETRY_PERIOD_MS);
+
+/// Closed-loop cadence for autonomous tracking. This is comfortably faster
+/// than the rotator mechanics while refreshing the actuator lease with margin.
+#[cfg(feature = "simulator")]
+const CONTROL_PERIOD: Duration = Duration::from_millis(100);
 
 /// Maximum time to wait for DHCP before failing visibly instead of masking the
 /// rest of bring-up behind an unbounded network wait.
@@ -170,6 +168,7 @@ const DHCP_TIMEOUT_SECS: u64 = 30;
 const DHCP_TIMEOUT: Duration = Duration::from_secs(DHCP_TIMEOUT_SECS);
 
 /// Owns the ADS1015 and publishes the latest raw millivolt readings.
+#[cfg(not(feature = "simulator"))]
 #[embassy_executor::task]
 async fn feedback_task(mut adc: Ads1015<'static>, state: &'static SharedState) -> ! {
     loop {
@@ -177,12 +176,230 @@ async fn feedback_task(mut adc: Ads1015<'static>, state: &'static SharedState) -
             adc.read_channel_mv(Mux::Ain0).await,
             adc.read_channel_mv(Mux::Ain1).await,
         ) {
-            (Ok(a0_mv), Ok(a1_mv)) => state.store_position(PositionTelemetry { a0_mv, a1_mv }),
-            _ => warn!("feedback: I²C read failed"),
+            (Ok(a0_mv), Ok(a1_mv)) => {
+                state.store_position(PositionTelemetry { a0_mv, a1_mv });
+                match HARD_CODED_CALIBRATION.feedback_to_position(FeedbackVoltages {
+                    a0_elevation_mv: a0_mv,
+                    a1_azimuth_mv: a1_mv,
+                }) {
+                    Ok(position) => state.store_tracking(TrackingTelemetry {
+                        mode: TrackingMode::Manual,
+                        pass_index: 0,
+                        phase: PassPhase::Pause,
+                        phase_remaining_ms: 0,
+                        azimuth_tenths: degrees_to_tenths(position.azimuth_deg),
+                        elevation_tenths: degrees_to_tenths(position.elevation_deg),
+                        target_azimuth_tenths: None,
+                        target_elevation_tenths: None,
+                        control_state: ControlState::Idle,
+                    }),
+                    Err(_) => {
+                        warn!(
+                            "feedback calibration rejected A0={=i32} mV, A1={=i32} mV",
+                            a0_mv, a1_mv
+                        );
+                        store_feedback_fault(state, ControlState::FeedbackInvalid);
+                    }
+                }
+            }
+            _ => {
+                warn!("feedback: I²C read failed");
+                store_feedback_fault(state, ControlState::FeedbackUnavailable);
+            }
         }
 
         Timer::after(SAMPLE_PERIOD).await;
     }
+}
+
+#[cfg(not(feature = "simulator"))]
+fn store_feedback_fault(state: &'static SharedState, control_state: ControlState) {
+    let previous = state.tracking();
+    state.store_tracking(TrackingTelemetry {
+        mode: TrackingMode::Manual,
+        pass_index: previous.pass_index,
+        phase: PassPhase::Pause,
+        phase_remaining_ms: 0,
+        azimuth_tenths: previous.azimuth_tenths,
+        elevation_tenths: previous.elevation_tenths,
+        target_azimuth_tenths: None,
+        target_elevation_tenths: None,
+        control_state,
+    });
+}
+
+/// Run the hardware-driving autonomous walking skeleton.
+///
+/// Only the METOP-C target source is synthetic. Feedback comes from the real
+/// ADS1015, and commands go through the same leased GPIO task used by manual
+/// hardware mode.
+#[cfg(feature = "simulator")]
+#[embassy_executor::task]
+async fn hardware_tracking_task(mut adc: Ads1015<'static>, state: &'static SharedState) -> ! {
+    let scheduler = match MetopPassScheduler::for_calibration(HARD_CODED_CALIBRATION) {
+        Ok(scheduler) => scheduler,
+        Err(_) => {
+            error!("tracking: invalid hard-coded calibration");
+            state.apply_command(ezal_core::drive::Command::Stop);
+            loop {
+                Timer::after(Duration::from_secs(1)).await;
+            }
+        }
+    };
+    let boot_ms = Instant::now().as_millis();
+    let mut sequence = TrackingSequence::new(scheduler, boot_ms);
+    let control_config = ControlConfig::for_calibration(HARD_CODED_CALIBRATION);
+    let mut controller = TrackingController::new(control_config);
+    let feedback_timeout = Duration::from_millis(control_config.feedback_timeout_ms);
+    let mut feedback_timed_out = false;
+    let mut last_phase = PassPhase::Pause;
+    let mut last_control_state = ControlState::Idle;
+
+    loop {
+        // Conservatively timestamp the pair before starting its oldest channel.
+        // The decision clock below must include time spent waiting for either read.
+        let feedback_started_ms = Instant::now().as_millis();
+        let readings = if feedback_timed_out {
+            Err(ControlState::FeedbackStale)
+        } else {
+            match with_timeout(feedback_timeout, async {
+                let a0_mv = adc.read_channel_mv(Mux::Ain0).await?;
+                let a1_mv = adc.read_channel_mv(Mux::Ain1).await?;
+                Ok::<_, i2c::Error>((a0_mv, a1_mv))
+            })
+            .await
+            {
+                Ok(Ok(readings)) => Ok(readings),
+                Ok(Err(_)) => Err(ControlState::FeedbackUnavailable),
+                Err(_) => {
+                    // Cancelling an I²C transfer can leave the peripheral mid-
+                    // transaction. Keep motion inhibited until reset rather than
+                    // reuse that bus and risk accepting a partial conversion.
+                    feedback_timed_out = true;
+                    error!("tracking: ADC read timed out; reset required");
+                    Err(ControlState::FeedbackStale)
+                }
+            }
+        };
+        let now_ms = Instant::now().as_millis();
+        let (feedback, feedback_fault) = match readings {
+            Ok((a0_mv, a1_mv)) => {
+                state.store_position(PositionTelemetry { a0_mv, a1_mv });
+                match HARD_CODED_CALIBRATION.feedback_to_position(FeedbackVoltages {
+                    a0_elevation_mv: a0_mv,
+                    a1_azimuth_mv: a1_mv,
+                }) {
+                    Ok(position) => (
+                        Some(TimedPointing::new(position, feedback_started_ms)),
+                        None,
+                    ),
+                    Err(_) => (None, Some(ControlState::FeedbackInvalid)),
+                }
+            }
+            Err(fault) => (None, Some(fault)),
+        };
+
+        // Stale samples must not count toward acquisition settling, even if a
+        // delayed read completes just as its timeout becomes ready.
+        let position = feedback
+            .filter(|feedback| now_ms - feedback.timestamp_ms <= control_config.feedback_timeout_ms)
+            .map(|feedback| feedback.position);
+        let pass = sequence.update(now_ms, position);
+        let decision = tracking_decision(&mut controller, now_ms, pass, feedback, feedback_fault);
+        let previous = state.tracking();
+        let reported = position.unwrap_or(ezal_core::position::Pointing::new(
+            previous.azimuth_tenths as f32 / 10.0,
+            previous.elevation_tenths as f32 / 10.0,
+        ));
+
+        store_autonomous_telemetry(
+            state,
+            TrackingMode::HardwareWalkingSkeleton,
+            pass,
+            reported,
+            decision,
+        );
+        state.apply_command(decision.command);
+
+        if pass.phase != last_phase {
+            info!(
+                "tracking: METOP-C {=str} {=u32}, {=u64} ms remaining",
+                pass.phase.as_str(),
+                pass.pass_index + 1,
+                pass.phase_remaining_ms
+            );
+            last_phase = pass.phase;
+        }
+        if decision.state != last_control_state {
+            info!("tracking: controller {=str}", decision.state.as_str());
+            last_control_state = decision.state;
+        }
+
+        Timer::after(CONTROL_PERIOD).await;
+    }
+}
+
+#[cfg(feature = "simulator")]
+fn tracking_decision(
+    controller: &mut TrackingController,
+    now_ms: u64,
+    pass: ezal_core::simulation::PassSample,
+    feedback: Option<TimedPointing>,
+    feedback_fault: Option<ControlState>,
+) -> ControlDecision {
+    if pass.phase == PassPhase::Fault {
+        return ControlDecision {
+            command: ezal_core::drive::Command::Stop,
+            state: ControlState::AcquisitionTimeout,
+        };
+    }
+
+    if let Some(feedback_fault) = feedback_fault {
+        let _ = controller.update(
+            now_ms,
+            pass.target.map(|target| TimedPointing::new(target, now_ms)),
+            None,
+        );
+        return ControlDecision {
+            command: ezal_core::drive::Command::Stop,
+            state: feedback_fault,
+        };
+    }
+
+    controller.update(
+        now_ms,
+        pass.target.map(|target| TimedPointing::new(target, now_ms)),
+        feedback,
+    )
+}
+
+#[cfg(feature = "simulator")]
+fn store_autonomous_telemetry(
+    state: &'static SharedState,
+    mode: TrackingMode,
+    pass: ezal_core::simulation::PassSample,
+    position: ezal_core::position::Pointing,
+    decision: ControlDecision,
+) {
+    state.store_tracking(TrackingTelemetry {
+        mode,
+        pass_index: pass.pass_index,
+        phase: pass.phase,
+        phase_remaining_ms: pass.phase_remaining_ms,
+        azimuth_tenths: degrees_to_tenths(position.azimuth_deg),
+        elevation_tenths: degrees_to_tenths(position.elevation_deg),
+        target_azimuth_tenths: pass
+            .target
+            .map(|target| degrees_to_tenths(target.azimuth_deg)),
+        target_elevation_tenths: pass
+            .target
+            .map(|target| degrees_to_tenths(target.elevation_deg)),
+        control_state: decision.state,
+    });
+}
+
+fn degrees_to_tenths(degrees: f32) -> i32 {
+    (degrees * 10.0 + 0.5) as i32
 }
 
 /// Drives the Embassy TCP/IP stack.
@@ -201,8 +418,8 @@ async fn main(spawner: Spawner) {
     // semantics — you cannot accidentally talk to a pin from two places.
     let p = embassy_rp::init(Default::default());
 
-    // Direction-switch outputs, held low until the dashboard begins sending
-    // leased drive states. Ordered to match the schematic:
+    // Direction-switch outputs, initially low and ordered to match the
+    // schematic:
     //
     //   GP10 → DIN 2  CW  (right)   D1
     //   GP11 → DIN 4  CCW (left)    D2
@@ -215,6 +432,48 @@ async fn main(spawner: Spawner) {
         Output::new(p.PIN_21, Level::Low),
     );
     spawner.must_spawn(drive::direction_task(directions, &state::STATE));
+
+    // I²C0 to the ADS1015: GP5 = SCL, GP4 = SDA (the schematic's fixed
+    // feedback pins), with 4.7 K pull-ups to 3.3 V on the interface board.
+    // POST before WiFi so acquisition is not delayed by network bring-up.
+    let i2c = I2c::new_async(p.I2C0, p.PIN_5, p.PIN_4, Irqs, i2c::Config::default());
+    let mut adc = Ads1015::new(i2c, ezal_core::ads1015::I2C_ADDR);
+
+    info!(
+        "ezal adc-bringup: POSTing ADS1015 at 0x{=u8:x}",
+        ezal_core::ads1015::I2C_ADDR
+    );
+    match adc.post().await {
+        Ok(r) => {
+            state::STATE.store_position(PositionTelemetry {
+                a0_mv: r.a0_mv,
+                a1_mv: r.a1_mv,
+            });
+            info!(
+                "ADS1015 POST OK: config=0x{=u16:x}, A0={=i32} mV, A1={=i32} mV",
+                r.config, r.a0_mv, r.a1_mv
+            );
+        }
+        Err(e) => {
+            error!("ADS1015 POST FAILED: {}", e);
+            loop {
+                Timer::after(Duration::from_secs(1)).await;
+            }
+        }
+    }
+
+    #[cfg(feature = "simulator")]
+    {
+        state::STATE.set_autonomous(true);
+        spawner.must_spawn(hardware_tracking_task(adc, &state::STATE));
+        info!("ezal: autonomous walking skeleton; hardware drive enabled");
+    }
+
+    #[cfg(not(feature = "simulator"))]
+    {
+        spawner.must_spawn(feedback_task(adc, &state::STATE));
+        info!("ezal: manual hardware mode");
+    }
 
     // ─── WiFi: bring up the CYW43439 and join the AP (station mode) ───
     // The Pico 2 W's on-module radio. `Wifi::init` powers it and spawns its
@@ -276,41 +535,6 @@ async fn main(spawner: Spawner) {
             }
         }
     }
-
-    // I²C0 to the ADS1015: GP5 = SCL, GP4 = SDA (the schematic's fixed
-    // feedback pins), with 4.7 K pull-ups to 3.3 V on the interface board.
-    // Default config is 100 kHz standard mode, which the ADS1015 handles
-    // comfortably.
-    let i2c = I2c::new_async(p.I2C0, p.PIN_5, p.PIN_4, Irqs, i2c::Config::default());
-    let mut adc = Ads1015::new(i2c, ezal_core::ads1015::I2C_ADDR);
-
-    info!(
-        "ezal adc-bringup: POSTing ADS1015 at 0x{=u8:x}",
-        ezal_core::ads1015::I2C_ADDR
-    );
-    match adc.post().await {
-        Ok(r) => {
-            state::STATE.store_position(PositionTelemetry {
-                a0_mv: r.a0_mv,
-                a1_mv: r.a1_mv,
-            });
-            info!(
-                "ADS1015 POST OK: config=0x{=u16:x}, A0={=i32} mV, A1={=i32} mV",
-                r.config, r.a0_mv, r.a1_mv
-            );
-        }
-        Err(e) => {
-            // A failed POST means the feedback path is untrustworthy, so we do
-            // not fall through into the readout loop. Report it and idle; the
-            // operator fixes the wiring and re-flashes.
-            error!("ADS1015 POST FAILED: {}", e);
-            loop {
-                Timer::after(Duration::from_secs(1)).await;
-            }
-        }
-    }
-
-    spawner.must_spawn(feedback_task(adc, &state::STATE));
 
     info!("ezal web: listening on http://<dhcp-address>/");
     web::serve(spawner, stack).await;

@@ -39,7 +39,7 @@ main {
   margin: 0 auto;
   padding: max(18px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto auto 1fr;
   gap: 16px;
 }
 header {
@@ -104,6 +104,30 @@ header {
   background: var(--coral);
 }
 .status.online::before { background: var(--teal); }
+.tracker {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--line);
+  box-shadow: 0 8px 28px rgba(23, 32, 35, 0.08);
+}
+.tracker-item {
+  min-width: 0;
+  padding: 12px;
+  background: var(--panel);
+}
+.tracker-value {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  font-size: 0.94rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .readouts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -142,6 +166,20 @@ header {
   font-size: 0.92rem;
   font-weight: 800;
 }
+.detail {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+.drive-state {
+  font-weight: 850;
+}
+.drive-state.active { color: var(--teal); }
+.autonomous .take,
+.autonomous .pad-wrap { display: none; }
 .pad-wrap {
   align-self: center;
   justify-self: center;
@@ -224,6 +262,7 @@ header {
     align-items: flex-end;
   }
   .readouts { grid-template-columns: 1fr; }
+  .tracker { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .value { font-size: 1.85rem; }
   .pad-wrap { padding: 12px; }
   .pad {
@@ -243,14 +282,24 @@ header {
       <div id="status" class="status">offline</div>
     </div>
   </header>
+  <section class="tracker" aria-label="Autonomous tracking status">
+    <div class="tracker-item"><span class="label">Source</span><span id="source" class="tracker-value">waiting</span></div>
+    <div class="tracker-item"><span class="label">Run</span><span id="run" class="tracker-value">--</span></div>
+    <div class="tracker-item"><span class="label">Phase</span><span id="phase" class="tracker-value">--</span></div>
+    <div class="tracker-item"><span class="label">Control</span><span id="health" class="tracker-value">--</span></div>
+  </section>
   <section class="readouts" aria-label="Position feedback">
     <div class="meter">
-      <span class="label">A0 raw</span>
-      <div class="value-row"><span id="a0" class="value">--</span><span class="unit">mV</span></div>
+      <span class="label">Azimuth</span>
+      <div class="value-row"><span id="azimuth" class="value">--</span><span class="unit">°</span></div>
+      <span class="detail">target <span id="target-azimuth">--</span>° · A1 <span id="a1">--</span> mV</span>
+      <span class="detail">drive <span id="azimuth-drive" class="drive-state" aria-live="polite">unknown</span></span>
     </div>
     <div class="meter">
-      <span class="label">A1 raw</span>
-      <div class="value-row"><span id="a1" class="value">--</span><span class="unit">mV</span></div>
+      <span class="label">Elevation</span>
+      <div class="value-row"><span id="elevation" class="value">--</span><span class="unit">°</span></div>
+      <span class="detail">target <span id="target-elevation">--</span>° · A0 <span id="a0">--</span> mV</span>
+      <span class="detail">drive <span id="elevation-drive" class="drive-state" aria-live="polite">unknown</span></span>
     </div>
   </section>
   <section class="pad-wrap" aria-label="Direction controls">
@@ -271,6 +320,18 @@ header {
   const take = document.getElementById("take");
   const a0 = document.getElementById("a0");
   const a1 = document.getElementById("a1");
+  const azimuth = document.getElementById("azimuth");
+  const elevation = document.getElementById("elevation");
+  const targetAzimuth = document.getElementById("target-azimuth");
+  const targetElevation = document.getElementById("target-elevation");
+  const source = document.getElementById("source");
+  const run = document.getElementById("run");
+  const phase = document.getElementById("phase");
+  const health = document.getElementById("health");
+  const driveIndicators = {
+    azimuth: document.getElementById("azimuth-drive"),
+    elevation: document.getElementById("elevation-drive")
+  };
   const buttons = Array.from(document.querySelectorAll(".dir"));
   const commands = {
     cw: { axis: "azimuth" },
@@ -286,6 +347,16 @@ header {
   const pointers = new Map();
   const axisPointers = { azimuth: null, elevation: null };
   let repeat = 0;
+
+  const degrees = (tenths) => tenths === null || tenths === undefined
+    ? "--"
+    : (tenths / 10).toFixed(1);
+
+  const duration = (milliseconds) => {
+    const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+  };
 
   const setStatus = (text, online) => {
     status.textContent = text;
@@ -320,6 +391,13 @@ header {
     syncButtons();
   };
 
+  const syncDriveIndicators = (known) => {
+    Object.entries(driveIndicators).forEach(([axis, indicator]) => {
+      indicator.textContent = known ? (drive[axis] || "idle").toUpperCase() : "unknown";
+      indicator.classList.toggle("active", Boolean(known && drive[axis]));
+    });
+  };
+
   const syncRepeat = () => {
     if (controller && hasDesired() && !repeat) {
       repeat = setInterval(() => send(command()), refreshMs);
@@ -349,6 +427,7 @@ header {
     controller = Boolean(message.controller);
     drive.azimuth = message.azimuth || null;
     drive.elevation = message.elevation || null;
+    syncDriveIndicators(true);
     if (!controller) {
       desired.azimuth = null;
       desired.elevation = null;
@@ -398,6 +477,19 @@ header {
           a1.textContent = message.a1_mv;
         } else if (message.type === "control") {
           applyControl(message);
+        } else if (message.type === "tracking") {
+          const autonomous = message.mode !== "manual";
+          document.body.classList.toggle("autonomous", autonomous);
+          source.textContent = `${message.satellite || "manual"} · ${message.mode}`;
+          run.textContent = autonomous ? `pass ${message.pass}` : "manual";
+          phase.textContent = autonomous
+            ? `${message.phase} · ${duration(message.remaining_ms)}`
+            : "calibration";
+          health.textContent = message.control_state;
+          azimuth.textContent = degrees(message.azimuth_tenths);
+          elevation.textContent = degrees(message.elevation_tenths);
+          targetAzimuth.textContent = degrees(message.target_azimuth_tenths);
+          targetElevation.textContent = degrees(message.target_elevation_tenths);
         }
       } catch (_) {}
     });
@@ -406,6 +498,7 @@ header {
       controller = false;
       drive.azimuth = null;
       drive.elevation = null;
+      syncDriveIndicators(false);
       syncControl();
       setStatus("offline", false);
       const wait = retry;

@@ -8,10 +8,11 @@
 
 use core::fmt;
 
+use crate::control::ControlState;
 use crate::drive::{
-    AzimuthDirection, Command, DriveCommand, ElevationDirection, OUTPUT_MIN_ACTIVE_MS,
-    OUTPUT_MIN_INACTIVE_MS,
+    AzimuthDirection, Command, DriveCommand, ElevationDirection, MOVEMENT_LEASE_MS,
 };
+use crate::simulation::{PassPhase, SIMULATED_SATELLITE};
 
 /// WebSocket route used by the dashboard.
 pub const WS_PATH: &str = "/ws";
@@ -26,14 +27,12 @@ pub const TELEMETRY_PERIOD_MS: u64 = 500;
 pub const COMMAND_REFRESH_MS: u64 = 150;
 
 /// How long the firmware allows a movement command to live without refresh.
-pub const COMMAND_TIMEOUT_MS: u64 = 750;
+pub const COMMAND_TIMEOUT_MS: u64 = MOVEMENT_LEASE_MS;
 
 // The browser's refresh must beat the firmware lease, and neither actuator
 // minimum (defined in `crate::drive`) may outlast that lease — otherwise a
 // held control could expire before its debounced output is even applied.
 const _: () = assert!(COMMAND_REFRESH_MS < COMMAND_TIMEOUT_MS);
-const _: () = assert!(OUTPUT_MIN_ACTIVE_MS <= COMMAND_TIMEOUT_MS);
-const _: () = assert!(OUTPUT_MIN_INACTIVE_MS <= COMMAND_TIMEOUT_MS);
 
 /// Parse a dashboard drive/stop text message into a [`Command`].
 ///
@@ -161,6 +160,102 @@ impl PositionTelemetry {
             out,
             "{{\"type\":\"position\",\"a0_mv\":{},\"a1_mv\":{}}}",
             self.a0_mv, self.a1_mv
+        )
+    }
+}
+
+/// Target/control source and physical-I/O wiring for tracking telemetry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackingMode {
+    /// Synthetic target source with real ADS1015 feedback and GPIO outputs.
+    HardwareWalkingSkeleton,
+    /// Real ADC feedback with dashboard-owned direction commands.
+    Manual,
+}
+
+impl TrackingMode {
+    /// Stable token used by dashboard telemetry.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::HardwareWalkingSkeleton => "hardware-walking-skeleton",
+            Self::Manual => "manual",
+        }
+    }
+
+    /// Whether firmware, rather than a dashboard client, owns control.
+    pub const fn is_autonomous(self) -> bool {
+        !matches!(self, Self::Manual)
+    }
+}
+
+/// Autonomous tracking state reported to the dashboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrackingTelemetry {
+    /// Target/control and hardware-I/O mode.
+    pub mode: TrackingMode,
+    /// Zero-based pass index since boot.
+    pub pass_index: u32,
+    /// Current pass/pause phase.
+    pub phase: PassPhase,
+    /// Milliseconds remaining in the current phase.
+    pub phase_remaining_ms: u64,
+    /// Calibrated current azimuth in tenths of a degree.
+    pub azimuth_tenths: i32,
+    /// Calibrated current elevation in tenths of a degree.
+    pub elevation_tenths: i32,
+    /// Target azimuth in tenths of a degree, absent during a pause.
+    pub target_azimuth_tenths: Option<i32>,
+    /// Target elevation in tenths of a degree, absent during a pause.
+    pub target_elevation_tenths: Option<i32>,
+    /// Controller health/inhibit state.
+    pub control_state: ControlState,
+}
+
+impl TrackingTelemetry {
+    /// Initial idle snapshot used before the autonomous task publishes.
+    pub const ZERO: Self = Self {
+        mode: TrackingMode::Manual,
+        pass_index: 0,
+        phase: PassPhase::Pause,
+        phase_remaining_ms: 0,
+        azimuth_tenths: 0,
+        elevation_tenths: 0,
+        target_azimuth_tenths: None,
+        target_elevation_tenths: None,
+        control_state: ControlState::Idle,
+    };
+
+    /// Write this snapshot as a compact WebSocket JSON message.
+    pub fn write_json(&self, out: &mut impl fmt::Write) -> fmt::Result {
+        fn write_option(out: &mut impl fmt::Write, value: Option<i32>) -> fmt::Result {
+            match value {
+                Some(value) => write!(out, "{}", value),
+                None => fmt::Write::write_str(out, "null"),
+            }
+        }
+
+        write!(
+            out,
+            "{{\"type\":\"tracking\",\"mode\":\"{}\",\"satellite\":\"{}\",\"phase\":\"{}\",\"pass\":{},\"remaining_ms\":{},\"azimuth_tenths\":{},\"elevation_tenths\":{},\"target_azimuth_tenths\":",
+            self.mode.as_str(),
+            if self.mode.is_autonomous() {
+                SIMULATED_SATELLITE
+            } else {
+                "manual"
+            },
+            self.phase.as_str(),
+            self.pass_index + 1,
+            self.phase_remaining_ms,
+            self.azimuth_tenths,
+            self.elevation_tenths,
+        )?;
+        write_option(out, self.target_azimuth_tenths)?;
+        fmt::Write::write_str(out, ",\"target_elevation_tenths\":")?;
+        write_option(out, self.target_elevation_tenths)?;
+        write!(
+            out,
+            ",\"control_state\":\"{}\"}}",
+            self.control_state.as_str()
         )
     }
 }

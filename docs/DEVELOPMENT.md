@@ -126,6 +126,17 @@ toolchain — `picotool` and all — that the build is checked against.
 cargo build -p ezal-firmware --release
 ```
 
+That command builds the default hardware-driving walking skeleton. It POSTs the
+ADS1015 and autonomously drives the rotator to a synthetic pass start. Manual
+hardware mode disables the autonomous target source:
+
+```bash
+cargo build -p ezal-firmware --release --no-default-features
+```
+
+Do not flash either mode onto a connected rotator until completing
+[CALIBRATION.md](CALIBRATION.md).
+
 The output lands at:
 
 ```
@@ -153,20 +164,26 @@ This is the *one command you'll run most*. It:
 You should see something like:
 
 ```
-0.000123 INFO  ezal wifi-bringup: joining "my-network" in STA mode
+0.000123 INFO  ezal adc-bringup: POSTing ADS1015 at 0x48
+0.002456 INFO  ADS1015 POST OK: config=0xc583, A0=1281 mV, A1=114 mV
+0.002789 INFO  ezal: autonomous walking skeleton; hardware drive enabled
+0.003012 INFO  tracking: METOP-C acquire 1, 120000 ms remaining
+0.003234 INFO  ezal wifi-bringup: joining "my-network" in STA mode
 2.310456 INFO  WiFi POST OK: joined "my-network" (secured)
-2.320789 INFO  ezal adc-bringup: POSTing ADS1015 at 0x48
-2.335012 INFO  ADS1015 POST OK: config=0xc583, A0=902 mV, A1=1974 mV
-2.835345 INFO  feedback: A0=903 mV, A1=1975 mV
-3.335678 INFO  feedback: A0=902 mV, A1=1974 mV
+2.320789 INFO  ezal net: waiting for DHCP
+3.100123 INFO  ezal net: DHCP OK
+3.101234 INFO  ezal web: listening on http://<dhcp-address>/
 ```
 
-The two POSTs run once at boot (each a hard gate — a failure is logged and
-the firmware idles there), then the feedback line repeats twice a second
-while the CYW43439 driver task keeps the WiFi link up in the background. The
-four direction GPIOs are held low, so nothing moves and — unlike the earlier
-direction-sweep — the interface board's D1–D4 LEDs stay dark; this bring-up
-is about *sensing*, not driving.
+The tracking task starts before the network. It acquires and settles at the
+pass start, runs a 180-second pass, stops for 30 seconds, then reacquires the
+next start. It keeps running if WiFi association or DHCP fails, and the four
+physical direction GPIOs can activate throughout acquisition and tracking.
+Once the web server is available, the dashboard displays the measured dish and
+synthetic target.
+
+With `--no-default-features`, the ADS1015 remains active but the dashboard
+exposes manual leased direction controls instead of the autonomous pass.
 
 ### Build a UF2 for BOOTSEL flashing
 

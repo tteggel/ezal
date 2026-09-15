@@ -1,8 +1,8 @@
 //! Tests for the rotator drive model and actuator-safety debouncer.
 
 use ezal_core::drive::{
-    AzimuthDirection, Command, Debouncer, DriveCommand, ElevationDirection, OUTPUT_MIN_ACTIVE_MS,
-    OUTPUT_MIN_INACTIVE_MS,
+    ActuatorGuard, AzimuthDirection, Command, Debouncer, DriveCommand, ElevationDirection,
+    MOVEMENT_LEASE_MS, OUTPUT_MIN_ACTIVE_MS, OUTPUT_MIN_INACTIVE_MS,
 };
 
 #[test]
@@ -134,4 +134,38 @@ fn debouncer_keeps_axis_timing_independent() {
     assert!(debouncer.update(OUTPUT_MIN_ACTIVE_MS));
     assert_eq!(debouncer.actual(), up);
     assert_eq!(debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS), None);
+}
+
+#[test]
+fn actuator_guard_stops_an_unrefreshed_movement_lease() {
+    let mut guard = ActuatorGuard::new();
+    let drive = DriveCommand {
+        azimuth: Some(AzimuthDirection::Clockwise),
+        elevation: Some(ElevationDirection::Up),
+    };
+
+    assert!(guard.command(Command::Drive(drive), 100));
+    assert_eq!(guard.actual(), drive);
+    assert_eq!(guard.lease_deadline_ms(), Some(100 + MOVEMENT_LEASE_MS));
+    assert!(!guard.update(100 + MOVEMENT_LEASE_MS - 1));
+    assert_eq!(guard.actual(), drive);
+
+    assert!(guard.update(100 + MOVEMENT_LEASE_MS));
+    assert_eq!(guard.actual(), DriveCommand::IDLE);
+    assert_eq!(guard.target(), DriveCommand::IDLE);
+    assert_eq!(guard.lease_deadline_ms(), None);
+}
+
+#[test]
+fn actuator_guard_refreshes_lease_without_changing_outputs() {
+    let mut guard = ActuatorGuard::new();
+    let drive = DriveCommand {
+        azimuth: Some(AzimuthDirection::Clockwise),
+        elevation: None,
+    };
+
+    assert!(guard.command(Command::Drive(drive), 0));
+    assert!(!guard.command(Command::Drive(drive), 500));
+    assert_eq!(guard.lease_deadline_ms(), Some(500 + MOVEMENT_LEASE_MS));
+    assert_eq!(guard.next_transition_ms(600), Some(1_250));
 }

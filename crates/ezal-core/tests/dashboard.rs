@@ -11,6 +11,11 @@ fn dashboard_uses_the_firmware_websocket_path() {
     assert!(INDEX_HTML.contains(TAKE_CONTROL_MESSAGE));
     assert!(INDEX_HTML.contains(r#"id="take""#));
     assert!(INDEX_HTML.contains(r#"message.type === "control""#));
+    assert!(INDEX_HTML.contains(r#"message.type === "tracking""#));
+    assert!(INDEX_HTML.contains("message.remaining_ms"));
+    assert!(INDEX_HTML.contains("message.target_azimuth_tenths"));
+    assert!(INDEX_HTML.contains("message.target_elevation_tenths"));
+    assert!(INDEX_HTML.contains(r#"message.mode !== "manual""#));
     assert!(INDEX_HTML.contains("drive[meta.axis] === cmd"));
     assert!(INDEX_HTML.contains("axisPointers[meta.axis] !== null"));
     assert!(INDEX_HTML.contains("axisPointers[claim.axis] = null"));

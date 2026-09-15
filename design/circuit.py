@@ -2,7 +2,7 @@
 ezal/design/circuit.py
 =======================
 
-Schemdraw source for the planned Raspberry Pi Pico 2 ↔ Yaesu G-5500
+Schemdraw source for the Raspberry Pi Pico 2 W ↔ Yaesu G-5500
 interface circuit. This is the canonical schematic for the project:
 edit this file when the circuit changes, then re-render to refresh
 `circuit.svg` (and `circuit.png`).
@@ -10,12 +10,12 @@ edit this file when the circuit changes, then re-render to refresh
 Topology
 --------
 
-  ┌────────┐  4× GPIO  ┌──────────┐  4× switch closure  ┌────────┐
-  │ Pico 2 │──────────▶│ 4× 2N3904│────────────────────▶│ G-5500 │
-  │        │           └──────────┘                     │ DIN-8  │
-  │        │  I2C      ┌──────────┐  2× analog          │        │
-  │        │──────────▶│ ADS1015  │◀────[2× R-divider]──│        │
-  └────────┘           └──────────┘                     └────────┘
+  ┌──────────┐  4× GPIO  ┌──────────┐  4× switch closure  ┌────────┐
+  │ Pico 2 W │──────────▶│ 4× 2N3904│────────────────────▶│ G-5500 │
+  │          │           └──────────┘                     │ DIN-8  │
+  │          │  I2C      ┌──────────┐  2× analog          │        │
+  │          │──────────▶│ ADS1015  │◀────[2× R-divider]──│        │
+  └──────────┘           └──────────┘                     └────────┘
 
 The four direction inputs (G-5500 pins 2/3/4/5) are driven straight from
 Pico GPIOs through 2N3904 open-collector switches. The two feedback
@@ -25,8 +25,11 @@ feedback down into a range the ADS1015 can sample comfortably.
 
 Rendering
 ---------
-    pip install --user schemdraw matplotlib
-    python3 circuit.py
+    nix develop            # pins schemdraw + matplotlib; see flake.nix
+    python3 design/circuit.py
+
+Outputs land beside this file whatever directory you run it from.
+(Outside the devshell: `pip install --user schemdraw matplotlib` first.)
 
 Produces `circuit.svg` (always) and `circuit.png` (best-effort, needs
 matplotlib). Both files are checked in so GitHub renders the schematic
@@ -34,9 +37,15 @@ without the reader needing a Python environment.
 
 Notes
 -----
-* GPIO assignments are *suggestions* — pick whatever is convenient on
-  the board. I²C0 defaults to GP4 (SDA) / GP5 (SCL); use any I²C-capable
-  pair if those conflict.
+* GPIO assignments are **fixed**, not suggestions: the firmware claims
+  these exact pins in `crates/ezal-firmware/src/main.rs`, so re-pinning
+  the schematic means re-pinning that file in the same commit. GP4 (SDA)
+  / GP5 (SCL) are I²C0's default pair and what the firmware opens.
+* Four GPIOs are unavailable for re-pinning on the Pico 2 W: **GP23,
+  GP24, GP25 and GP29** are wired to the on-module CYW43439 radio
+  (power-enable, gSPI DIO, CS and CLK). They are not brought out to the
+  header, and the firmware hands them to the WiFi driver at boot. The
+  direction and I²C pins above were chosen to keep clear of them.
 * Resistor values are picked from first principles for the G-5500 /
   G-5500DC interface (same external-control pinout on both):
     direction channels — 2.2 K series base, 10 K base-to-emitter pull-down
@@ -70,8 +79,13 @@ Notes
   divider math is in the comment above the FEEDBACK_CHANNELS table.
 """
 
+from pathlib import Path
+
 import schemdraw
 import schemdraw.elements as elm
+
+# Renders land beside this file whatever the caller's cwd is.
+HERE = Path(__file__).resolve().parent
 
 
 # ── Per-channel data ────────────────────────────────────────────────────
@@ -401,7 +415,7 @@ def common_ground(d: schemdraw.Drawing) -> None:
 # ── Title block ─────────────────────────────────────────────────────────
 def title(d: schemdraw.Drawing) -> None:
     d += elm.Label().label(
-        "Pico 2 ↔ Yaesu G-5500 / G-5500DC interface",
+        "Pico 2 W ↔ Yaesu G-5500 / G-5500DC interface",
         loc="top", fontsize=14,
     ).at((X_DIN / 2, TITLE_Y))
     d += elm.Label().label(
@@ -435,11 +449,11 @@ def build(filename: str | None, backend: str = "svg") -> None:
 
 def main() -> None:
     # SVG via the default text-only backend (always works).
-    build("circuit.svg", backend="svg")
+    build(str(HERE / "circuit.svg"), backend="svg")
 
     # PNG via matplotlib backend (best-effort).
     try:
-        build("circuit.png", backend="matplotlib")
+        build(str(HERE / "circuit.png"), backend="matplotlib")
     except Exception as exc:  # noqa: BLE001
         print(f"PNG render skipped: {exc}")
 

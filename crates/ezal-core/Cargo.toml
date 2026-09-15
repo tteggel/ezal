@@ -2,9 +2,9 @@
 # ezal-core — pure, no_std logic
 # ────────────────────────────────────────────────────────────────────────────
 #
-# This crate is deliberately hardware-independent. It will hold the
-# project's pure logic — pointing math, Yaesu G5500 command framing, az/el
-# slewing — as the firmware grows. It is empty for now.
+# This crate is deliberately hardware-independent. It holds calibration,
+# pointing units, pass simulation, fail-safe control, actuator timing, wire
+# protocol, ADC register logic, and the embedded dashboard asset.
 #
 # Because it has no hardware dependencies, it can be:
 #   * compiled for the embedded target (no_std, no allocator),
@@ -30,5 +30,4 @@ rust-version.workspace = true
 # The default `lib` settings are fine. No proc-macro, no special crate-type.
 
 [dependencies]
-# (none yet — pure logic with no external deps. A `defmt` optional feature
-# will come back once there are types the firmware wants to log.)
+# None: all logic remains allocator-free and `no_std`.

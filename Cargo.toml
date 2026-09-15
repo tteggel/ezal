@@ -5,8 +5,8 @@
 # The project is organised as a Cargo *workspace* with two member crates:
 #
 #   crates/ezal-core
-#     Pure, no_std Rust: eventually the satellite
-#     pointing math, G5500 control protocol, command parsers, etc. This crate
+#     Pure, no_std Rust: calibration, tracking simulation, controller,
+#     G5500 drive safety, protocol, and command parsers. This crate
 #     has no hardware dependencies, so it can be unit-tested on the host with
 #     a plain `cargo test`.
 #
@@ -52,9 +52,8 @@ authors      = ["ezal contributors"]
 [workspace.dependencies]
 
 # ── shared, no_std friendly ──────────────────────────────────────────────
-# `heapless` gives us fixed-capacity Vec/String/Queue types with no
-# allocator required — pretty much essential when we get to the rotator
-# command queue. Not used yet, but pinned so future crates inherit it.
+# `heapless` gives firmware fixed-capacity strings for WebSocket telemetry
+# without requiring an allocator.
 heapless = { version = "0.8", default-features = false }
 
 # ── embedded-only (consumed by ezal-firmware) ────────────────────────────

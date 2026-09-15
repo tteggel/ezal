@@ -113,6 +113,17 @@ async fn send_position<W: PicoserveWrite>(
     Ok(())
 }
 
+async fn send_tracking<W: PicoserveWrite>(
+    tx: &mut SocketTx<W>,
+    state: &'static SharedState,
+) -> Result<(), W::Error> {
+    let mut payload: String<384> = String::new();
+    if state.tracking().write_json(&mut payload).is_ok() {
+        tx.send_text(&payload).await?;
+    }
+    Ok(())
+}
+
 struct DashboardSocket {
     state: &'static SharedState,
 }
@@ -193,6 +204,10 @@ impl WebSocketCallback for DashboardSocket {
                         return Err(error);
                     }
                     if let Err(error) = send_control_status(&mut tx, state, client_id).await {
+                        state.release_client(client_id);
+                        return Err(error);
+                    }
+                    if let Err(error) = send_tracking(&mut tx, state).await {
                         state.release_client(client_id);
                         return Err(error);
                     }

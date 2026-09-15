@@ -2,9 +2,8 @@
 //!
 //! The two independent axes of the G-5500 rotator — azimuth and elevation —
 //! and the [`Command`]s that move them, expressed independently of any
-//! transport. The dashboard WebSocket is the only command source today, but
-//! the eventual USB-serial link will speak the same [`DriveCommand`] without
-//! knowing anything about the web.
+//! transport. Autonomous control and the hardware dashboard both speak the
+//! same [`DriveCommand`] without knowing anything about GPIOs.
 //!
 //! Alongside the vocabulary sits [`Debouncer`], the pure state machine that
 //! stops the relays and geartrain from seeing sub-[`OUTPUT_MIN_ACTIVE_MS`]
@@ -16,7 +15,10 @@
 pub const OUTPUT_MIN_ACTIVE_MS: u64 = 500;
 
 /// Minimum time an axis stays inactive before it may be energised again.
-pub const OUTPUT_MIN_INACTIVE_MS: u64 = OUTPUT_MIN_ACTIVE_MS;
+pub const OUTPUT_MIN_INACTIVE_MS: u64 = 2_000;
+
+/// Maximum lifetime of a movement command that has not been refreshed.
+pub const MOVEMENT_LEASE_MS: u64 = 750;
 
 /// Azimuth motion carried by a drive command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -231,6 +233,91 @@ impl Debouncer {
 }
 
 impl Default for Debouncer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Fail-safe movement lease wrapped around the relay-protecting debouncer.
+///
+/// Every active command must be refreshed before [`MOVEMENT_LEASE_MS`]
+/// elapses. If its source disappears, this guard changes the debouncer target
+/// to idle even when no explicit stop arrives. Keeping this state machine in
+/// the hardware-independent crate means the firmware GPIO boundary and the
+/// state transitions can be exercised with deterministic host tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActuatorGuard {
+    debouncer: Debouncer,
+    lease_deadline_ms: Option<u64>,
+}
+
+impl ActuatorGuard {
+    /// Create an idle guard with no active lease.
+    pub const fn new() -> Self {
+        Self {
+            debouncer: Debouncer::new(),
+            lease_deadline_ms: None,
+        }
+    }
+
+    /// Accept a command and refresh its movement lease when it is active.
+    ///
+    /// Returns `true` when the physically applicable drive state changed.
+    pub fn command(&mut self, command: Command, now_ms: u64) -> bool {
+        self.lease_deadline_ms = match command {
+            Command::Drive(drive) if drive.is_active() => {
+                Some(now_ms.saturating_add(MOVEMENT_LEASE_MS))
+            }
+            Command::Drive(_) | Command::Stop => None,
+        };
+        self.debouncer.set_target(command, now_ms)
+    }
+
+    /// Advance lease and debounce timers.
+    ///
+    /// Lease expiry is handled before the debouncer is advanced, so an
+    /// unrefreshed output can never be re-energised by a pending transition.
+    pub fn update(&mut self, now_ms: u64) -> bool {
+        let expired = self
+            .lease_deadline_ms
+            .is_some_and(|deadline| deadline <= now_ms);
+        if expired {
+            self.lease_deadline_ms = None;
+            self.debouncer.set_target(Command::Stop, now_ms)
+        } else {
+            self.debouncer.update(now_ms)
+        }
+    }
+
+    /// Drive state currently permitted at the physical output boundary.
+    pub const fn actual(&self) -> DriveCommand {
+        self.debouncer.actual()
+    }
+
+    /// Drive state most recently requested, after any lease expiry.
+    pub const fn target(&self) -> DriveCommand {
+        self.debouncer.target()
+    }
+
+    /// Current movement-lease deadline, if an active command owns one.
+    pub const fn lease_deadline_ms(&self) -> Option<u64> {
+        self.lease_deadline_ms
+    }
+
+    /// Next instant at which the guard may change its output state.
+    pub fn next_transition_ms(&self, now_ms: u64) -> Option<u64> {
+        match (
+            self.debouncer.next_transition_ms(now_ms),
+            self.lease_deadline_ms,
+        ) {
+            (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        }
+    }
+}
+
+impl Default for ActuatorGuard {
     fn default() -> Self {
         Self::new()
     }

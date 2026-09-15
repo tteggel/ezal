@@ -37,7 +37,12 @@ build = "build.rs"
 # more is needed in this manifest.
 
 [features]
-default = []
+default = ["simulator"]
+
+# Walking-skeleton target source. The default build reads the real ADS1015 and
+# drives the real direction outputs so the synthetic METOP-C pass exercises the
+# complete installed system end to end.
+simulator = []
 
 # Diagnostic only: dumps CYW43 firmware console logs when paired with a debug
 # defmt filter, e.g. `DEFMT_LOG=debug cargo run ... --features cyw43-firmware-logs`.

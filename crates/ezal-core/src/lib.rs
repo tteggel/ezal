@@ -15,6 +15,12 @@
 //!   ADC: Config-register packing, conversion-result decoding, and the
 //!   power-on self-test predicates. The bus transactions that use it live in
 //!   the firmware crate.
+//! * [`position`] — azimuth/elevation units, hard-coded installation
+//!   calibration, and calibrated angle ↔ feedback-millivolt conversion.
+//! * [`control`] — timestamp watchdogs, bounds checks, and the hysteretic
+//!   two-axis fail-safe controller.
+//! * [`simulation`] — the repeating METOP-C pass profile and its
+//!   acquire → track → pause sequencer.
 //! * [`wifi`] — validation of the station-mode WiFi credentials that
 //!   `build.rs` bakes in from `.env`. Pure predicates the firmware's WiFi
 //!   POST checks before it powers the radio.
@@ -58,7 +64,10 @@
 #![warn(clippy::all)]
 
 pub mod ads1015;
+pub mod control;
 pub mod dashboard;
 pub mod drive;
+pub mod position;
 pub mod protocol;
+pub mod simulation;
 pub mod wifi;

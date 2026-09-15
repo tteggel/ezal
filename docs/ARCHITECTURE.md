@@ -1,173 +1,132 @@
 # Architecture
 
-This document explains *how* and *why* the project is structured the way
-it is. It is intended for someone who has read the README and wants to
-understand the trade-offs before adding code.
+ezal separates deterministic tracking logic from the RP2350 peripherals that
+feed and apply it. The default build is a hardware-driving walking skeleton:
+only the deterministic METOP-C target source is synthetic. The ADS1015,
+calibration, controller, direction GPIOs, and installed rotator all participate.
 
-## High level
+## Runtime data flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                            host PC                                  │
-│  ┌──────────────────┐   USB-serial   ┌──────────────────────────┐   │
-│  │  ground control  │ ─────────────▶ │   ezal-firmware (Pico 2) │   │
-│  │  (orbit propag.) │   az/el        │                          │   │
-│  └──────────────────┘                └─────────────┬────────────┘   │
-│                                                    │   ▲           │
-│                                  ×4 switch-closure │   │ I²C ADS1015│
-│                                                    ▼   │ + dividers │
-│                                          ┌──────────────────┐       │
-│                                          │  Yaesu G-5500    │       │
-│                                          │  az/el rotator   │       │
-│                                          └──────────────────┘       │
-└─────────────────────────────────────────────────────────────────────┘
-```
+```text
+ walking skeleton (default)
 
-The firmware is the bridge between *digital* az/el commands from a host
-computer and the G-5500's *switch-closure* direction inputs, reading the
-controller's *analog* position feedback to close the loop. It is
-responsible for:
+ METOP-C pass scheduler ── target az/el ─┐
+                                         ▼
+ G-5500 ─ ADS1015 mV ─ calibrated az/el ─ controller ─ lease/timing ─ GPIO
+    ▲                                                                  │
+    └────────────────────── interface direction inputs ◀───────────────┘
 
-- accepting az/el targets over USB-serial (or, later, UART),
-- driving the G-5500's four direction inputs through transistor switches,
-- reading az/el feedback over I²C from an external ADC (Adafruit ADS1015),
-- running a small bang-bang position controller with deadband so the
-  motors stop when the dish is close enough to the target,
-- reporting status back to the host.
+ manual hardware (--no-default-features)
 
-For step one we are doing none of that. The firmware just walks the four
-direction GPIOs in a repeating sweep, but the architectural shape of the
-project is already in place — `main` is an async function on the Embassy
-executor, pure logic lives in a separately-testable crate (`ezal-core`),
-and timing comes from `embassy_time` rather than busy-loops. Every later
-feature slots in as another async task.
-
-## Workspace layout
-
-The project is a Cargo workspace with two crates:
-
-```
-crates/
-├── ezal-core/        ← pure logic, no_std, host-testable
-└── ezal-firmware/    ← embedded application
+ dashboard manual command ─ command lease ─ relay timing ─ GPIO ─ G-5500
+                                                            │
+ dashboard ◀── calibrated az/el ◀── A0/A1 mV ◀── ADS1015 ◀──┘
 ```
 
-This split is the single most important architectural decision in the
-project. It is a long-standing best practice in embedded firmware. The
-trade-offs are:
+Both modes POST the ADS1015 before WiFi association or DHCP. Default mode then
+begins autonomous acquisition; manual mode waits for leased dashboard input.
 
-| concern                  | ezal-core                | ezal-firmware             |
-|--------------------------|--------------------------|---------------------------|
-| `std`                    | no (except under `cfg(test)`) | no                   |
-| allocator                | no                       | no                        |
-| async                    | yes (when needed)        | yes (Embassy)             |
-| HAL deps                 | **none**                 | embassy-rp                |
-| testable on host         | **yes**                  | no                        |
-| testable on hardware     | yes (via firmware)       | yes                       |
-| flashed onto the chip    | yes (as a dep)           | yes                       |
+Before every synthetic pass, the sequencer commands its first horizon target.
+The dish must remain within 4° on each axis for one second before the 180-second
+pass clock begins. A 120-second acquisition timeout stops and latches the
+sequence in fault. A pass peaks at 82° elevation, returns to the horizon, then
+supplies no target for exactly 30 seconds. Successive passes reverse azimuth
+direction. This is a representative METOP-C-labelled profile, not orbital
+propagation from a TLE.
 
-The rule of thumb: **if you can write it without thinking about a register
-or a pin, it goes in `ezal-core`**. That will cover pointing math, command
-parsing, slew planning, and the G-5500 protocol as the firmware grows.
+## Workspace boundary
 
-The firmware crate stays a thin shell that wires pure logic to peripherals.
+`crates/ezal-core` is `no_std`, deterministic, and hardware-independent:
 
-## Why Embassy?
+- `position` owns angle units, installed-system calibration, and both sides of
+  the degrees ↔ ADC-millivolts mapping;
+- `simulation` owns the pass schedule and acquire → track → pause sequencer;
+- `control` owns input validation, freshness watchdogs, mechanical limits, and
+  hysteretic bang-bang decisions;
+- `drive` owns the command vocabulary, 750 ms movement lease, 500 ms minimum
+  active time, and 2 s minimum inactive time;
+- `protocol` and `dashboard` expose raw and calibrated telemetry;
+- `ads1015` and `wifi` contain pure register/credential logic.
 
-There are three viable async/concurrency frameworks for the RP2350:
+`crates/ezal-firmware` is the thin Embassy/HAL shell:
 
-1. **Bare-metal** + `cortex-m-rt` + `embedded-hal`: maximum transparency,
-   minimum framework, but lots of boilerplate for any non-trivial
-   timing / concurrency.
-2. **RTIC** (Real-Time Interrupt-driven Concurrency): static analysis of
-   resource priorities, very predictable, but the programming model is
-   priority-based and feels less natural for I/O-heavy code.
-3. **Embassy**: cooperative `async` runtime; tasks `.await` on timers and
-   peripherals; the executor sleeps the core between events. The
-   programming model is the same `async` Rust you'd write on a host.
+- `main` selects autonomous walking-skeleton or manual control and runs the
+  periodic feedback/control tasks;
+- `drive` is the only owner of the four direction GPIOs and applies the core
+  actuator guard at the final output boundary;
+- `ads1015` and `wifi` perform hardware transactions and power-on tests;
+- `state` coordinates tasks with atomics and a command signal;
+- `web` serves the dashboard and WebSocket telemetry.
 
-ezal will be I/O-bound: serial in, four GPIO direction outputs, periodic
-I²C reads from the ADS1015, no hard-realtime sub-microsecond deadlines.
-The Embassy model — `Timer::after`, `UartRx::read_until_idle`,
-`I2c::read`, etc. — fits cleanly and produces obvious code. That is the
-*whole reason* this architecture works for a multi-feature tracker
-without devolving into a state-machine spaghetti.
+The production target transport or TLE source will yield timestamped
+`TimedPointing` values to the existing controller. It does not need to know how
+feedback is measured or commands are applied.
 
-If a future feature needs sub-millisecond determinism we can pin one
-core to a hard real-time loop and keep the other on Embassy.
+## Closed-loop tick
 
-## Why pin everything (toolchain, deps, profile)?
+The hardware walking skeleton runs this sequence every 100 ms:
 
-Embedded development punishes "version drift" more than most domains
-because the same crash on a new compiler can be silent (corrupted RAM)
-rather than a panic. Pinning:
+1. Read A0/A1 millivolts from the real ADS1015.
+2. Convert those readings to calibrated mechanical az/el.
+3. Acquire and settle at the pass start, or sample the moving pass target (no
+   target is supplied during the pause).
+4. Validate target and feedback values and timestamps.
+5. Run the hysteretic controller and publish a leased drive/stop command.
+6. Publish coherent tracking telemetry for the dashboard.
 
-- **rustup** channel to a specific version (in `rust-toolchain.toml`),
-- every dependency version in `Cargo.toml` `[workspace.dependencies]`,
-- `Cargo.lock` checked in,
+Feedback keeps the timestamp from before the first channel read, and the
+controller checks its age against the clock after both reads. The pair has a
+500 ms read timeout; a timeout requests stop, reports `feedback-stale`, and
+disables further ADC reads until reset because the cancelled I²C transfer may
+be unfinished. Stale feedback cannot satisfy the acquisition settle gate.
 
-means everyone — including CI and you, six months from now — builds the
-same bytes. Bumping any of these is a deliberate, reviewable change.
+The output task independently processes that command through lease expiry and
+relay timing. If the control task stops refreshing, movement is removed even
+without an explicit stop.
 
-## Future modules
+## Safety layers
 
-The workspace shape is designed so new modules can be dropped in without
-restructuring — but we'll add them when they have concrete code to hold,
-not pre-emptively. Things on the horizon:
+| layer | invariant |
+|-------|-----------|
+| acquisition gate | pass clock starts only after a one-second settle; failure within 120 s stops in fault |
+| calibrated feedback | non-finite/out-of-envelope positions and voltages beyond the 25 mV endpoint margin are rejected |
+| target/feedback watchdog | data older than 500 ms (or timestamped in the future) requests stop |
+| mechanical envelope | scheduler and controller use the installed calibration's angle endpoints |
+| hysteresis | axes engage at 4° error and release at 1.5°, avoiding noisy chatter |
+| movement lease | active commands expire after 750 ms without refresh |
+| relay timing | outputs stay on for at least 500 ms and off for at least 2 s before reactivation/reversal |
+| pin ownership | one Embassy task owns all direction pins and clears them before its loop starts |
 
-- a host-testable angle / unit-conversion module in `ezal-core`,
-- a hysteretic position controller in `ezal-core`,
-- firmware tasks for I²C ADC sampling and direction-switch control,
-  wired to those `ezal-core` modules via plain function calls.
+No software layer replaces correct mechanical end stops, an accessible motor
+power disconnect, safe cable routing, or the calibration procedure.
 
-Exact filenames and module boundaries will surface when we get there.
+## Shared state and control ownership
 
-## Testing strategy
+The tracking task is the only writer of autonomous telemetry. A small sequence
+lock lets WebSocket readers obtain one coherent pass/target/position snapshot
+without a heap or async mutex. The GPIO task records its logical applied drive
+separately.
 
-Three levels:
+Each dashboard position card shows the applied drive direction or `IDLE`,
+including in autonomous mode. These indicators use the GPIO task's control
+telemetry and show `unknown` when the WebSocket disconnects.
 
-1. **Host unit tests** — `ezal-core` is plain Rust, so we use the regular
-   test harness. CI runs these on Linux. This is where the majority of
-   the test surface lives; it catches encoding/parsing/math bugs cheaply.
+When the autonomous walking skeleton is active, browser clients cannot acquire
+manual control. In the explicit manual hardware build, the first dashboard
+client may control the direction buttons; disconnect, loss of control
+ownership, malformed commands, and lease timeout all request stop.
 
-2. **Cross-compile** — CI builds `ezal-firmware` for the Pico 2 target
-   and runs clippy on it. This catches type-level regressions in code
-   that touches the HAL without needing real hardware.
+## Verification
 
-3. **Hardware-in-the-loop** — *future*: a small smoke-test binary that
-   asserts (e.g.) "after sending a known TLE the LED hits a known
-   az/el position within X seconds". Runs on a dev kit attached to a
-   self-hosted CI runner.
+Host tests cover calibration endpoints and round trips, channel ordering,
+controller hysteresis and every fail-safe input class, movement lease expiry,
+relay timing, pass/pause boundaries, acquisition settling and timeout,
+protocol JSON, and dashboard wiring. Firmware verification cross-compiles the
+walking-skeleton and manual hardware feature sets for
+`thumbv8m.main-none-eabihf`.
 
-For now we only have layers 1 and 2.
-
-## Logging and panics
-
-We use [`defmt`](https://defmt.ferrous-systems.com/) for logging and
-[`panic-probe`](https://github.com/knurling-rs/probe-run) for panics.
-Both stream over RTT (Real-Time Transfer): a small ring buffer in the
-chip's SRAM that the debug probe reads in real time. Two consequences:
-
-- Log strings live in the *elf*, not in the *flashed image*; only their
-  integer indices end up on the chip. This makes logging essentially
-  free in flash space and very fast at runtime.
-- You only see logs while a debugger probe is attached. For untethered
-  debugging (e.g. in the field) we'd add a separate USB-serial logger
-  later.
-
-## What is deliberately *not* done
-
-To keep the project tractable, the following are explicitly out of scope
-for the early phases:
-
-- TLE propagation on the chip (the host does the orbit math).
-- Network layers *above* the WiFi link. The firmware now brings up the
-  Pico 2 W's radio and joins an access point in station mode (see
-  [`wifi.rs`](../crates/ezal-firmware/src/wifi.rs)), so the target board is
-  the **W** — but an IP stack (DHCP/TCP over `embassy-net`), a web UI, and
-  OTA updates all remain out of scope for now. The join is the foundation
-  those would build on.
-- Closed-loop control with encoder feedback finer than the G-5500's
-  built-in pot.
-
-These can come back when there's a real user demand.
+Hardware-in-the-loop verification is still required before production use:
+measure real endpoint voltages, replace the placeholder calibration, confirm
+direction polarity, inject ADC/link faults, and measure motor coast/brake
+behaviour. See [CALIBRATION.md](CALIBRATION.md) and
+[HARDWARE.md](HARDWARE.md).
