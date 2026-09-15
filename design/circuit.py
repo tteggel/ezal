@@ -64,11 +64,6 @@ Notes
                         ≈ 0.448. That puts 4.5 V at the rotator's full
                         scale into 2.02 V at the ADC — 99% of the ±2.048 V
                         FSR PGA setting, ~1 mV LSB.
-    feedback filter cap — 100 nF in parallel with R_lower
-                        (≈ 35 Hz LP with the ~45 K Thévenin impedance,
-                        rejects 50/60 Hz pickup at no cost to tracking
-                        bandwidth; the G-5500's own 220 µH + 0.01 µF LC
-                        on the output handles the RFI-rate stuff)
     I²C pull-ups        — 4.7 K to 3.3 V on SDA and SCL
 * The ADS1015's ADDR pin is tied to GND for the default address 0x48.
 * These values assume the G-5500's direction inputs sink a few mA at
@@ -343,27 +338,20 @@ def feedback_divider(d: schemdraw.Drawing, idx: int, ads_pin_xy: tuple,
 
     Topology:
 
-        chip pin ●──tap──[R_up]──── DIN pin (G-5500 feedback, 2.0–4.5 V)
-                  │
-                  ●─────────●
-                  │         │
-                 R_lo      100 nF
-                  │         │
-                  ●─────────●
-                       │
-                      GND
-
-    The 100 nF cap in parallel with R_lo gives a ≈ 35 Hz low-pass
-    with the ~45 K Thévenin impedance, rejecting 50/60 Hz pickup and
-    switching noise; the corner is still well above any realistic
-    mechanical bandwidth of the rotator. (See the module docstring and
-    docs/HARDWARE.md, which derive the same ~35 Hz figure.)
+        chip pin ───●──[R_up]──── DIN pin (G-5500 feedback, 2.0–4.5 V)
+                    │
+                   R_lo
+                    │
+                   GND
     """
     ax, ay = ads_pin_xy
     tap_y = ay
-    tap_x = ax + 0.3
+    # The tap sits a short run out from the end of the chip pin stub
+    # (ax + 0.3) so R_lo's body clears the chip outline.
+    tap_x = ax + 1.3
 
-    # Tap dot on the chip pin stub.
+    # Chip pin stub → tap.
+    d += elm.Line().endpoints((ax + 0.3, tap_y), (tap_x, tap_y))
     d += elm.Dot().at((tap_x, tap_y))
 
     # R_upper: tap → DIN pin (horizontal).
@@ -372,32 +360,16 @@ def feedback_divider(d: schemdraw.Drawing, idx: int, ads_pin_xy: tuple,
     d += elm.Label().label(f"DIN {din_pin}\n{what}", loc="right",
                            ofst=(0.1, 0), fontsize=9)
 
-    # The two parallel-to-GND elements (R_lo and 100 nF) live in a
-    # branch zone just below the tap so they don't share the y-line
-    # with R_up.
-    branch_y = tap_y - 0.6
-    r_lo_x   = tap_x + 1.0
-    cap_x    = tap_x + 2.0
-
-    # Vertical stub from the tap down to the branch bar.
-    d += elm.Line().endpoints((tap_x, tap_y), (tap_x, branch_y))
-    # Horizontal branch bar, from below the tap out to the cap column.
-    d += elm.Line().endpoints((tap_x, branch_y), (cap_x, branch_y))
-    d += elm.Dot().at((r_lo_x, branch_y))
-    d += elm.Dot().at((cap_x, branch_y))
-
-    # R_lo straight down.
-    d += (r := elm.Resistor().down().at((r_lo_x, branch_y))
-          .length(1.5).label(r_lo, loc="left"))
-
-    # 100 nF cap in parallel with R_lo.
-    d += (c := elm.Capacitor().down().at((cap_x, branch_y))
-          .length(1.5).label("100 nF", loc="right"))
-
-    # Bottom bar joining R_lo and the cap, with a single GND symbol.
-    d += elm.Line().endpoints(r.end, c.end)
-    mid_x = (r_lo_x + cap_x) / 2
-    d += elm.Ground().at((mid_x, r.end[1]))
+    # R_lo: tap → GND, straight down. Its label is placed with explicit
+    # coords to the right of the body: loc-based placement on a vertical
+    # resistor puts it on top of the ground symbol. hold() stops the
+    # branch's downward direction leaking into later bare Labels, which
+    # schemdraw offsets by the current direction ("Pico GND" would drop
+    # below its wire).
+    with d.hold():
+        d += (r := elm.Resistor().down().at((tap_x, tap_y)).length(1.5))
+        d += elm.Label().label(r_lo).at((tap_x + 0.75, tap_y - 0.75))
+        d += elm.Ground().at(r.end)
 
 
 # ── Common ground ───────────────────────────────────────────────────────

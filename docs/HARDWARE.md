@@ -185,12 +185,10 @@ The interface circuit (canonical version in
   codes across the working range: 0.16°/code on elevation and
   0.40°/code on azimuth.
 
-  A **100 nF** cap in parallel with the 82 K resistor forms a ≈ 35 Hz
-  low-pass with the resulting ~45 K Thévenin, rejecting 50/60 Hz pickup
-  without costing tracking bandwidth (the rotator's mechanical bandwidth
-  is well under 1 Hz). The G-5500 already has a 220 µH + 0.01 µF LC
-  filter (L6004 / C6019 in the manual) on the same line at a much higher
-  corner (≈ 107 kHz) for RFI, so the two filters complement each other.
+  There is no filter capacitor across the 82 K resistor: the dividers
+  feed the ADS1015 inputs directly. The only analog filtering on the
+  line is inside the G-5500 — a 220 µH + 0.01 µF LC (L6004 / C6019 in
+  the manual) with a ≈ 107 kHz corner, there for RFI.
 
   The Pico talks to the ADS1015 over I²C0 (GP4 = SDA, GP5 = SCL) with
   **4.7 K** pull-ups to 3.3 V. The ADS1015's ADDR pin is tied to GND,
