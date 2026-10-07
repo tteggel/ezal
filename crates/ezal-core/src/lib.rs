@@ -23,8 +23,8 @@
 //!   before relay timing and admits every command through it.
 //! * [`motion`] — latched motion-progress and plausibility supervision using
 //!   applied outputs, feedback resolution, and accumulated energised time.
-//! * [`authority`] — exclusive browser command ownership;
-//!   browser movement becomes operator-held jogs.
+//! * [`coordination`] — exclusive manual ownership and atomic command delivery.
+//! * [`session`] — source freshness and ordered operator intent.
 //! * [`mailbox`] — a pending command slot where safety inhibition takes
 //!   precedence over movement refreshes.
 //! * [`wifi`] — validation of the station-mode WiFi credentials that
@@ -78,7 +78,8 @@
 
 pub mod actuator;
 pub mod ads1015;
-pub mod authority;
+mod authority;
+pub mod coordination;
 pub mod dashboard;
 pub mod drive;
 pub mod feedback;
@@ -92,4 +93,5 @@ pub mod orbit;
 pub mod passes;
 pub mod position;
 pub mod protocol;
+pub mod session;
 pub mod wifi;

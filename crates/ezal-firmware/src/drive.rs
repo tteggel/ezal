@@ -108,16 +108,24 @@ pub async fn direction_task(
 
     loop {
         let now = Instant::now();
-        let interlock = state.interlock();
-        let network = state.network();
-        if !network.ready(now.as_millis()) || network_generation != network.generation() {
-            // Clear active AND pending requests before advancing relay timing.
-            // Keep the real feedback available to the motion monitor; network
-            // inhibition must not hide a latched position plausibility fault.
-            actuator.command(Command::Inhibit, &interlock, now.as_millis());
-            network_generation = network.generation();
+        let input = state.take_actuator_input(now.as_millis());
+        if !input.network.ready(now.as_millis()) || network_generation != input.network.generation()
+        {
+            actuator.command(Command::Inhibit, &input.interlock, now.as_millis());
+            network_generation = input.network.generation();
         }
-        actuator.service(&interlock, now.as_millis());
+        // Drain the coherent input before advancing pending transitions. An
+        // arriving stop cancels an activation even when both become due now.
+        if let Some(queued) = input.command {
+            actuator.command_until(
+                input.network.guard_command(queued.command, now.as_millis()),
+                &input.interlock,
+                now.as_millis(),
+                queued.valid_until_ms,
+            );
+        } else {
+            actuator.service(&input.interlock, now.as_millis());
+        }
         apply(&mut outputs, state, &actuator);
 
         // Feeding from this loop proves the actuator task ran and serviced the
@@ -130,33 +138,14 @@ pub async fn direction_task(
             next_service += SERVICE_PERIOD;
         }
         let mut deadline = actuator
-            .next_deadline_ms(&interlock, now.as_millis())
+            .next_deadline_ms(&input.interlock, now.as_millis())
             .map(Instant::from_millis)
             .map_or(next_service, |deadline| deadline.min(next_service));
-        if let Some(network_deadline) = network.deadline_ms() {
+        if let Some(network_deadline) = input.network.deadline_ms() {
             deadline = deadline.min(Instant::from_millis(network_deadline));
         }
 
-        if let Ok(Some(queued)) = with_deadline(deadline, state.wait_command()).await {
-            let now = Instant::now();
-            let network = state.network();
-            let interlock = state.interlock();
-            if network_generation != network.generation() {
-                // A complete outage/recovery may happen between service
-                // passes. Cancel the previous generation's pending relay
-                // transition before admitting anything in the new one.
-                actuator.command(Command::Inhibit, &interlock, now.as_millis());
-                network_generation = network.generation();
-            }
-            let command = network.guard_command(queued.command, now.as_millis());
-            actuator.command_until(
-                command,
-                &interlock,
-                now.as_millis(),
-                queued.valid_until_ms.unwrap_or(now.as_millis()),
-            );
-            apply(&mut outputs, state, &actuator);
-        }
+        let _ = with_deadline(deadline, state.wait_changed()).await;
     }
 }
 

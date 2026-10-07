@@ -21,6 +21,7 @@ use picoserve::routing::{get, PathRouter};
 
 use ezal_core::dashboard::INDEX_HTML;
 use ezal_core::drive::Command;
+use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::passes::Report;
 use ezal_core::protocol::{
     ClientMessage, CommandFreshness, FeedbackTelemetry, PositionTelemetry, TELEMETRY_PERIOD_MS,
@@ -295,20 +296,23 @@ impl WebSocketCallback for DashboardSocket {
                             tx.send_text("{\"type\":\"input_required\"}").await?;
                             true
                         }
-                        Some(ClientMessage::Command(command)) => {
+                        Some(ClientMessage::Stop) => {
                             freshness.disarm();
-                            state.accept_command(client_id, command)
+                            state.accept_command(client_id, CommandEnvelope::INHIBIT)
                         }
                         Some(ClientMessage::Movement(request)) => {
                             let now_ms = Instant::now().as_millis();
                             if let Some(deadline) = freshness.admit(request, now_ms) {
-                                state.accept_command_until(
+                                state.accept_command(
                                     client_id,
-                                    Command::Drive(request.drive),
-                                    deadline,
+                                    CommandEnvelope {
+                                        command: Command::Jog(request.drive),
+                                        valid_until_ms: deadline,
+                                    },
                                 )
                             } else {
-                                let signaled = state.accept_command(client_id, Command::Inhibit);
+                                let signaled =
+                                    state.accept_command(client_id, CommandEnvelope::INHIBIT);
                                 // Clear the browser hold too; a newly issued
                                 // token must not turn a timer refresh into a
                                 // new operator press after this rejection.
@@ -318,7 +322,8 @@ impl WebSocketCallback for DashboardSocket {
                         }
                         None => {
                             freshness.reject();
-                            let signaled = state.accept_command(client_id, Command::Inhibit);
+                            let signaled =
+                                state.accept_command(client_id, CommandEnvelope::INHIBIT);
                             tx.send_text("{\"type\":\"input_required\"}").await?;
                             signaled
                         }
@@ -336,7 +341,7 @@ impl WebSocketCallback for DashboardSocket {
                 }
                 Either::First(Ok(Message::Binary(_))) => {
                     freshness.reject();
-                    if state.accept_command(client_id, Command::Inhibit) {
+                    if state.accept_command(client_id, CommandEnvelope::INHIBIT) {
                         yield_now().await;
                     }
                 }

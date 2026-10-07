@@ -1,244 +1,109 @@
-//! Typed state shared by the feedback, dashboard, and actuator tasks.
+//! Embassy synchronization around pure manual-control coordination.
 //!
-//! Snapshots and command ownership changes use a short critical section. No
-//! lock crosses an await or performs I/O; the GPIO task alone applies commands.
+//! No lock crosses an await or performs I/O. The signal is only a wake hint;
+//! every actuator iteration drains a coherent input from the stored state.
 
 use core::cell::RefCell;
-
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_sync::signal::Signal;
 use embassy_time::Instant;
-
-use ezal_core::authority::ControlAuthority;
-use ezal_core::drive::{Command, DriveCommand, MOVEMENT_LEASE_MS};
+use ezal_core::actuator::ActuatorInput;
+use ezal_core::coordination::{ControlStatus, CoordinationState, TelemetrySnapshot};
+use ezal_core::drive::DriveCommand;
 use ezal_core::feedback::FeedbackSnapshot;
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandMailbox;
+use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::motion::MotionFault;
 use ezal_core::network::NetworkGate;
 use ezal_core::position::FeedbackVoltages;
-use ezal_core::protocol::ControlStatus;
 
-/// The one shared-state instance, wired to every task from `main`.
 pub static STATE: SharedState = SharedState::new();
 
-/// Values read or changed together while the critical section is held.
-struct Snapshot {
-    feedback: FeedbackSnapshot,
-    authority: ControlAuthority,
-    applied_drive: DriveCommand,
-    interlock: FeedbackInterlock,
-    commands: CommandMailbox,
-    command_valid_until_ms: Option<u64>,
-    network: NetworkGate,
-    motion_fault: Option<MotionFault>,
-}
-
-/// One command plus its original expiry. Queueing or consuming a command must
-/// never restart the time budget assigned when its source was validated.
-pub struct QueuedCommand {
-    pub command: Command,
-    pub valid_until_ms: Option<u64>,
-}
-
-/// Coordination state shared safely between Embassy tasks.
 pub struct SharedState {
-    snapshot: Mutex<CriticalSectionRawMutex, RefCell<Snapshot>>,
+    inner: Mutex<CriticalSectionRawMutex, RefCell<CoordinationState>>,
     changed: Signal<CriticalSectionRawMutex, ()>,
 }
 
 impl SharedState {
-    /// Create empty shared state. Motion stays inhibited until a feedback monitor
-    /// publishes an interlock built from the installed calibration.
     pub const fn new() -> Self {
         Self {
-            snapshot: Mutex::new(RefCell::new(Snapshot {
-                feedback: FeedbackSnapshot::INITIAL,
-                authority: ControlAuthority::new(),
-                applied_drive: DriveCommand::IDLE,
-                interlock: FeedbackInterlock::INHIBITED,
-                commands: CommandMailbox::new(),
-                command_valid_until_ms: None,
-                network: NetworkGate::new(),
-                motion_fault: None,
-            })),
+            inner: Mutex::new(RefCell::new(CoordinationState::new())),
             changed: Signal::new(),
         }
     }
 
-    /// Run `change` inside the shared state's critical section.
-    fn with<R>(&self, change: impl FnOnce(&mut Snapshot) -> R) -> R {
-        self.snapshot.lock(|snapshot| {
-            let mut snapshot = snapshot.borrow_mut();
-            // Expiration is independent of the network task that renews the
-            // permit. In particular, the GPIO task reaches this path even if
-            // join, DHCP, or supervision stops making progress.
-            if snapshot.network.expire(Instant::now().as_millis()) {
-                self.revoke_network_motion(&mut snapshot);
-            }
-            change(&mut snapshot)
-        })
+    fn with<R>(&self, operation: impl FnOnce(&mut CoordinationState) -> R) -> R {
+        self.inner.lock(|state| operation(&mut state.borrow_mut()))
     }
 
-    fn revoke_network_motion(&self, snapshot: &mut Snapshot) {
-        snapshot.authority.revoke_manual();
-        snapshot.commands.submit(Command::Inhibit);
-        snapshot.command_valid_until_ms = None;
-        self.changed.signal(());
+    fn wake_if(&self, changed: bool) -> bool {
+        if changed {
+            self.changed.signal(());
+        }
+        changed
     }
 
-    /// Queue a command and wake the actuator in the same critical section, so
-    /// no wake-up can be lost between submitting and signalling.
-    fn submit(&self, snapshot: &mut Snapshot, command: Command) {
-        let now_ms = Instant::now().as_millis();
-        self.submit_until(snapshot, command, now_ms.saturating_add(MOVEMENT_LEASE_MS));
-    }
-
-    fn submit_until(&self, snapshot: &mut Snapshot, command: Command, valid_until_ms: u64) {
-        let command = snapshot
-            .network
-            .guard_command(command, Instant::now().as_millis());
-        snapshot.commands.submit(command);
-        // An unconsumed inhibition wins in CommandMailbox. Its expiry is
-        // ignored, so carrying this later movement deadline cannot weaken it.
-        snapshot.command_valid_until_ms = Some(valid_until_ms);
-        self.changed.signal(());
-    }
-
-    /// Publish the latest link and IPv4-address check. Any loss immediately
-    /// revokes manual ownership and overrides pending movement with inhibition.
     pub fn publish_network(&self, ready: bool) {
-        self.with(|snapshot| {
-            if snapshot.network.observe(Instant::now().as_millis(), ready) {
-                self.revoke_network_motion(snapshot);
-            }
-        });
+        self.wake_if(self.with(|state| state.publish_network(ready, Instant::now().as_millis())));
     }
 
-    /// Expiring readiness snapshot for command admission and output servicing.
     pub fn network(&self) -> NetworkGate {
-        self.with(|snapshot| snapshot.network)
+        self.with(|state| state.network())
     }
 
-    /// Store the latest raw ADC millivolt readings.
     pub fn store_raw_feedback(&self, raw: FeedbackVoltages) {
-        self.with(|snapshot| snapshot.feedback.raw = Some(raw));
+        self.with(|state| state.store_raw_feedback(raw));
     }
 
-    /// Publish one acquisition snapshot and its installation's output gate.
     pub fn publish_feedback(&self, feedback: FeedbackSnapshot, interlock: FeedbackInterlock) {
-        self.with(|snapshot| {
-            snapshot.feedback = feedback;
-            snapshot.interlock = interlock;
-            // Only an energised output can travel toward an endpoint or
-            // outlive its sample, so only then must the actuator re-evaluate
-            // at once. It checks a pending activation when that falls due.
-            if snapshot.applied_drive.is_active() {
-                self.changed.signal(());
-            }
-        });
+        self.wake_if(self.with(|state| state.publish_feedback(feedback, interlock)));
     }
 
-    /// Read the latest internally coherent feedback snapshot.
     pub fn feedback(&self) -> FeedbackSnapshot {
-        self.with(|snapshot| snapshot.feedback)
+        self.with(|state| state.feedback())
     }
 
-    /// Allocate a WebSocket id and assign unclaimed manual control.
     pub fn register_client(&self) -> u32 {
-        self.with(|snapshot| {
-            let id = snapshot.authority.register_client();
-            if !snapshot.network.ready(Instant::now().as_millis()) {
-                snapshot.authority.revoke_manual();
-            }
-            id
-        })
+        let id = self.with(|state| state.register_client(Instant::now().as_millis()));
+        self.changed.signal(());
+        id
     }
 
-    /// Return ownership and applied output from the same snapshot.
+    pub fn telemetry(&self, client_id: u32, now_ms: u64) -> TelemetrySnapshot {
+        self.with(|state| state.telemetry(client_id, now_ms))
+    }
+
     pub fn control_status(&self, client_id: u32) -> ControlStatus {
-        self.with(|snapshot| ControlStatus {
-            controller: snapshot.authority.is_controller(client_id),
-            drive: snapshot.applied_drive,
-            network_ready: snapshot.network.ready(Instant::now().as_millis()),
-            motion_fault: snapshot.motion_fault,
-        })
+        self.telemetry(client_id, Instant::now().as_millis())
+            .control
     }
 
-    /// Make a connection the controller and stop any stale drive lease.
     pub fn take_control(&self, client_id: u32) {
-        self.with(|snapshot| {
-            if !snapshot.network.ready(Instant::now().as_millis()) {
-                return;
-            }
-            if let Some(command) = snapshot.authority.take_control(client_id) {
-                self.submit(snapshot, command);
-            }
-        });
+        self.with(|state| state.take_control(client_id, Instant::now().as_millis()));
+        self.changed.signal(());
     }
 
-    /// Release control if the disconnecting connection still owns it.
     pub fn release_client(&self, client_id: u32) {
-        self.with(|snapshot| {
-            if let Some(command) = snapshot.authority.release_client(client_id) {
-                self.submit(snapshot, command);
-            }
-        });
+        self.wake_if(self.with(|state| state.release_client(client_id)));
     }
 
-    /// Queue the current controller's command. The actuator applies the
-    /// feedback interlock when it consumes it, so there is one such gate.
-    pub fn accept_command(&self, client_id: u32, command: Command) -> bool {
-        self.accept_command_until(
-            client_id,
-            command,
-            Instant::now().as_millis().saturating_add(MOVEMENT_LEASE_MS),
-        )
+    pub fn accept_command(&self, client_id: u32, command: CommandEnvelope) -> bool {
+        let accepted =
+            self.with(|state| state.accept_command(client_id, command, Instant::now().as_millis()));
+        // A rejected admission can still have expired a network permission.
+        self.changed.signal(());
+        accepted
     }
 
-    /// Admit a validated browser command with its source's absolute expiry.
-    /// The GPIO task enforces this same deadline after mailbox consumption.
-    pub fn accept_command_until(
-        &self,
-        client_id: u32,
-        command: Command,
-        valid_until_ms: u64,
-    ) -> bool {
-        self.with(|snapshot| {
-            if !snapshot.network.ready(Instant::now().as_millis()) {
-                return false;
-            }
-            match snapshot.authority.accept_command(client_id, command) {
-                Some(command) => {
-                    self.submit_until(snapshot, command, valid_until_ms);
-                    true
-                }
-                None => false,
-            }
-        })
-    }
-
-    /// Record the drive state currently applied to the output GPIOs.
     pub fn record_actuator(&self, drive: DriveCommand, fault: Option<MotionFault>) {
-        self.with(|snapshot| {
-            snapshot.applied_drive = drive;
-            snapshot.motion_fault = fault;
-        });
+        self.with(|state| state.record_actuator(drive, fault));
     }
 
-    /// The interlock the actuator must satisfy, as last published.
-    pub fn interlock(&self) -> FeedbackInterlock {
-        self.with(|snapshot| snapshot.interlock)
+    pub fn take_actuator_input(&self, now_ms: u64) -> ActuatorInput {
+        self.with(|state| state.take_actuator_input(now_ms))
     }
 
-    /// Wait for a command or feedback change that needs actuator reevaluation.
-    pub async fn wait_command(&self) -> Option<QueuedCommand> {
+    pub async fn wait_changed(&self) {
         self.changed.wait().await;
-        self.with(|snapshot| {
-            snapshot.commands.take().map(|command| QueuedCommand {
-                command,
-                valid_until_ms: snapshot.command_valid_until_ms.take(),
-            })
-        })
     }
 }

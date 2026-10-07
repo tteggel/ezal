@@ -1,11 +1,28 @@
-//! Pending actuator commands, with safety inhibition preserved until consumed.
+//! Pending actuator commands, preserving source deadlines and inhibition.
 
 use crate::drive::Command;
 
-/// A single pending command whose safety inhibition cannot be overwritten.
+/// A request and the original exclusive expiry assigned at admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandEnvelope {
+    /// Operator jog or immediate safety inhibition.
+    pub command: Command,
+    /// Monotonic source deadline; unused for inhibition.
+    pub valid_until_ms: u64,
+}
+
+impl CommandEnvelope {
+    /// Immediate inhibition has no movement lease.
+    pub const INHIBIT: Self = Self {
+        command: Command::Inhibit,
+        valid_until_ms: 0,
+    };
+}
+
+/// One pending request; unconsumed inhibition cannot be overwritten.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandMailbox {
-    pending: Option<Command>,
+    pending: Option<CommandEnvelope>,
 }
 
 impl CommandMailbox {
@@ -14,18 +31,18 @@ impl CommandMailbox {
         Self { pending: None }
     }
 
-    /// Queue the newest command, retaining an unconsumed safety inhibition.
-    ///
-    /// A later drive refresh may resume movement only after the actuator has
-    /// actually consumed the inhibition and started its minimum inactive time.
-    pub fn submit(&mut self, command: Command) {
-        if self.pending != Some(Command::Inhibit) {
-            self.pending = Some(command);
+    /// Replace the whole envelope unless inhibition is awaiting consumption.
+    pub fn submit(&mut self, envelope: CommandEnvelope) {
+        if !self
+            .pending
+            .is_some_and(|pending| pending.command == Command::Inhibit)
+        {
+            self.pending = Some(envelope);
         }
     }
 
-    /// Consume the current command, if any.
-    pub fn take(&mut self) -> Option<Command> {
+    /// Consume the stored request and its original deadline together.
+    pub fn take(&mut self) -> Option<CommandEnvelope> {
         self.pending.take()
     }
 }
@@ -39,39 +56,35 @@ impl Default for CommandMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drive::{ActuatorGuard, AzimuthDirection, DriveCommand, OUTPUT_MIN_INACTIVE_MS};
+    use crate::drive::{AzimuthDirection, DriveCommand};
 
-    const MOVE: Command = Command::Drive(DriveCommand {
-        azimuth: Some(AzimuthDirection::Clockwise),
-        elevation: None,
-    });
-
-    #[test]
-    fn held_refresh_cannot_overwrite_fault_before_actuator_consumes_it() {
-        let mut mailbox = CommandMailbox::new();
-        let mut guard = ActuatorGuard::new();
-        guard.command(MOVE, 0);
-        mailbox.submit(Command::Inhibit);
-        mailbox.submit(MOVE);
-        mailbox.submit(Command::Stop);
-        guard.command(mailbox.take().unwrap(), 100);
-        assert_eq!(guard.actual(), DriveCommand::IDLE);
-        assert_eq!(guard.target(), DriveCommand::IDLE);
-        assert_eq!(mailbox.take(), None);
-
-        mailbox.submit(MOVE);
-        guard.command(mailbox.take().unwrap(), 101);
-        assert_eq!(guard.actual(), DriveCommand::IDLE);
-        // A newly accepted lease still cannot skip the inactive relay hold.
-        guard.command(MOVE, 100 + OUTPUT_MIN_INACTIVE_MS);
-        assert!(guard.actual().is_active());
+    fn movement(deadline: u64) -> CommandEnvelope {
+        CommandEnvelope {
+            command: Command::Jog(DriveCommand {
+                azimuth: Some(AzimuthDirection::Clockwise),
+                elevation: None,
+            }),
+            valid_until_ms: deadline,
+        }
     }
 
     #[test]
-    fn latest_ordinary_request_replaces_unconsumed_movement() {
+    fn inhibition_keeps_its_entire_envelope_until_consumed() {
         let mut mailbox = CommandMailbox::new();
-        mailbox.submit(MOVE);
-        mailbox.submit(Command::Stop);
-        assert_eq!(mailbox.take(), Some(Command::Stop));
+        mailbox.submit(movement(500));
+        mailbox.submit(CommandEnvelope::INHIBIT);
+        mailbox.submit(movement(900));
+        assert_eq!(mailbox.take(), Some(CommandEnvelope::INHIBIT));
+        assert_eq!(mailbox.take(), None);
+        mailbox.submit(movement(901));
+        assert_eq!(mailbox.take(), Some(movement(901)));
+    }
+
+    #[test]
+    fn replacement_retains_the_new_sources_exact_deadline() {
+        let mut mailbox = CommandMailbox::new();
+        mailbox.submit(movement(500));
+        mailbox.submit(movement(400));
+        assert_eq!(mailbox.take(), Some(movement(400)));
     }
 }

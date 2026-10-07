@@ -9,6 +9,20 @@ use crate::drive::{ActuatorGuard, Command, DriveCommand};
 use crate::interlock::FeedbackInterlock;
 use crate::motion::{MotionConfig, MotionFault, MotionMonitor};
 
+use crate::mailbox::CommandEnvelope;
+use crate::network::NetworkGate;
+
+/// One coherent feedback, network and command input for the actuator.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActuatorInput {
+    /// Latest calibrated observation and installation limits.
+    pub interlock: FeedbackInterlock,
+    /// Independently expiring network permission.
+    pub network: NetworkGate,
+    /// A pending command with its original source deadline.
+    pub command: Option<CommandEnvelope>,
+}
+
 /// Leased, debounced, feedback-interlocked output state.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Actuator {
