@@ -254,6 +254,18 @@ header {
   font-weight: 800;
   text-transform: uppercase;
 }
+/* Start-aligned: with the pad hidden in autonomous mode, this card lands in
+   main's 1fr row and would otherwise stretch to the viewport's bottom. */
+.passes { align-self: start; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.passes h2 { margin: 0; font-size: 1rem; }
+.passes p { margin: 8px 0; color: var(--muted); font-size: 0.82rem; }
+.passes-scroll { overflow-x: auto; }
+.passes table { width: 100%; border-collapse: collapse; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.passes th, .passes td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.passes th { color: var(--muted); font-size: 0.72rem; }
+.passes small { display: block; margin-top: 4px; color: var(--muted); }
+.passes .underway { color: var(--teal); font-weight: 750; }
+#pass-status { color: var(--ink); }
 @media (max-width: 430px) {
   main { gap: 12px; }
   header { align-items: flex-start; }
@@ -264,6 +276,9 @@ header {
   .readouts { grid-template-columns: 1fr; }
   .tracker { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .value { font-size: 1.85rem; }
+  .passes th, .passes td { padding: 10px 6px; }
+  .passes th:nth-child(2), .passes th:nth-child(3),
+  .passes td:nth-child(2), .passes td:nth-child(3) { white-space: normal; }
   .pad-wrap { padding: 12px; }
   .pad {
     grid-template-columns: repeat(3, minmax(64px, 1fr));
@@ -310,6 +325,21 @@ header {
       <button class="dir right" data-cmd="cw" aria-label="Move clockwise">CW</button>
       <button class="dir down" data-cmd="down" aria-label="Move down">DOWN</button>
     </div>
+  </section>
+  <section class="passes" aria-labelledby="passes-title">
+    <h2 id="passes-title">HRPT passes · next 6 hours</h2>
+    <p id="utc-clock">Waiting for NTP time</p>
+    <p id="pass-site">Waiting for station settings</p>
+    <p id="pass-status" aria-live="polite">Loading predictions…</p>
+    <div class="passes-scroll">
+      <table>
+        <thead><tr><th>Satellite / MHz</th><th>Acquisition · UTC</th><th>Loss · UTC</th><th>Peak</th></tr></thead>
+        <tbody id="pass-rows"></tbody>
+      </table>
+    </div>
+    <p id="pass-coverage"></p>
+    <p id="tle-status"></p>
+    <p>Times mark the elevation cutoff. Reception also depends on terrain, antenna, receiver and the satellite’s broadcast. These predictions do not start tracking.</p>
   </section>
 </main>
 <script>
@@ -615,6 +645,124 @@ header {
   setInterval(() => {
     if (freshnessToken !== null && !telemetryFresh()) expireTelemetry();
   }, 100);
+
+  // Forecast traffic has its own HTTP request and timeout. It cannot delay
+  // movement acknowledgements or supply a WebSocket freshness token.
+  const passRows = document.getElementById("pass-rows");
+  const passStatus = document.getElementById("pass-status");
+  const passSite = document.getElementById("pass-site");
+  const utcClock = document.getElementById("utc-clock");
+  let forecast = null;
+  let forecastReceivedAt = -Infinity;
+  let forecastFailed = false;
+  let stationKnown = false;
+  let renderedRows = "";
+  const utc = (seconds) => new Date(seconds * 1000).toISOString().replace("T", " ").slice(5, 19);
+  // Write only changes: #pass-status is a polite live region, and replacing
+  // identical text or rows every second makes assistive technology repeat it.
+  const setText = (element, text) => {
+    if (element.textContent !== text) element.textContent = text;
+  };
+  const cell = (row, text, note) => {
+    const element = document.createElement("td");
+    element.textContent = text;
+    if (note) {
+      const small = document.createElement("small");
+      small.textContent = note;
+      element.appendChild(small);
+    }
+    row.appendChild(element);
+  };
+  const showRows = (rows) => {
+    const key = JSON.stringify(rows);
+    if (key === renderedRows) return;
+    renderedRows = key;
+    passRows.replaceChildren(...rows.map((pass) => {
+      const row = document.createElement("tr");
+      row.classList.toggle("underway", pass.underway);
+      cell(row, pass.name, pass.channel);
+      cell(row, utc(pass.aos), pass.underway ? "In progress" : "");
+      cell(row, utc(pass.los));
+      cell(row, pass.peak);
+      return row;
+    }));
+  };
+  const forecastView = () => {
+    if (!forecast) {
+      return { status: forecastFailed ? "Predictions unavailable · retrying" : "Loading predictions…" };
+    }
+    const elapsed = (performance.now() - forecastReceivedAt) / 1000;
+    if (forecastFailed || elapsed > 45) {
+      return { clock: "Time update unavailable", status: "Predictions unavailable · retrying" };
+    }
+    if (forecast.now_unix_s === null) {
+      return { clock: "Waiting for NTP time", status: "Predictions require a fresh NTP synchronization" };
+    }
+    const now = forecast.now_unix_s + elapsed;
+    const clock = `UTC ${utc(now)} · NTP sync ${Math.floor((forecast.sync_age_ms / 1000 + elapsed) / 60)} min ago`;
+    // The device states how long its list stays complete as time advances.
+    if (forecast.status !== "ready" || forecast.valid_until_unix_s === null || now > forecast.valid_until_unix_s) {
+      return {
+        clock,
+        status: forecast.status === "waiting_for_tles" ? "Waiting for fresh orbital elements" : "Calculating passes…",
+      };
+    }
+    const passes = forecast.passes.filter((pass) => pass.los_unix_s > now && pass.aos_unix_s < now + forecast.window_s);
+    const incomplete = forecast.truncated
+      || forecast.satellites.some((satellite) => !satellite.available || satellite.failed);
+    return {
+      clock,
+      status: `${passes.length ? `${passes.length} reception window${passes.length === 1 ? "" : "s"}` : "No qualifying passes in the next 6 hours"}${incomplete ? " · incomplete coverage" : ""}`,
+      rows: passes.map((pass) => ({
+        name: pass.name,
+        channel: `${pass.frequency_mhz} MHz${pass.experimental ? " · experimental / unconfirmed" : ""}`,
+        aos: pass.aos_unix_s,
+        los: pass.los_unix_s,
+        underway: pass.aos_unix_s <= now,
+        peak: `${pass.peak_elevation_deg.toFixed(1)}°`,
+      })),
+    };
+  };
+  const renderForecast = () => {
+    const view = forecastView();
+    if (view.clock) setText(utcClock, view.clock);
+    setText(passStatus, view.status);
+    showRows(view.rows ?? []);
+  };
+  const pollForecast = async () => {
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), 5000);
+    try {
+      const response = await fetch("/api/passes", { cache: "no-store", signal: abort.signal });
+      if (!response.ok) throw new Error("forecast request failed");
+      const data = await response.json();
+      const optional = (value) => value === null || Number.isFinite(value);
+      if (typeof data.status !== "string" || !Array.isArray(data.passes) || !Array.isArray(data.satellites) || !data.observer
+        || ![data.observer.latitude_deg, data.observer.longitude_deg, data.observer.altitude_m, data.window_s].every(Number.isFinite)
+        || !data.passes.every((pass) => pass && [pass.aos_unix_s, pass.los_unix_s, pass.peak_elevation_deg].every(Number.isFinite))
+        || !data.satellites.every((satellite) => satellite && typeof satellite.name === "string")
+        || ![data.now_unix_s, data.valid_until_unix_s, data.tle_updated_unix_s].every(optional)) throw new Error("invalid forecast");
+      forecast = data;
+      forecastReceivedAt = performance.now();
+      forecastFailed = false;
+      stationKnown = true;
+      const site = data.observer;
+      setText(passSite, `${site.latitude_deg.toFixed(5)}°, ${site.longitude_deg.toFixed(5)}° · ${site.altitude_m} m · cutoff ${data.min_elevation_deg}° · minimum peak ${data.min_peak_elevation_deg}°`);
+      setText(document.getElementById("pass-coverage"), data.satellites
+        .map((sat) => `${sat.name}: ${sat.failed ? "prediction failed" : sat.available ? "ready" : "missing or stale elements"}${sat.experimental ? " (experimental)" : ""}`).join(" · "));
+      setText(document.getElementById("tle-status"), `${data.tle_updated_unix_s === null ? "No orbital elements downloaded yet" : `Elements downloaded ${utc(data.tle_updated_unix_s)} UTC`}${data.download_failed ? " · refresh failed, retrying" : ""}`);
+    } catch (_) {
+      forecastFailed = true;
+      // Settings come only from the device; never imply a site it hasn't sent.
+      if (!stationKnown) setText(passSite, "Station settings unavailable · retrying");
+    } finally {
+      clearTimeout(deadline);
+      renderForecast();
+      setTimeout(pollForecast, 15000);
+    }
+  };
+  setInterval(renderForecast, 1000);
+  pollForecast();
   syncControl();
   connect();
 })();

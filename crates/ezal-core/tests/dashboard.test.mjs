@@ -31,11 +31,197 @@ class EventTarget {
   }
 }
 
+// The firmware's real `/api/passes` reply, pinned by ezal-core's passes tests.
+const servedReport = JSON.parse(readFileSync(new URL("./fixtures/passes-report.json", import.meta.url), "utf8"));
+
+function forecastFixture(overrides = {}) {
+  const now = Date.parse("2026-10-07T23:59:00Z") / 1000;
+  return {
+    status: "ready", now_unix_s: now, valid_until_unix_s: now + 60,
+    sync_age_ms: 60000, tle_updated_unix_s: now - 3600,
+    download_failed: false, truncated: false, window_s: 21600,
+    observer: { latitude_deg: 51.44266, longitude_deg: -2.84053, altitude_m: 0 },
+    min_elevation_deg: 5, min_peak_elevation_deg: 10,
+    satellites: [{ name: "METOP-C", available: true, failed: false, experimental: false }],
+    passes: [{ name: "METOP-C", frequency_mhz: "1701.3", experimental: false,
+      aos_unix_s: now - 30, los_unix_s: now + 90, peak_elevation_deg: 40.5 }],
+    ...overrides,
+  };
+}
+
+test("forecast shows full UTC crossings over midnight and identifies an ongoing pass", async () => {
+  const ui = dashboard();
+  await ui.forecast(forecastFixture());
+  assert.equal(ui.requests[0].url, "/api/passes");
+  assert.equal(ui.requests[0].options.cache, "no-store");
+  const row = ui.ids.get("pass-rows").children[0];
+  // A cell's text includes its label, exactly as a browser reports it.
+  assert.equal(row.children[1].textContent, "10-07 23:58:30In progress");
+  assert.equal(row.children[1].children[0].textContent, "In progress");
+  assert.equal(row.children[2].textContent, "10-08 00:00:30");
+  assert.ok(row.classList.contains("underway"));
+  assert.equal(row.children[3].textContent, "40.5°");
+  ui.clock.advance(2000);
+  assert.match(ui.ids.get("utc-clock").textContent, /23:59:02/);
+});
+
+test("forecast distinguishes no passes, missing elements, no time and failed refresh", async () => {
+  for (const [data, status] of [
+    [forecastFixture({ passes: [] }), /No qualifying passes/],
+    [forecastFixture({ status: "waiting_for_tles", valid_until_unix_s: null, passes: [] }), /Waiting for fresh orbital elements/],
+    [forecastFixture({ status: "predicting", valid_until_unix_s: null, passes: [] }), /Calculating passes/],
+    [forecastFixture({ status: "waiting_for_time", now_unix_s: null, valid_until_unix_s: null, passes: [] }), /fresh NTP/],
+    [forecastFixture({ satellites: [{ name: "METOP-C", available: false, failed: false }], download_failed: true }), /incomplete coverage/],
+  ]) {
+    const ui = dashboard();
+    await ui.forecast(data);
+    assert.match(ui.ids.get("pass-status").textContent, status);
+    if (data.now_unix_s === null) assert.equal(ui.ids.get("utc-clock").textContent, "Waiting for NTP time");
+    if (data.download_failed) {
+      assert.match(ui.ids.get("tle-status").textContent, /refresh failed/);
+      assert.match(ui.ids.get("pass-coverage").textContent, /METOP-C: missing or stale elements/);
+    }
+  }
+});
+
+test("a failed prediction is reported separately from missing elements", async () => {
+  const ui = dashboard();
+  await ui.forecast(forecastFixture({
+    satellites: [{ name: "METOP-C", available: true, failed: true, experimental: false }],
+  }));
+  assert.match(ui.ids.get("pass-status").textContent, /incomplete coverage/);
+  assert.equal(ui.ids.get("pass-coverage").textContent, "METOP-C: prediction failed");
+});
+
+test("rows last exactly as long as the device says its list is complete", async () => {
+  const ui = dashboard();
+  const data = forecastFixture({ passes: [{ ...forecastFixture().passes[0], los_unix_s: forecastFixture().now_unix_s + 600 }] });
+  await ui.forecast({ ...data, valid_until_unix_s: data.now_unix_s + 10 });
+  ui.clock.advance(9000);
+  assert.equal(ui.ids.get("pass-rows").children.length, 1);
+  ui.clock.advance(2000);
+  assert.equal(ui.ids.get("pass-rows").children.length, 0, "no client-side age limit overrides the device");
+  assert.match(ui.ids.get("pass-status").textContent, /Calculating passes/);
+  const longer = dashboard();
+  await longer.forecast({ ...data, valid_until_unix_s: data.now_unix_s + 40 });
+  longer.clock.advance(30000);
+  assert.equal(longer.ids.get("pass-rows").children.length, 1);
+});
+
+test("unchanged forecasts leave the live status and rows untouched", async () => {
+  const ui = dashboard();
+  const now = forecastFixture().now_unix_s;
+  await ui.forecast(forecastFixture({
+    valid_until_unix_s: now + 600,
+    passes: [{ name: "METOP-C", frequency_mhz: "1701.3", experimental: false,
+      aos_unix_s: now + 5, los_unix_s: now + 300, peak_elevation_deg: 40.5 }],
+  }));
+  const status = ui.ids.get("pass-status");
+  const rows = ui.ids.get("pass-rows");
+  const writes = status.textWrites;
+  const replacements = rows.replacements;
+  ui.clock.advance(4000);
+  assert.equal(status.textWrites, writes, "the polite live region is not rewritten every second");
+  assert.equal(rows.replacements, replacements, "rows are not rebuilt every second");
+  ui.clock.advance(2000);
+  assert.equal(rows.replacements, replacements + 1, "a pass starting does rebuild its row");
+  assert.equal(rows.children[0].children[1].children[0].textContent, "In progress");
+  assert.equal(status.textWrites, writes, "the count of windows is unchanged");
+});
+
+test("the station line never names a site the device has not reported", async () => {
+  assert.ok(!html.includes("Clevedon"), "no hard-coded default site in the served page");
+  const ui = dashboard();
+  await ui.forecast(forecastFixture(), false);
+  assert.equal(ui.ids.get("pass-site").textContent, "Station settings unavailable · retrying");
+  ui.clock.advance(15000);
+  await ui.forecast(forecastFixture({ observer: { latitude_deg: 40.015, longitude_deg: -105.27, altitude_m: 1655 } }));
+  const reported = ui.ids.get("pass-site").textContent;
+  assert.match(reported, /^40\.01500°, -105\.27000° · 1655 m/);
+  ui.clock.advance(15000);
+  await ui.forecast(forecastFixture(), false);
+  assert.equal(ui.ids.get("pass-site").textContent, reported, "a later failure keeps the reported site");
+});
+
+test("the firmware's serialized report renders as served", async () => {
+  const ui = dashboard();
+  await ui.forecast(servedReport);
+  const expected = servedReport.passes.filter((pass) => pass.aos_unix_s < servedReport.now_unix_s + servedReport.window_s);
+  assert.ok(expected.length > 0);
+  assert.equal(ui.ids.get("pass-rows").children.length, expected.length);
+  assert.equal(ui.ids.get("pass-status").textContent, `${expected.length} reception windows`);
+  assert.match(ui.ids.get("pass-coverage").textContent, /^METOP-B: ready · METOP-C: ready/);
+  assert.match(ui.ids.get("pass-site").textContent, /^51\.44266°, -2\.84053° · 0 m · cutoff 5° · minimum peak 10°$/);
+  assert.match(ui.ids.get("tle-status").textContent, /^Elements downloaded 10-07 14:50:00 UTC$/);
+});
+
+test("forecast expiry and HTTP failure clear rows without renewing motor authority", async () => {
+  const ui = dashboard("http:", false);
+  ui.socket.open();
+  ui.control();
+  ui.press("up", 1);
+  await ui.forecast(forecastFixture());
+  ui.clock.advance(1100);
+  assert.ok(ui.buttons.get("up").disabled, "forecast data is not control telemetry");
+  ui.clock.advance(45000);
+  assert.equal(ui.ids.get("pass-rows").children.length, 0);
+  assert.match(ui.ids.get("pass-status").textContent, /unavailable/);
+  const failed = dashboard();
+  await failed.forecast(forecastFixture(), false);
+  assert.match(failed.ids.get("pass-status").textContent, /unavailable/);
+});
+
+test("ended passes disappear and experimental names are rendered only as text", async () => {
+  const ui = dashboard();
+  const data = forecastFixture();
+  data.passes[0].name = "<img src=x onerror=alert(1)>";
+  data.passes[0].experimental = true;
+  data.passes[0].los_unix_s = data.now_unix_s + 2;
+  await ui.forecast(data);
+  const name = ui.ids.get("pass-rows").children[0].children[0];
+  assert.equal(name.textContent, `${data.passes[0].name}1701.3 MHz · experimental / unconfirmed`);
+  assert.equal(name.innerHTML, undefined, "markup is never parsed");
+  assert.match(name.children[0].textContent, /experimental/);
+  ui.clock.advance(2000);
+  assert.equal(ui.ids.get("pass-rows").children.length, 0);
+  assert.match(ui.ids.get("pass-status").textContent, /No qualifying passes/);
+});
+
+test("malformed forecast cannot stop subsequent polling", async () => {
+  const ui = dashboard();
+  await ui.forecast(forecastFixture({ passes: [null] }));
+  assert.match(ui.ids.get("pass-status").textContent, /unavailable/);
+  ui.clock.advance(15000);
+  assert.equal(ui.requests.length, 2);
+  await ui.forecast(forecastFixture({ valid_until_unix_s: "soon" }));
+  assert.match(ui.ids.get("pass-status").textContent, /unavailable/);
+  ui.clock.advance(15000);
+  await ui.forecast(forecastFixture());
+  assert.equal(ui.ids.get("pass-rows").children.length, 1);
+});
+
 class Element extends EventTarget {
   disabled = false;
-  textContent = "";
   dataset = {};
   captures = new Set();
+  // DOM semantics: reading textContent concatenates the node's own text and
+  // every descendant's; writing it replaces all children with that text.
+  #text = "";
+  children = [];
+  textWrites = 0;
+  replacements = 0;
+  get textContent() { return this.#text + this.children.map((child) => child.textContent).join(""); }
+  set textContent(text) {
+    this.#text = String(text);
+    this.children = [];
+    this.textWrites += 1;
+  }
+  appendChild(child) { this.children.push(child); return child; }
+  replaceChildren(...children) {
+    this.#text = "";
+    this.children = children;
+    this.replacements += 1;
+  }
   classes = new Set();
   classList = {
     toggle: (name, enabled) => {
@@ -92,6 +278,7 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
   const document = Object.assign(new EventTarget(), {
     body,
     hidden: false,
+    createElement() { return new Element(); },
     getElementById(id) {
       assert.ok(ids.has(id), `element #${id} exists in the served HTML`);
       return ids.get(id);
@@ -103,6 +290,7 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
   });
   const clock = new Clock();
   const sockets = [];
+  const requests = [];
   class WebSocket extends EventTarget {
     static OPEN = 1;
     readyState = 0;
@@ -143,9 +331,15 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
     window,
     WebSocket,
     performance: { now: () => clock.now },
+    AbortController,
+    fetch: (url, options) => new Promise((resolve, reject) => {
+      requests.push({ url, options, resolve, reject });
+      options.signal.addEventListener("abort", () => reject(new Error("aborted")));
+    }),
     setInterval: (callback, delay) => clock.schedule(callback, delay, true),
     clearInterval: (id) => clock.jobs.delete(id),
     setTimeout: (callback, delay) => clock.schedule(callback, delay),
+    clearTimeout: (id) => clock.jobs.delete(id),
   }, { filename: "dashboard.html" });
   let token = 0;
   const freshness = () => {
@@ -155,7 +349,11 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
     if (sockets.at(-1).readyState === WebSocket.OPEN) freshness();
   }, 500, true);
   return {
-    ids, buttons, body, window, document, clock, sockets, freshness,
+    ids, buttons, body, window, document, clock, sockets, freshness, requests,
+    async forecast(data, ok = true) {
+      requests.at(-1).resolve({ ok, json: async () => data });
+      await new Promise((resolve) => setImmediate(resolve));
+    },
     get socket() { return sockets.at(-1); },
     control(controller = true, azimuth = null, elevation = null) {
       this.socket.receive({ type: "control", controller, azimuth, elevation,

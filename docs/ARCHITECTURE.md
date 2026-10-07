@@ -56,12 +56,21 @@ and mechanical coast. The profile is representative and uses no TLE propagation.
 | `actuator` | Feedback and motion supervision before relay timing, with absolute source expiry preserved for every command |
 | `motion` | Applied-output progress budgets, startup settling, direction/speed plausibility, and latched faults |
 | `network` | Expiring link/address permission and recovery generations |
+| `ntp` | Validated SNTP packets and an expiring UTC anchor driven by injected uptime |
+| `http` | Sans-I/O HTTP/1.1 response framing for the TLE download: bounded, split-read safe, explicit truncation |
+| `orbit` | Curated HRPT catalog, TLE line validation before library-backed SGP4 parsing, streamed catalog updates, WGS84 observer geometry |
+| `passes` | Incremental pass search, twelve-hour forecasts served as six-hour windows, and the `/api/passes` report |
 | `drive` | Command vocabulary, movement lease, ordinary relay timing, operator release, and immediate inhibition |
 | `protocol`, `dashboard` | Wire messages and the served HTML/CSS/JavaScript page |
 | `ads1015`, `wifi` | Pure ADC register/decoding and credential logic |
 
 `crates/ezal-firmware` supplies the Embassy/HAL shell:
 
+- `time` performs bounded DNS/UDP NTP synchronization; `prediction` streams
+  public TLEs from a TCP socket through the core's HTTP and TLE decoders,
+  retains a RAM catalog, yields between search steps and publishes a complete
+  forecast when coverage runs low or elements change. UTC never replaces
+  uptime in motion control;
 - `main` selects the mode, runs boot checks, reads paired feedback under a
   deadline, and publishes supervisor results; one loop serves both modes, so
   their deadlines and publication path cannot drift apart;
@@ -75,12 +84,14 @@ and mechanical coast. The profile is representative and uses no TLE propagation.
 - `state` stores typed snapshots behind a short critical section, holds the
   published interlock, and wakes the actuator after a command or — while an
   output is energised — a feedback change;
-- `web` serves the dashboard and telemetry; `ws_receive` bounds complete
+- `web` serves the dashboard, telemetry and `/api/passes` (each acceptor
+  streams its own copied report, so no lock spans a slow client); `ws_receive` bounds complete
   WebSocket message reception.
 
 A future production target transport can supply timestamped `TimedPointing`
 values to the controller. The current firmware has no production serial
-target input or TLE propagator.
+target input. It does propagate TLEs (`orbit`, `passes`), but only to list
+upcoming passes on the dashboard: predictions never become controller targets.
 
 ## Feedback and control tick
 

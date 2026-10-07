@@ -5,6 +5,9 @@
 //! The shared state these routes read and write — control ownership, the
 //! command bus, and the latest telemetry — lives in [`crate::state`].
 
+use core::cell::RefCell;
+use core::fmt;
+
 use embassy_executor::Spawner;
 use embassy_futures::yield_now;
 use embassy_net::Stack;
@@ -13,10 +16,12 @@ use heapless::String;
 use picoserve::futures::Either;
 use picoserve::io::{Read, Write as PicoserveWrite};
 use picoserve::response::ws::{Message, SocketRx, SocketTx, WebSocketCallback, WebSocketUpgrade};
+use picoserve::response::{Content, Response};
 use picoserve::routing::{get, PathRouter};
 
 use ezal_core::dashboard::INDEX_HTML;
 use ezal_core::drive::Command;
+use ezal_core::passes::Report;
 use ezal_core::protocol::{ClientMessage, CommandFreshness, TELEMETRY_PERIOD_MS, WS_PATH};
 
 use crate::state::{SharedState, STATE};
@@ -38,7 +43,7 @@ static WEB_CONFIG: picoserve::Config = picoserve::Config::new(picoserve::Timeout
 });
 
 /// Concurrent picoserve acceptors. Each acceptor owns one TCP socket; with
-/// `StackResources<10>` in `main`, DHCP uses one slot and the web pool has
+/// `StackResources<14>` in `main`, background network services and the web pool have
 /// enough headroom for multiple dashboards plus browser preconnect sockets.
 const WEB_SERVER_TASKS: usize = 8;
 
@@ -49,12 +54,23 @@ const HTTP_BUFFER_SIZE: usize = 1536;
 const TCP_RX_BUFFER_SIZE: usize = 2048;
 const TCP_TX_BUFFER_SIZE: usize = 4096;
 
-/// Build the dashboard app.
-pub fn app(state: &'static SharedState) -> picoserve::Router<impl PathRouter> {
+/// Build the dashboard app. `report` is the owning acceptor task's slot for
+/// the `/api/passes` reply it is currently sending.
+pub fn app<'a>(
+    state: &'static SharedState,
+    report: &'a RefCell<Option<Report>>,
+) -> picoserve::Router<impl PathRouter + 'a> {
     picoserve::Router::new()
         .route(
             "/",
             get(async || (("Content-Type", "text/html; charset=utf-8"), INDEX_HTML)),
+        )
+        .route(
+            "/api/passes",
+            get(async move || {
+                report.replace(Some(crate::prediction::report()));
+                Response::ok(ForecastJson(report)).with_header("Cache-Control", "no-store")
+            }),
         )
         .route(
             WS_PATH,
@@ -62,6 +78,40 @@ pub fn app(state: &'static SharedState) -> picoserve::Router<impl PathRouter> {
                 upgrade.on_upgrade(DashboardSocket { state })
             }),
         )
+}
+
+// A request copies the dashboard `Report` (about 1.5 KiB) into its acceptor
+// task's slot, then formats JSON from the slot straight into the TCP transmit
+// buffer. Response futures hold only a reference: carrying the report by value
+// would let each nested future keep its own copy in every task. No buffer or
+// lock is shared between requests, so a client that stops acknowledging
+// delays only its own reply. A task serves one request at a time, so the slot
+// cannot change while it is borrowed here.
+struct ForecastJson<'a>(&'a RefCell<Option<Report>>);
+
+impl fmt::Display for ForecastJson<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &*self.0.borrow() {
+            Some(report) => report.fmt(out),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Content for ForecastJson<'_> {
+    fn content_type(&self) -> &'static str {
+        "application/json"
+    }
+
+    fn content_length(&self) -> usize {
+        self.0.borrow().as_ref().map_or(0, Report::json_len)
+    }
+
+    async fn write_content<W: PicoserveWrite>(self, mut writer: W) -> Result<(), W::Error> {
+        // Formatting is deterministic, so a retry after a full transmit
+        // buffer reproduces exactly the bytes `content_length` counted.
+        writer.write_fmt(format_args!("{self}")).await
+    }
 }
 
 /// Run the HTTP/WebSocket server forever.
@@ -79,7 +129,9 @@ pub async fn serve(spawner: Spawner, stack: Stack<'static>) -> ! {
 
 #[embassy_executor::task(pool_size = WEB_SERVER_TASKS)]
 async fn web_task(task_id: u8, stack: Stack<'static>) -> ! {
-    let app = app(&STATE);
+    // This acceptor's `/api/passes` reply, borrowed by the router.
+    let report = RefCell::new(None);
+    let app = app(&STATE, &report);
     let mut http_buffer = [0; HTTP_BUFFER_SIZE];
     let mut tcp_rx_buffer = [0; TCP_RX_BUFFER_SIZE];
     let mut tcp_tx_buffer = [0; TCP_TX_BUFFER_SIZE];

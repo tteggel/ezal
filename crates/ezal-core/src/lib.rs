@@ -46,6 +46,12 @@
 //!   state ([`protocol::PositionTelemetry`], [`protocol::ControlStatus`]) as
 //!   compact JSON.
 //! * [`dashboard`] — the single static HTML/CSS/JS page served at `/`.
+//! * [`ntp`] — SNTP validation and an expiring, injected UTC anchor.
+//! * [`http`] — sans-I/O HTTP/1.1 response framing for the element download.
+//! * [`orbit`] — TLE validation, SGP4 library adapter, streamed catalog
+//!   updates and observer geometry.
+//! * [`passes`] — incremental, pure reception-window prediction, forecast
+//!   assembly and the `/api/passes` report.
 //!
 //! ## What goes in this crate
 //!
@@ -81,10 +87,14 @@ pub mod authority;
 pub mod control;
 pub mod dashboard;
 pub mod drive;
+pub mod http;
 pub mod interlock;
 pub mod mailbox;
 pub mod motion;
 pub mod network;
+pub mod ntp;
+pub mod orbit;
+pub mod passes;
 pub mod position;
 pub mod protocol;
 pub mod simulation;

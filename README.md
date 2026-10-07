@@ -11,12 +11,20 @@ pause and reacquires the next pass in the opposite direction. Real feedback,
 calibration, controller, movement lease, relay timing, GPIO outputs, rotator,
 shared state, and dashboard telemetry participate in the same runtime path.
 
+Both firmware modes also synchronize UTC with NTP, download weather-satellite
+TLEs, and predict the next six hours of L-band HRPT reception windows on the
+dashboard. The default station is **All Saints Church, Clevedon**. Prediction
+is advisory; selecting or automatically tracking a real orbital pass is not
+implemented yet. See [pass prediction](docs/PASS_PREDICTION.md) for station
+settings, satellite coverage, acquisition/loss thresholds, and limitations.
+
 ## What this project will be
 
 `ezal` (read it "ez/al", for *azimuth/elevation*) drives a Yaesu **G-5500**
 az/el rotator to track a low-earth-orbit (LEO) satellite as it passes
-overhead. A separate ground-control system will compute the satellite's az/el
-position from a TLE; ezal will receive those targets over a serial link,
+overhead. The pure core now computes satellite az/el and reception windows
+from TLEs using SGP4. A future tracking source can supply those targets to
+the controller, which will
 drive the G-5500's direction inputs through transistor switches, and
 read the controller's position feedback via an Adafruit ADS1015 I²C
 ADC to close the loop. See [HARDWARE.md](docs/HARDWARE.md) and the
@@ -35,8 +43,8 @@ embedded Rust.
 ├── Cargo.toml                      # workspace manifest
 ├── rust-toolchain.toml             # pinned compiler version
 ├── flake.nix                       # pinned host-side toolchain (probe-rs, ...)
-├── .envrc                          # `use flake` + `.env` — direnv loads the shell
-├── .env.example                    # template for WiFi credentials (copy to .env)
+├── .envrc                          # `use flake` — direnv loads the dev shell
+├── .env.example                    # template for WiFi + station settings (copy to .env)
 ├── .cargo/config.toml              # default target, linker flags, runner
 ├── crates/
 │   ├── ezal-core/                  # pure no_std logic, host-testable
@@ -51,9 +59,13 @@ embedded Rust.
 │   │       ├── motion.rs          # latched progress, direction, and speed checks
 │   │       ├── network.rs         # expiring network permission for motion
 │   │       ├── simulation.rs      # METOP-C source + pass sequencer
+│   │       ├── ntp.rs             # SNTP validation + expiring UTC anchor
+│   │       ├── http.rs            # streamed HTTP framing for TLE downloads
+│   │       ├── orbit.rs           # TLE validation, catalog, SGP4 look angles
+│   │       ├── passes.rs          # pass search, forecasts, /api/passes JSON
 │   │       └── drive.rs           # command lease + relay timing
 │   └── ezal-firmware/              # the on-chip application
-│       ├── build.rs                # stages memory.x; bakes .env creds in
+│       ├── build.rs                # stages memory.x; bakes .env creds + station in
 │       ├── memory.x                # linker memory layout
 │       ├── cyw43-firmware/         # vendored CYW43439 radio blobs
 │       └── src/
@@ -61,7 +73,9 @@ embedded Rust.
 │           ├── state.rs           # typed snapshots, commands, and wake signal
 │           ├── drive.rs           # guarded direction GPIOs, watchdog feeding
 │           ├── watchdog.rs        # independent hardware reset fallback
-│           ├── web.rs             # dashboard, ownership, and telemetry
+│           ├── web.rs             # dashboard, ownership, telemetry, passes
+│           ├── time.rs            # NTP over DNS/UDP
+│           ├── prediction.rs      # TLE download + cooperative forecasts
 │           ├── ws_receive.rs      # complete-message receive deadline
 │           ├── wifi.rs            # CYW43439 bring-up + STA-join POST
 │           └── ads1015.rs         # ADS1015 I²C driver + POST
@@ -69,6 +83,7 @@ embedded Rust.
 │   ├── ARCHITECTURE.md             # how the pieces fit together
 │   ├── CALIBRATION.md              # installed-system calibration procedure
 │   ├── HARDWARE.md                 # G-5500 wiring, debug probe, ...
+│   ├── PASS_PREDICTION.md          # station settings, catalog, limits
 │   └── DEVELOPMENT.md              # local toolchain setup
 ├── design/
 │   ├── pinout.md                   # G-5500 8-pin DIN pinout
@@ -186,12 +201,15 @@ successful check. Internet access and a connected dashboard are not required.
 | 3    | Hysteretic controller, watchdog lease, limits, relay protection | ✅ done  |
 | 4    | Repeating METOP-C simulator + 30-second inter-pass pause        | ✅ done  |
 | 5    | Autonomous dashboard telemetry                                 | ✅ done  |
-| 6    | Persisted calibration + authenticated calibration UI           | planned  |
-| 7    | Production target transport / real TLE source                   | planned  |
+| 6    | NTP time, TLE download, advisory HRPT pass prediction           | ✅ done  |
+| 7    | Persisted calibration + authenticated calibration UI           | planned  |
+| 8    | Production target transport (authenticated TLEs → controller)   | planned  |
 
-Simulator mode deliberately uses a representative target profile, not an
-orbital propagator or current TLE. Replacing that source is the next production
-boundary; the downstream control and safety chain does not depend on where a
+Simulator mode deliberately still drives a representative target profile. The
+firmware now propagates current TLEs, but only to list upcoming passes; feeding
+predictions to the controller needs an authenticated data path (see
+[pass prediction](docs/PASS_PREDICTION.md)) and is the next production
+boundary. The downstream control and safety chain does not depend on where a
 valid timestamped target came from.
 
 ## License

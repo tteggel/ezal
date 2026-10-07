@@ -30,7 +30,9 @@ rust-version.workspace = true
 # The default `lib` settings are fine. No proc-macro, no special crate-type.
 
 [dependencies]
-# None: all logic remains allocator-free and `no_std`.
+sgp4 = { workspace = true }
+libm = { workspace = true }
+heapless = { workspace = true }
 
 [dev-dependencies]
 # Exercise the firmware receive adapter against the same WebSocket parser,

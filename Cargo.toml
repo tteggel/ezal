@@ -57,6 +57,8 @@ authors      = ["ezal contributors"]
 # `heapless` gives firmware fixed-capacity strings for WebSocket telemetry
 # without requiring an allocator.
 heapless = { version = "0.9.3", default-features = false }
+sgp4 = { version = "2.4.0", default-features = false, features = ["libm"] }
+libm = "0.2"
 
 # ── embedded-only (consumed by ezal-firmware) ────────────────────────────
 # These are the standard "embassy + defmt" stack used by the embassy
@@ -70,7 +72,7 @@ embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "execu
 embassy-futures  = "0.1.2"
 embassy-rp       = { version = "0.10", features = ["rp235xa", "time-driver", "critical-section-impl", "defmt", "imagedef-secure-exe", "unstable-pac"] }
 embassy-time     = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-net      = { version = "0.9.1", features = ["defmt", "dhcpv4", "tcp"] }
+embassy-net      = { version = "0.9.1", features = ["defmt", "dhcpv4", "tcp", "udp", "dns"] }
 embassy-sync     = "0.8"
 
 # ── WiFi: the Pico 2 W's on-module CYW43439 radio ────────────────────────

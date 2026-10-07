@@ -61,7 +61,9 @@
 // ─── modules ────────────────────────────────────────────────────────────
 mod ads1015;
 mod drive;
+mod prediction;
 mod state;
+mod time;
 mod watchdog;
 mod web;
 mod wifi;
@@ -387,7 +389,8 @@ async fn main(spawner: Spawner) {
         Wifi::init(spawner, pio, dma, p.PIN_23, p.PIN_25, p.PIN_24, p.PIN_29).await;
 
     // ─── TCP/IP: run DHCP over the CYW43439 data plane ──────────────────
-    static NET_RESOURCES: StaticCell<StackResources<10>> = StaticCell::new();
+    // Eight web sockets, DHCP, DNS, NTP UDP and a catalog HTTP client, plus spare.
+    static NET_RESOURCES: StaticCell<StackResources<14>> = StaticCell::new();
     let net_config = embassy_net::Config::dhcpv4(Default::default());
     let mut rng = RoscRng;
     let seed = rng.next_u64();
@@ -402,6 +405,8 @@ async fn main(spawner: Spawner) {
     spawner.spawn(
         wifi::supervise(wifi, stack, creds, &state::STATE).expect("static task pool exhausted"),
     );
+    spawner.spawn(time::synchronize(stack).expect("static task pool exhausted"));
+    spawner.spawn(prediction::run(stack).expect("static task pool exhausted"));
 
     // Start acceptors while offline. They remain registered across reconnects,
     // so successful retries expose the dashboard without rebuilding the stack.

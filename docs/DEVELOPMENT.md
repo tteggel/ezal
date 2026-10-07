@@ -84,8 +84,10 @@ $EDITOR .env          # set EZAL_WIFI_SSID and EZAL_WIFI_PASSWORD
 ```
 
 `.env` is git-ignored. `crates/ezal-firmware/build.rs` reads it at compile
-time (and the dev shell also exports it into your environment via direnv's
-`dotenv`, so a fresh `direnv allow` picks it up). Leave the password blank
+time and is its only parser; the dev shell does not export it, so a build
+bakes the same values with or without direnv. Later lines override earlier
+ones, and an unquoted value ends at a ` #` comment (quote a value to keep
+` #` in it; `#` with no space before it is kept). Leave the password blank
 for an open network; protected joins use WPA3/SAE. Building *without* a `.env` still compiles — CI does
 exactly that — but the firmware's WiFi POST then fails at boot until the
 credentials are set. The CYW43439's own firmware blobs are vendored in-tree
@@ -275,9 +277,12 @@ running tests for the host needs an explicit triple — the script computes
 it from `rustc -vV`). Host tests cover the composed supervisor, the feedback
 gate and its travel-aware endpoint band, ownership, the command mailbox, and
 the actuator sequence the firmware itself runs, as well as the actual pinned
-picoserve HTTP upgrade/WebSocket parser with deterministic timeouts. Picoserve
-is a test-only dependency of the otherwise dependency-free core, sharing the
-workspace's version pin with the firmware so both exercise one parser.
+picoserve HTTP upgrade/WebSocket parser with deterministic timeouts. Pass
+prediction tests cover TLE validation, the streamed HTTP framing of the
+element download, forecast coverage, and the `/api/passes` JSON. The core's
+only runtime dependencies are `sgp4` (TLE fields and propagation), `libm`
+and `heapless`; picoserve is test-only, sharing the workspace's version pin
+with the firmware so both exercise one parser.
 
 Apart from one sanity test of the installed calibration, the policy tests use
 their own fixture in `crates/ezal-core/tests/common/`, so replacing
@@ -287,13 +292,18 @@ The dashboard script runs the actual embedded JavaScript against simulated
 DOM, sockets and timers using Node's built-in runner. It checks pointer
 ownership, release/cancellation, command refresh, control takeover, reconnect,
 telemetry expiry, fresh-press recovery, and rendered telemetry without
-installing npm packages. Rust tests exercise stuck feedback on both axes,
+installing npm packages. Its forecast tests also render
+`crates/ezal-core/tests/fixtures/passes-report.json`, the exact `/api/passes`
+reply that the Rust tests pin, so a server format change cannot silently
+break the client (set `EZAL_UPDATE_FIXTURES=1` when running the host tests
+to regenerate it after an intended change). Rust tests exercise stuck feedback on both axes,
 progress across short jogs/reversals, directional/speed faults, network health
 expiry, stale tokens and replays, and legal control frames inside fragmented
 WebSocket messages without extending their deadline.
 
 The build-tool script tests the build script as a host executable with synthetic
-configuration, then substitutes Cargo and picotool to verify artifact selection.
+configuration, including `.env` parsing and that a failing build never prints a
+credential, then substitutes Cargo and picotool to verify artifact selection.
 It needs Rust, a host linker, Bash, and jq. It never reads local credentials or
 flashes hardware. CI runs it alongside formatting. The workspace's supported
 minimum Rust version matches the tested pin in `rust-toolchain.toml`.
