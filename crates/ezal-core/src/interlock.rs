@@ -13,8 +13,7 @@
 //! the cut are outside this model.
 
 use crate::drive::{
-    ActuatorGuard, Command, DriveCommand, AZIMUTH_MAX_SPEED_DEG_PER_S,
-    ELEVATION_MAX_SPEED_DEG_PER_S,
+    Command, DriveCommand, AZIMUTH_MAX_SPEED_DEG_PER_S, ELEVATION_MAX_SPEED_DEG_PER_S,
 };
 use crate::feedback::{FeedbackSample, FEEDBACK_MAX_AGE_MS};
 use crate::position::{InstalledCalibration, Pointing};
@@ -77,7 +76,7 @@ impl AxisLimits {
 }
 
 impl FeedbackInterlock {
-    /// A gate that permits no motion, used before any feedback monitor publishes.
+    /// A gate that permits no motion, used before any supervisor publishes.
     pub const INHIBITED: Self = Self {
         limits: None,
         feedback: None,
@@ -202,7 +201,7 @@ impl FeedbackInterlock {
     ///
     /// A request whose directions are all refused remains an ordinary release
     /// of its kind, so a released axis's relay timing never depends on the
-    /// other axis. [`Self::enforce`] separately cuts refused energised axes.
+    /// other axis. The actuator separately cuts refused energised axes.
     pub fn guard_command(&self, command: Command, now_ms: u64) -> Command {
         match command {
             Command::Drive(_) | Command::Jog(_) if !self.motion_permitted(now_ms) => {
@@ -212,23 +211,5 @@ impl FeedbackInterlock {
             Command::Jog(drive) => Command::Jog(self.guard_drive(drive, now_ms)),
             Command::Stop | Command::Inhibit => command,
         }
-    }
-
-    /// Immediately clear forbidden active and pending output directions.
-    ///
-    /// Call before advancing debounce timers and admitting each new command.
-    /// An unaffected axis keeps its target, relay timers, and movement lease.
-    pub fn enforce(&self, guard: &mut ActuatorGuard, now_ms: u64) -> bool {
-        let actual = guard.actual();
-        let target = guard.target();
-        let permitted_actual = self.guard_drive(actual, now_ms);
-        let permitted_target = self.guard_drive(target, now_ms);
-        guard.inhibit_axes(
-            actual.azimuth != permitted_actual.azimuth
-                || target.azimuth != permitted_target.azimuth,
-            actual.elevation != permitted_actual.elevation
-                || target.elevation != permitted_target.elevation,
-            now_ms,
-        )
     }
 }
