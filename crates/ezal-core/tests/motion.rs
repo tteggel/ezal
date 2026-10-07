@@ -2,9 +2,8 @@
 
 mod common;
 
-use common::TEST_CALIBRATION;
+use common::{installed, sample};
 use ezal_core::actuator::Actuator;
-use ezal_core::control::TimedPointing;
 use ezal_core::drive::{
     AzimuthDirection, Command, DriveCommand, ElevationDirection, OUTPUT_MIN_INACTIVE_MS,
 };
@@ -23,8 +22,8 @@ const REVERSE: DriveCommand = DriveCommand {
 };
 
 fn gate(position: Pointing, timestamp_ms: u64) -> FeedbackInterlock {
-    let mut gate = FeedbackInterlock::new(TEST_CALIBRATION);
-    gate.publish(Some(TimedPointing::new(position, timestamp_ms)));
+    let mut gate = FeedbackInterlock::new(installed());
+    gate.publish(Some(sample(position, timestamp_ms)));
     gate
 }
 

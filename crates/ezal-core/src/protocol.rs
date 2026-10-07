@@ -8,11 +8,11 @@
 
 use core::fmt;
 
-use crate::control::ControlState;
 use crate::drive::{
     AzimuthDirection, Command, DriveCommand, ElevationDirection, MOVEMENT_LEASE_MS,
     OUTPUT_MIN_ACTIVE_MS,
 };
+use crate::feedback::{FeedbackHealth, FeedbackSnapshot};
 use crate::motion::MotionFault;
 
 /// WebSocket route used by the dashboard.
@@ -23,7 +23,7 @@ pub const TAKE_CONTROL_MESSAGE: &str = "control:take";
 
 /// How often the firmware sends position, control, and tracking telemetry to
 /// each dashboard connection. Feedback sampling has its own faster period,
-/// [`crate::control::FEEDBACK_PERIOD_MS`].
+/// [`crate::feedback::FEEDBACK_PERIOD_MS`].
 pub const TELEMETRY_PERIOD_MS: u64 = 500;
 
 /// How often the browser repeats a held drive state.
@@ -336,6 +336,15 @@ impl PositionTelemetry {
     }
 }
 
+impl From<FeedbackSnapshot> for PositionTelemetry {
+    fn from(snapshot: FeedbackSnapshot) -> Self {
+        snapshot.raw.map_or(Self::ZERO, |raw| Self {
+            a0_mv: raw.a0_elevation_mv,
+            a1_mv: raw.a1_azimuth_mv,
+        })
+    }
+}
+
 /// Last good calibrated position and acquisition health.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeedbackTelemetry {
@@ -344,18 +353,34 @@ pub struct FeedbackTelemetry {
     /// Elevation in tenths of a degree.
     pub elevation_tenths: i32,
     /// Health of the latest acquisition.
-    pub control_state: ControlState,
+    pub health: FeedbackHealth,
+}
+
+impl From<FeedbackSnapshot> for FeedbackTelemetry {
+    fn from(snapshot: FeedbackSnapshot) -> Self {
+        let position = snapshot.last_valid.map(|sample| sample.position());
+        Self {
+            azimuth_tenths: position.map_or(0, |position| degrees_to_tenths(position.azimuth_deg)),
+            elevation_tenths: position
+                .map_or(0, |position| degrees_to_tenths(position.elevation_deg)),
+            health: snapshot.health,
+        }
+    }
 }
 
 impl FeedbackTelemetry {
-    /// Initial state before the first sample.
-    pub const ZERO: Self = Self {
-        azimuth_tenths: 0,
-        elevation_tenths: 0,
-        control_state: ControlState::FeedbackUnavailable,
-    };
     /// Encode calibrated feedback for the dashboard.
     pub fn write_json(&self, out: &mut impl fmt::Write) -> fmt::Result {
-        write!(out, "{{\"type\":\"feedback\",\"azimuth_tenths\":{},\"elevation_tenths\":{},\"control_state\":\"{}\"}}", self.azimuth_tenths, self.elevation_tenths, self.control_state.as_str())
+        // Preserve the dashboard's wire names while keeping domain health explicit.
+        let state = match self.health {
+            FeedbackHealth::Healthy => "idle",
+            FeedbackHealth::ReadTimedOut => "feedback-stale",
+            other => other.as_str(),
+        };
+        write!(out, "{{\"type\":\"feedback\",\"azimuth_tenths\":{},\"elevation_tenths\":{},\"control_state\":\"{}\"}}", self.azimuth_tenths, self.elevation_tenths, state)
     }
+}
+
+fn degrees_to_tenths(degrees: f32) -> i32 {
+    (degrees * 10.0 + 0.5) as i32
 }

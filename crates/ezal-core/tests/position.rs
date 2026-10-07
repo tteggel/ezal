@@ -381,3 +381,28 @@ fn set_high_endpoint(axis: &mut AxisCalibration, millivolts: i32) {
         axis.voltage_min_mv = millivolts;
     }
 }
+
+#[test]
+fn installed_model_keeps_validated_geometry_after_source_settings_change() {
+    use ezal_core::position::InstalledCalibration;
+
+    let mut settings = TEST_CALIBRATION;
+    let installed = InstalledCalibration::new(settings, FEEDBACK_FULL_SCALE).unwrap();
+    let endpoints = FeedbackVoltages {
+        a0_elevation_mv: settings.elevation.voltage_max_mv,
+        a1_azimuth_mv: settings.azimuth.voltage_max_mv,
+    };
+    settings.azimuth.angle_max_deg = f32::NAN;
+    assert!(InstalledCalibration::new(settings, FEEDBACK_FULL_SCALE).is_err());
+    assert_eq!(
+        installed.feedback_to_position(endpoints),
+        Ok(Pointing::new(360.0, 90.0))
+    );
+    assert_eq!(
+        installed.feedback_to_position(FeedbackVoltages {
+            a0_elevation_mv: 0,
+            ..endpoints
+        }),
+        Err(CalibrationError::AdcSaturated)
+    );
+}

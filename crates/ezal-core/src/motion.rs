@@ -12,7 +12,6 @@
 //! mechanism. A fault requires inspection and a firmware reset; there is no
 //! command or automatically recovering sample that clears it.
 
-use crate::control::TimedPointing;
 use crate::drive::{DriveCommand, AZIMUTH_MAX_SPEED_DEG_PER_S, ELEVATION_MAX_SPEED_DEG_PER_S};
 use crate::interlock::FeedbackInterlock;
 use crate::position::Pointing;
@@ -297,15 +296,10 @@ impl MotionMonitor {
             .feedback_resolution_deg()
             .unwrap_or(Pointing::new(0.0, 0.0));
         let sample = |axis: fn(Pointing) -> f32| {
-            feedback.map(
-                |TimedPointing {
-                     position,
-                     timestamp_ms,
-                 }| Sample {
-                    position_deg: axis(position),
-                    timestamp_ms,
-                },
-            )
+            feedback.map(|feedback| Sample {
+                position_deg: axis(feedback.position()),
+                timestamp_ms: feedback.sampled_at_ms(),
+            })
         };
         let azimuth = self.azimuth.observe(
             elapsed_ms,

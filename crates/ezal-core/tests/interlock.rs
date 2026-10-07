@@ -2,16 +2,17 @@
 
 mod common;
 
-use common::TEST_CALIBRATION;
+use common::{installed, sample, TEST_CALIBRATION};
 use ezal_core::actuator::Actuator;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::control::{TimedPointing, FEEDBACK_TIMEOUT_MS};
 use ezal_core::drive::{
     AzimuthDirection, Command, DriveCommand, ElevationDirection, AZIMUTH_MAX_SPEED_DEG_PER_S,
 };
+use ezal_core::feedback::{FeedbackMonitor, FEEDBACK_MAX_AGE_MS};
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::position::{FeedbackVoltages, Pointing, FEEDBACK_ENDPOINT_MARGIN_MV};
-use ezal_core::supervisor::ManualSupervisor;
+use ezal_core::position::{
+    FeedbackVoltages, InstalledCalibration, Pointing, FEEDBACK_ENDPOINT_MARGIN_MV,
+};
 
 const BOTH: DriveCommand = DriveCommand {
     azimuth: Some(AzimuthDirection::Clockwise),
@@ -24,8 +25,8 @@ const CLOCKWISE: DriveCommand = DriveCommand {
 };
 
 fn gate_at(position: Pointing, timestamp_ms: u64) -> FeedbackInterlock {
-    let mut gate = FeedbackInterlock::new(TEST_CALIBRATION);
-    gate.publish(Some(TimedPointing::new(position, timestamp_ms)));
+    let mut gate = FeedbackInterlock::new(installed());
+    gate.publish(Some(sample(position, timestamp_ms)));
     gate
 }
 
@@ -40,15 +41,15 @@ fn held_command_refreshes_cannot_extend_feedback_lifetime() {
     }
     assert_eq!(
         actuator.next_deadline_ms(&gate, 450),
-        Some(FEEDBACK_TIMEOUT_MS + 1)
+        Some(FEEDBACK_MAX_AGE_MS + 1)
     );
-    assert!(gate.motion_permitted(FEEDBACK_TIMEOUT_MS));
-    assert!(actuator.service(&gate, FEEDBACK_TIMEOUT_MS + 1));
+    assert!(gate.motion_permitted(FEEDBACK_MAX_AGE_MS));
+    assert!(actuator.service(&gate, FEEDBACK_MAX_AGE_MS + 1));
     assert_eq!(actuator.actual(), DriveCommand::IDLE);
     assert_eq!(actuator.target(), DriveCommand::IDLE);
     assert_eq!(actuator.lease_deadline_ms(), None);
     assert_eq!(
-        actuator.next_deadline_ms(&gate, FEEDBACK_TIMEOUT_MS + 1),
+        actuator.next_deadline_ms(&gate, FEEDBACK_MAX_AGE_MS + 1),
         None
     );
     actuator.command(Command::Drive(BOTH), &gate, 600);
@@ -69,7 +70,7 @@ fn fault_clears_active_movement_before_minimum_on_time() {
     }
 
     // Feedback recovery alone must never replay the discarded movement.
-    gate.publish(Some(TimedPointing::new(Pointing::new(180.0, 45.0), 200)));
+    gate.publish(Some(sample(Pointing::new(180.0, 45.0), 200)));
     actuator.service(&gate, 200);
     assert_eq!(actuator.actual(), DriveCommand::IDLE);
     assert_eq!(actuator.target(), DriveCommand::IDLE);
@@ -84,14 +85,14 @@ fn a_pending_activation_is_checked_against_feedback_when_it_falls_due() {
     actuator.command(Command::Drive(CLOCKWISE), &gate, 0);
     actuator.command(Command::Inhibit, &gate, 100);
 
-    gate.publish(Some(TimedPointing::new(Pointing::new(355.0, 45.0), 1_900)));
+    gate.publish(Some(sample(Pointing::new(355.0, 45.0), 1_900)));
     actuator.command(Command::Drive(CLOCKWISE), &gate, 1_900);
     assert_eq!(actuator.actual(), DriveCommand::IDLE);
     assert_eq!(actuator.target(), CLOCKWISE);
     assert_eq!(actuator.next_deadline_ms(&gate, 1_900), Some(2_100));
 
     // The dish reaches the endpoint before the inactive hold ends.
-    gate.publish(Some(TimedPointing::new(Pointing::new(360.0, 45.0), 2_050)));
+    gate.publish(Some(sample(Pointing::new(360.0, 45.0), 2_050)));
     assert!(!actuator.service(&gate, 2_100));
     assert_eq!(actuator.actual(), DriveCommand::IDLE);
     assert_eq!(actuator.target(), DriveCommand::IDLE);
@@ -105,7 +106,7 @@ fn endpoint_inhibits_outward_axis_immediately_and_preserves_other_axis() {
     actuator.command(Command::Drive(BOTH), &gate, 0);
     assert_eq!(actuator.actual(), BOTH);
     let lease = actuator.lease_deadline_ms();
-    gate.publish(Some(TimedPointing::new(Pointing::new(360.0, 45.0), 100)));
+    gate.publish(Some(sample(Pointing::new(360.0, 45.0), 100)));
     assert!(actuator.service(&gate, 100));
     let up = DriveCommand {
         azimuth: None,
@@ -143,17 +144,20 @@ fn each_endpoint_allows_only_inward_axis_directions() {
 }
 
 #[test]
-fn absent_future_invalid_and_out_of_bounds_feedback_cannot_admit_motion() {
-    let mut gate = FeedbackInterlock::new(TEST_CALIBRATION);
+fn absent_future_and_differently_calibrated_feedback_cannot_admit_motion() {
+    let mut narrower = TEST_CALIBRATION;
+    narrower.azimuth.angle_max_deg = 350.0;
+    narrower.elevation.angle_max_deg = 80.0;
+    let mut gate =
+        FeedbackInterlock::new(InstalledCalibration::new(narrower, FEEDBACK_FULL_SCALE).unwrap());
     assert_eq!(
         gate.guard_command(Command::Drive(BOTH), 0),
         Command::Inhibit
     );
     for feedback in [
-        TimedPointing::new(Pointing::new(180.0, 45.0), 1),
-        TimedPointing::new(Pointing::new(f32::NAN, 45.0), 0),
-        TimedPointing::new(Pointing::new(361.0, 45.0), 0),
-        TimedPointing::new(Pointing::new(180.0, 91.0), 0),
+        sample(Pointing::new(180.0, 45.0), 1),
+        sample(Pointing::new(355.0, 45.0), 0),
+        sample(Pointing::new(180.0, 85.0), 0),
     ] {
         gate.publish(Some(feedback));
         assert_eq!(
@@ -167,8 +171,17 @@ fn absent_future_invalid_and_out_of_bounds_feedback_cannot_admit_motion() {
     assert!(!FeedbackInterlock::INHIBITED.motion_permitted(0));
     let mut unsupervised = TEST_CALIBRATION;
     unsupervised.elevation.voltage_max_mv = FEEDBACK_ENDPOINT_MARGIN_MV;
-    let mut gate = FeedbackInterlock::new(unsupervised);
-    gate.publish(Some(TimedPointing::new(Pointing::new(180.0, 45.0), 0)));
+    let mut monitor = FeedbackMonitor::new(unsupervised, None);
+    let gate = monitor
+        .update(
+            0,
+            0,
+            Ok(FeedbackVoltages {
+                a0_elevation_mv: 850,
+                a1_azimuth_mv: 1100,
+            }),
+        )
+        .interlock;
     assert_eq!(gate.guard_drive(BOTH, 0), DriveCommand::IDLE);
 }
 
@@ -185,7 +198,7 @@ fn quantized_endpoint_readings_refuse_outward_motion_and_permit_inward_motion() 
         azimuth: Some(AzimuthDirection::CounterClockwise),
         elevation: Some(ElevationDirection::Up),
     };
-    let mut supervisor = ManualSupervisor::new(TEST_CALIBRATION);
+    let mut supervisor = FeedbackMonitor::new(TEST_CALIBRATION, None);
 
     // A dish at the azimuth maximum and elevation minimum can read a whole
     // ADC code inside either endpoint. Elevation voltage falls as angle rises.
@@ -198,7 +211,7 @@ fn quantized_endpoint_readings_refuse_outward_motion_and_permit_inward_motion() 
         }),
     );
     let gate = update.interlock;
-    let position = gate.feedback().unwrap().position;
+    let position = gate.feedback().unwrap().position();
     assert!(position.azimuth_deg < azimuth.angle_max_deg);
     assert!(position.elevation_deg > elevation.angle_min_deg);
     assert_eq!(gate.guard_drive(outward, 2), DriveCommand::IDLE);
@@ -224,7 +237,7 @@ fn quantized_endpoint_readings_refuse_outward_motion_and_permit_inward_motion() 
     let gate = update.interlock;
     assert_eq!(gate.guard_drive(outward, 102), outward);
     let refused_ms = gate.deadline_ms(outward, 102).unwrap();
-    assert!(refused_ms < 100 + FEEDBACK_TIMEOUT_MS);
+    assert!(refused_ms < 100 + FEEDBACK_MAX_AGE_MS);
     assert_eq!(gate.guard_drive(outward, refused_ms - 1), outward);
     assert_ne!(gate.guard_drive(outward, refused_ms), outward);
     assert_eq!(gate.guard_drive(inward, refused_ms), inward);
@@ -241,7 +254,7 @@ fn outward_travel_is_cut_before_it_could_reach_an_endpoint_code() {
 
     // No further sample arrives: the cut must not wait for one.
     let cut_ms = actuator.next_deadline_ms(&gate, sample_ms + 5).unwrap();
-    assert!(cut_ms < sample_ms + FEEDBACK_TIMEOUT_MS);
+    assert!(cut_ms < sample_ms + FEEDBACK_MAX_AGE_MS);
     assert!(!actuator.service(&gate, cut_ms - 1));
     assert!(actuator.service(&gate, cut_ms));
     assert_eq!(
@@ -260,7 +273,7 @@ fn outward_travel_is_cut_before_it_could_reach_an_endpoint_code() {
     // Elevation has more room, so it keeps moving until the sample expires.
     assert_eq!(
         actuator.next_deadline_ms(&gate, cut_ms),
-        Some(sample_ms + FEEDBACK_TIMEOUT_MS + 1)
+        Some(sample_ms + FEEDBACK_MAX_AGE_MS + 1)
     );
 }
 
@@ -275,10 +288,7 @@ fn a_released_axis_stops_the_same_way_whether_or_not_the_other_axis_is_refused()
             let mut gate = gate_at(Pointing::new(180.0, 45.0), 0);
             let mut actuator = Actuator::new();
             actuator.command(command(BOTH), &gate, 0);
-            gate.publish(Some(TimedPointing::new(
-                Pointing::new(180.0, elevation_deg),
-                100,
-            )));
+            gate.publish(Some(sample(Pointing::new(180.0, elevation_deg), 100)));
             actuator.command(command(up), &gate, 100);
             actuator.actual().azimuth
         };

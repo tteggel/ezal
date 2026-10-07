@@ -11,19 +11,20 @@ use embassy_time::Instant;
 
 use ezal_core::authority::ControlAuthority;
 use ezal_core::drive::{Command, DriveCommand, MOVEMENT_LEASE_MS};
+use ezal_core::feedback::FeedbackSnapshot;
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::mailbox::CommandMailbox;
 use ezal_core::motion::MotionFault;
 use ezal_core::network::NetworkGate;
-use ezal_core::protocol::{ControlStatus, FeedbackTelemetry, PositionTelemetry};
+use ezal_core::position::FeedbackVoltages;
+use ezal_core::protocol::ControlStatus;
 
 /// The one shared-state instance, wired to every task from `main`.
 pub static STATE: SharedState = SharedState::new();
 
 /// Values read or changed together while the critical section is held.
 struct Snapshot {
-    position: PositionTelemetry,
-    feedback: FeedbackTelemetry,
+    feedback: FeedbackSnapshot,
     authority: ControlAuthority,
     applied_drive: DriveCommand,
     interlock: FeedbackInterlock,
@@ -47,13 +48,12 @@ pub struct SharedState {
 }
 
 impl SharedState {
-    /// Create empty shared state. Motion stays inhibited until a supervisor
+    /// Create empty shared state. Motion stays inhibited until a feedback monitor
     /// publishes an interlock built from the installed calibration.
     pub const fn new() -> Self {
         Self {
             snapshot: Mutex::new(RefCell::new(Snapshot {
-                position: PositionTelemetry::ZERO,
-                feedback: FeedbackTelemetry::ZERO,
+                feedback: FeedbackSnapshot::INITIAL,
                 authority: ControlAuthority::new(),
                 applied_drive: DriveCommand::IDLE,
                 interlock: FeedbackInterlock::INHIBITED,
@@ -121,27 +121,13 @@ impl SharedState {
     }
 
     /// Store the latest raw ADC millivolt readings.
-    pub fn store_position(&self, position: PositionTelemetry) {
-        self.with(|snapshot| snapshot.position = position);
+    pub fn store_raw_feedback(&self, raw: FeedbackVoltages) {
+        self.with(|snapshot| snapshot.feedback.raw = Some(raw));
     }
 
-    /// Read the latest coherent pair of ADC readings.
-    pub fn position(&self) -> PositionTelemetry {
-        self.with(|snapshot| snapshot.position)
-    }
-
-    /// Publish one supervision tick: raw readings, feedback status, and the
-    /// output interlock built from the supervisor's own calibration.
-    pub fn publish_feedback(
-        &self,
-        position: Option<PositionTelemetry>,
-        feedback: FeedbackTelemetry,
-        interlock: FeedbackInterlock,
-    ) {
+    /// Publish one acquisition snapshot and its installation's output gate.
+    pub fn publish_feedback(&self, feedback: FeedbackSnapshot, interlock: FeedbackInterlock) {
         self.with(|snapshot| {
-            if let Some(position) = position {
-                snapshot.position = position;
-            }
             snapshot.feedback = feedback;
             snapshot.interlock = interlock;
             // Only an energised output can travel toward an endpoint or
@@ -154,7 +140,7 @@ impl SharedState {
     }
 
     /// Read the latest internally coherent feedback snapshot.
-    pub fn feedback(&self) -> FeedbackTelemetry {
+    pub fn feedback(&self) -> FeedbackSnapshot {
         self.with(|snapshot| snapshot.feedback)
     }
 

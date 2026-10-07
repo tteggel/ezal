@@ -1,10 +1,14 @@
 //! Tests for the browser-facing wire protocol.
 
-use ezal_core::control::ControlState;
+mod common;
+
+use common::TEST_CALIBRATION;
 use ezal_core::dashboard::INDEX_HTML;
 use ezal_core::drive::{
     AzimuthDirection, Command, DriveCommand, ElevationDirection, OUTPUT_MIN_ACTIVE_MS,
 };
+use ezal_core::feedback::{FeedbackHealth, FeedbackMonitor, FeedbackReadError, FeedbackSnapshot};
+use ezal_core::position::Pointing;
 use ezal_core::protocol::{
     parse_command, ClientMessage, CommandFreshness, ControlStatus, FeedbackTelemetry,
     MovementRequest, PositionTelemetry, COMMAND_MAX_AGE_MS, COMMAND_REFRESH_MS, COMMAND_TIMEOUT_MS,
@@ -161,7 +165,7 @@ fn formats_calibrated_feedback_without_demo_fields() {
     FeedbackTelemetry {
         azimuth_tenths: 4247,
         elevation_tenths: 3,
-        control_state: ControlState::Idle,
+        health: FeedbackHealth::Healthy,
     }
     .write_json(&mut json)
     .unwrap();
@@ -180,6 +184,42 @@ fn command_refresh_stays_inside_firmware_lease() {
     assert!(INDEX_HTML.contains("const refreshMs = 150;"));
     assert_eq!(COMMAND_MAX_AGE_MS, 1000);
     assert!(INDEX_HTML.contains("const telemetryTimeoutMs = 1000;"));
+}
+
+#[test]
+fn domain_feedback_projects_retained_diagnostics_and_legacy_wire_health() {
+    let raw = TEST_CALIBRATION
+        .position_to_feedback(Pointing::new(100.0, 20.0))
+        .unwrap();
+    let mut monitor = FeedbackMonitor::new(TEST_CALIBRATION, None);
+    monitor.update(100, 98, Ok(raw));
+    let failed = monitor
+        .update(200, 198, Err(FeedbackReadError::TimedOut))
+        .snapshot;
+    let mut json = String::new();
+    FeedbackTelemetry::from(failed)
+        .write_json(&mut json)
+        .unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"feedback","azimuth_tenths":1000,"elevation_tenths":200,"control_state":"feedback-stale"}"#
+    );
+    assert_eq!(
+        PositionTelemetry::from(failed),
+        PositionTelemetry {
+            a0_mv: raw.a0_elevation_mv,
+            a1_mv: raw.a1_azimuth_mv
+        }
+    );
+
+    json.clear();
+    FeedbackTelemetry::from(FeedbackSnapshot::INITIAL)
+        .write_json(&mut json)
+        .unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"feedback","azimuth_tenths":0,"elevation_tenths":0,"control_state":"no-feedback"}"#
+    );
 }
 
 fn movement(token: u64, sequence: u64, pressed: bool) -> MovementRequest {

@@ -3,9 +3,8 @@
 
 mod common;
 
-use common::TEST_CALIBRATION;
+use common::{installed, sample};
 use ezal_core::actuator::Actuator;
-use ezal_core::control::TimedPointing;
 use ezal_core::drive::{AzimuthDirection, Command, DriveCommand};
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::network::{NetworkGate, NETWORK_HEALTH_TIMEOUT_MS};
@@ -17,8 +16,8 @@ const MOVE: Command = Command::Drive(DriveCommand {
 });
 
 fn feedback(now_ms: u64) -> FeedbackInterlock {
-    let mut interlock = FeedbackInterlock::new(TEST_CALIBRATION);
-    interlock.publish(Some(TimedPointing::new(Pointing::new(100.0, 40.0), now_ms)));
+    let mut interlock = FeedbackInterlock::new(installed());
+    interlock.publish(Some(sample(Pointing::new(100.0, 40.0), now_ms)));
     interlock
 }
 

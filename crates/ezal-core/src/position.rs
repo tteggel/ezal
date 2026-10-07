@@ -133,21 +133,47 @@ impl AxisCalibration {
     /// disconnected, shorted, or otherwise untrustworthy feedback channel.
     pub fn voltage_to_angle(self, millivolts: i32) -> Result<f32, CalibrationError> {
         self.validate()?;
-        let voltage_low_mv = i64::from(self.voltage_min_mv.min(self.voltage_max_mv));
-        let voltage_high_mv = i64::from(self.voltage_min_mv.max(self.voltage_max_mv));
+        AxisMapping::from_validated(self).voltage_to_angle(millivolts)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AxisMapping {
+    min_deg: f32,
+    max_deg: f32,
+    span_deg: f32,
+    start_mv: i64,
+    span_mv: f32,
+    low_mv: i64,
+    high_mv: i64,
+}
+
+impl AxisMapping {
+    fn from_validated(axis: AxisCalibration) -> Self {
+        Self {
+            min_deg: axis.angle_min_deg,
+            max_deg: axis.angle_max_deg,
+            span_deg: axis.angle_max_deg - axis.angle_min_deg,
+            start_mv: i64::from(axis.voltage_min_mv),
+            span_mv: (i64::from(axis.voltage_max_mv) - i64::from(axis.voltage_min_mv)) as f32,
+            low_mv: i64::from(axis.voltage_min_mv.min(axis.voltage_max_mv)),
+            high_mv: i64::from(axis.voltage_min_mv.max(axis.voltage_max_mv)),
+        }
+    }
+
+    fn voltage_to_angle(self, millivolts: i32) -> Result<f32, CalibrationError> {
         let millivolts = i64::from(millivolts);
         // The accepted noise band can extend past i32::MIN/MAX; comparisons
         // and interpolation must remain well-defined at those boundaries.
-        if millivolts < voltage_low_mv - i64::from(FEEDBACK_ENDPOINT_MARGIN_MV)
-            || millivolts > voltage_high_mv + i64::from(FEEDBACK_ENDPOINT_MARGIN_MV)
+        if millivolts < self.low_mv - i64::from(FEEDBACK_ENDPOINT_MARGIN_MV)
+            || millivolts > self.high_mv + i64::from(FEEDBACK_ENDPOINT_MARGIN_MV)
         {
             return Err(CalibrationError::VoltageOutOfRange);
         }
 
-        let clamped = millivolts.clamp(voltage_low_mv, voltage_high_mv);
-        let fraction = (clamped - i64::from(self.voltage_min_mv)) as f32
-            / (i64::from(self.voltage_max_mv) - i64::from(self.voltage_min_mv)) as f32;
-        Ok(self.angle_min_deg + fraction * (self.angle_max_deg - self.angle_min_deg))
+        let clamped = millivolts.clamp(self.low_mv, self.high_mv);
+        let fraction = (clamped - self.start_mv) as f32 / self.span_mv;
+        Ok(self.min_deg + fraction * self.span_deg)
     }
 }
 
@@ -183,7 +209,7 @@ impl PositionCalibration {
     /// fit the G-5500 envelope used by the final output interlock.
     pub fn validate_for_adc(self, full_scale: FullScale) -> Result<(), CalibrationError> {
         self.validate()?;
-        // The supervisor and final interlock must agree on usable positions.
+        // The feedback monitor and final interlock must agree on usable positions.
         // A mathematically sound voltage mapping outside this rotator's range
         // would otherwise report healthy feedback that cannot permit motion.
         let minimum = Pointing::new(self.azimuth.angle_min_deg, self.elevation.angle_min_deg);
@@ -212,13 +238,8 @@ impl PositionCalibration {
         feedback: FeedbackVoltages,
         full_scale: FullScale,
     ) -> Result<Pointing, CalibrationError> {
-        for millivolts in [feedback.a0_elevation_mv, feedback.a1_azimuth_mv] {
-            if millivolts <= 0 || millivolts >= full_scale.saturation_limit_mv() {
-                return Err(CalibrationError::AdcSaturated);
-            }
-        }
-        self.validate_for_adc(full_scale)?;
-        self.feedback_to_position(feedback)
+        validate_adc_readings(feedback, full_scale)?;
+        InstalledCalibration::new(self, full_scale)?.convert(feedback)
     }
 
     /// Convert a position into the voltages the installed feedback chain
@@ -245,7 +266,74 @@ impl PositionCalibration {
     }
 }
 
-/// Current installed-system endpoints used by autonomous and manual modes.
+/// Immutable conversion model whose installation and ADC range were checked once.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InstalledCalibration {
+    azimuth: AxisMapping,
+    elevation: AxisMapping,
+    full_scale: FullScale,
+}
+
+impl InstalledCalibration {
+    /// Compile a physically observable calibration without retaining unchecked settings.
+    pub fn new(
+        calibration: PositionCalibration,
+        full_scale: FullScale,
+    ) -> Result<Self, CalibrationError> {
+        calibration.validate_for_adc(full_scale)?;
+        Ok(Self {
+            azimuth: AxisMapping::from_validated(calibration.azimuth),
+            elevation: AxisMapping::from_validated(calibration.elevation),
+            full_scale,
+        })
+    }
+
+    /// Check this observation's rails and endpoint margins, then calibrate it.
+    pub fn feedback_to_position(
+        self,
+        feedback: FeedbackVoltages,
+    ) -> Result<Pointing, CalibrationError> {
+        validate_adc_readings(feedback, self.full_scale)?;
+        self.convert(feedback)
+    }
+
+    fn convert(self, feedback: FeedbackVoltages) -> Result<Pointing, CalibrationError> {
+        Ok(Pointing {
+            azimuth_deg: self.azimuth.voltage_to_angle(feedback.a1_azimuth_mv)?,
+            elevation_deg: self.elevation.voltage_to_angle(feedback.a0_elevation_mv)?,
+        })
+    }
+
+    pub(crate) const fn minimum(self) -> Pointing {
+        Pointing::new(self.azimuth.min_deg, self.elevation.min_deg)
+    }
+
+    pub(crate) const fn maximum(self) -> Pointing {
+        Pointing::new(self.azimuth.max_deg, self.elevation.max_deg)
+    }
+
+    pub(crate) fn resolution_deg(self, rounding_margin_mv: f32) -> Pointing {
+        let code_mv = self.full_scale.code_mv() + rounding_margin_mv;
+        Pointing::new(
+            self.azimuth.span_deg * code_mv / self.azimuth.span_mv.abs(),
+            self.elevation.span_deg * code_mv / self.elevation.span_mv.abs(),
+        )
+    }
+}
+
+fn validate_adc_readings(
+    feedback: FeedbackVoltages,
+    full_scale: FullScale,
+) -> Result<(), CalibrationError> {
+    for millivolts in [feedback.a0_elevation_mv, feedback.a1_azimuth_mv] {
+        if millivolts <= 0 || millivolts >= full_scale.saturation_limit_mv() {
+            return Err(CalibrationError::AdcSaturated);
+        }
+    }
+    Ok(())
+}
+
+/// Current installed-system endpoints used for feedback and manual movement.
 /// Replace these values with measurements from the calibration procedure in
 /// `docs/CALIBRATION.md` whenever the feedback hardware changes.
 pub const HARD_CODED_CALIBRATION: PositionCalibration = PositionCalibration {

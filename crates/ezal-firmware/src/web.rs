@@ -22,7 +22,10 @@ use picoserve::routing::{get, PathRouter};
 use ezal_core::dashboard::INDEX_HTML;
 use ezal_core::drive::Command;
 use ezal_core::passes::Report;
-use ezal_core::protocol::{ClientMessage, CommandFreshness, TELEMETRY_PERIOD_MS, WS_PATH};
+use ezal_core::protocol::{
+    ClientMessage, CommandFreshness, FeedbackTelemetry, PositionTelemetry, TELEMETRY_PERIOD_MS,
+    WS_PATH,
+};
 
 use crate::state::{SharedState, STATE};
 
@@ -162,7 +165,10 @@ async fn send_position<W: PicoserveWrite>(
     state: &'static SharedState,
 ) -> Result<(), W::Error> {
     let mut payload: String<96> = String::new();
-    if state.position().write_json(&mut payload).is_ok() {
+    if PositionTelemetry::from(state.feedback())
+        .write_json(&mut payload)
+        .is_ok()
+    {
         tx.send_text(&payload).await?;
     }
     Ok(())
@@ -173,7 +179,10 @@ async fn send_feedback<W: PicoserveWrite>(
     state: &'static SharedState,
 ) -> Result<(), W::Error> {
     let mut payload: String<384> = String::new();
-    if state.feedback().write_json(&mut payload).is_ok() {
+    if FeedbackTelemetry::from(state.feedback())
+        .write_json(&mut payload)
+        .is_ok()
+    {
         tx.send_text(&payload).await?;
     }
     Ok(())

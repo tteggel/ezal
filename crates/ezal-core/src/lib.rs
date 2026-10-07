@@ -16,8 +16,7 @@
 //!   the firmware crate.
 //! * [`position`] — azimuth/elevation units, hard-coded installation
 //!   calibration, and calibrated angle ↔ feedback-millivolt conversion.
-//! * [`control`] — feedback timing and health.
-//! * [`supervisor`] — feedback validation for manual operation.
+//! * [`feedback`] — acquisition health and calibrated observations, independent of telemetry.
 //! * [`interlock`] — feedback freshness and travel-aware directional endpoint
 //!   checks at the final actuator boundary.
 //! * [`actuator`] — the safety-ordered sequence that enforces the interlock
@@ -80,9 +79,9 @@
 pub mod actuator;
 pub mod ads1015;
 pub mod authority;
-pub mod control;
 pub mod dashboard;
 pub mod drive;
+pub mod feedback;
 pub mod http;
 pub mod interlock;
 pub mod mailbox;
@@ -93,5 +92,4 @@ pub mod orbit;
 pub mod passes;
 pub mod position;
 pub mod protocol;
-pub mod supervisor;
 pub mod wifi;

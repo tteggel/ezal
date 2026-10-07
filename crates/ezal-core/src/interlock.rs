@@ -12,13 +12,12 @@
 //! without waiting for another sample. Relay release time and coasting after
 //! the cut are outside this model.
 
-use crate::ads1015::FEEDBACK_FULL_SCALE;
-use crate::control::{TimedPointing, FEEDBACK_TIMEOUT_MS};
 use crate::drive::{
     ActuatorGuard, Command, DriveCommand, AZIMUTH_MAX_SPEED_DEG_PER_S,
     ELEVATION_MAX_SPEED_DEG_PER_S,
 };
-use crate::position::{AxisCalibration, Pointing, PositionCalibration};
+use crate::feedback::{FeedbackSample, FEEDBACK_MAX_AGE_MS};
+use crate::position::{InstalledCalibration, Pointing};
 
 /// Added to one ADC code so a reading exactly one code inside an endpoint is
 /// refused without depending on floating-point rounding.
@@ -28,7 +27,7 @@ const CODE_ROUNDING_MARGIN_MV: f32 = 0.5;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FeedbackInterlock {
     limits: Option<Limits>,
-    feedback: Option<TimedPointing>,
+    feedback: Option<FeedbackSample>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,13 +47,11 @@ struct AxisLimits {
 }
 
 impl AxisLimits {
-    fn new(axis: AxisCalibration, speed_deg_per_s: f32) -> Self {
-        let span_mv = (axis.voltage_max_mv - axis.voltage_min_mv).unsigned_abs() as f32;
-        let code_mv = FEEDBACK_FULL_SCALE.code_mv() + CODE_ROUNDING_MARGIN_MV;
+    fn new(min_deg: f32, max_deg: f32, code_deg: f32, speed_deg_per_s: f32) -> Self {
         Self {
-            min_deg: axis.angle_min_deg,
-            max_deg: axis.angle_max_deg,
-            code_deg: (axis.angle_max_deg - axis.angle_min_deg) * code_mv / span_mv,
+            min_deg,
+            max_deg,
+            code_deg,
             speed_deg_per_ms: speed_deg_per_s / 1_000.0,
         }
     }
@@ -80,23 +77,31 @@ impl AxisLimits {
 }
 
 impl FeedbackInterlock {
-    /// A gate that permits no motion, used before any supervisor publishes.
+    /// A gate that permits no motion, used before any feedback monitor publishes.
     pub const INHIBITED: Self = Self {
         limits: None,
         feedback: None,
     };
 
-    /// Create a gate for an installed calibration, waiting for the first valid
-    /// feedback sample. A calibration the feedback ADC cannot supervise never
-    /// permits motion.
-    pub fn new(calibration: PositionCalibration) -> Self {
-        let limits = calibration
-            .validate_for_adc(FEEDBACK_FULL_SCALE)
-            .is_ok()
-            .then(|| Limits {
-                azimuth: AxisLimits::new(calibration.azimuth, AZIMUTH_MAX_SPEED_DEG_PER_S),
-                elevation: AxisLimits::new(calibration.elevation, ELEVATION_MAX_SPEED_DEG_PER_S),
-            });
+    /// Derive output limits from the same validated model used to calibrate samples.
+    pub fn new(calibration: InstalledCalibration) -> Self {
+        let minimum = calibration.minimum();
+        let maximum = calibration.maximum();
+        let resolution = calibration.resolution_deg(CODE_ROUNDING_MARGIN_MV);
+        let limits = Some(Limits {
+            azimuth: AxisLimits::new(
+                minimum.azimuth_deg,
+                maximum.azimuth_deg,
+                resolution.azimuth_deg,
+                AZIMUTH_MAX_SPEED_DEG_PER_S,
+            ),
+            elevation: AxisLimits::new(
+                minimum.elevation_deg,
+                maximum.elevation_deg,
+                resolution.elevation_deg,
+                ELEVATION_MAX_SPEED_DEG_PER_S,
+            ),
+        });
         Self {
             limits,
             feedback: None,
@@ -104,12 +109,12 @@ impl FeedbackInterlock {
     }
 
     /// Publish validated feedback, or invalidate the gate after a read fault.
-    pub fn publish(&mut self, feedback: Option<TimedPointing>) {
+    pub fn publish(&mut self, feedback: Option<FeedbackSample>) {
         self.feedback = feedback;
     }
 
     /// Latest published feedback, whether or not it is still fresh.
-    pub const fn feedback(&self) -> Option<TimedPointing> {
+    pub const fn feedback(&self) -> Option<FeedbackSample> {
         self.feedback
     }
 
@@ -129,10 +134,9 @@ impl FeedbackInterlock {
     fn current(&self, now_ms: u64) -> Option<(Limits, Pointing, u64)> {
         let limits = self.limits?;
         let feedback = self.feedback?;
-        let age_ms = now_ms.checked_sub(feedback.timestamp_ms)?;
-        let position = feedback.position;
-        (age_ms <= FEEDBACK_TIMEOUT_MS
-            && position.is_valid()
+        let age_ms = now_ms.checked_sub(feedback.sampled_at_ms())?;
+        let position = feedback.position();
+        (age_ms <= FEEDBACK_MAX_AGE_MS
             && limits.azimuth.contains(position.azimuth_deg)
             && limits.elevation.contains(position.elevation_deg))
         .then_some((limits, position, age_ms))
@@ -154,7 +158,7 @@ impl FeedbackInterlock {
             return None;
         }
         let (limits, position, _) = self.current(now_ms)?;
-        let mut refusal_age_ms = FEEDBACK_TIMEOUT_MS + 1;
+        let mut refusal_age_ms = FEEDBACK_MAX_AGE_MS + 1;
         if let Some(direction) = active.azimuth {
             refusal_age_ms = refusal_age_ms.min(
                 limits
@@ -169,7 +173,7 @@ impl FeedbackInterlock {
                     .refusal_age_ms(position.elevation_deg, direction.increases_angle()),
             );
         }
-        self.feedback?.timestamp_ms.checked_add(refusal_age_ms)
+        self.feedback?.sampled_at_ms().checked_add(refusal_age_ms)
     }
 
     /// Remove directions that require faulty feedback or that could already
