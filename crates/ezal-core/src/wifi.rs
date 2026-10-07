@@ -1,4 +1,4 @@
-//! # WiFi station credentials (pure, host-testable)
+//! WiFi station credentials and the reconnect schedule.
 //!
 //! The Pico 2 W joins an access point in **station (STA) mode** using an SSID
 //! and password that [`build.rs`] bakes into the firmware from `.env` at
@@ -7,8 +7,8 @@
 //! [`Credentials`] the build supplies and the rules that decide whether they
 //! are join-able, with no dependency on the radio or the HAL. The bus-facing
 //! half — powering the CYW43439 and issuing the join — lives in the firmware
-//! crate's `wifi` module, which calls [`Credentials::validate`] as the first
-//! step of its power-on self-test.
+//! crate's `wifi` module. Its supervisor validates credentials once and
+//! uses [`ConnectionRetries`] to schedule retries after association or DHCP fails.
 //!
 //! Keeping the rules here means they are checked by `./scripts/test-host.sh`,
 //! and a mistyped `.env` (an empty SSID or five-character password) is caught
@@ -126,9 +126,8 @@ impl Credentials<'_> {
     /// On success, returns the [`Security`] the firmware should join with:
     /// [`Security::Open`] when [`password`](Credentials::password) is empty,
     /// [`Security::Protected`] otherwise. On failure, returns the specific
-    /// [`CredentialError`] — the firmware's WiFi POST turns this into a loud
-    /// boot-time log line before attempting association. Radio initialization
-    /// has already completed when the firmware runs this check.
+    /// [`CredentialError`] — the firmware logs this before attempting
+    /// association. Radio initialization has already completed at that point.
     ///
     /// Lengths are measured in octets (bytes), matching how the SSID and
     /// passphrase go out on the air.
@@ -153,5 +152,67 @@ impl Credentials<'_> {
             return Err(CredentialError::PasswordTooLong { len: pw_len });
         }
         Ok(Security::Protected)
+    }
+}
+
+/// The reconnect supervisor's retry schedule.
+///
+/// A group starts with a short join deadline to recover promptly from the
+/// CYW43's stale initial WPA3 handshake. Two more timed-out joins may retry
+/// after hardware cleanup alone. Other failures, or three timed-out joins,
+/// end the group and use exponential backoff. Only usable networking resets
+/// that backoff; association without DHCP is not recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionRetries {
+    join_attempt: u8,
+    backoff_secs: u64,
+}
+
+impl ConnectionRetries {
+    /// Start with the initial join deadline and one second of failure backoff.
+    pub const fn new() -> Self {
+        Self {
+            join_attempt: 1,
+            backoff_secs: 1,
+        }
+    }
+
+    /// Deadline for the next bounded association attempt.
+    pub const fn association_timeout_ms(&self) -> u64 {
+        if self.join_attempt == 1 {
+            2_750
+        } else {
+            3_500
+        }
+    }
+
+    /// Whether a timed-out join may retry after cleanup without backoff.
+    /// Cleanup itself must succeed before that next join can start.
+    pub fn retry_timed_out_join(&mut self) -> bool {
+        if self.join_attempt < 3 {
+            self.join_attempt += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Finish this group and return its delay before another first attempt.
+    pub fn backoff_secs(&mut self) -> u64 {
+        self.join_attempt = 1;
+        let delay = self.backoff_secs;
+        self.backoff_secs = (delay * 2).min(30);
+        delay
+    }
+
+    /// A current station link and usable address restore the initial schedule.
+    pub fn connected(&mut self) {
+        *self = Self::new();
+    }
+}
+
+impl Default for ConnectionRetries {
+    fn default() -> Self {
+        Self::new()
     }
 }

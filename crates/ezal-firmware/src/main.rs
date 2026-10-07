@@ -12,6 +12,7 @@
 // ─── modules ────────────────────────────────────────────────────────────
 mod ads1015;
 mod drive;
+mod feedback;
 mod prediction;
 mod state;
 mod time;
@@ -32,18 +33,12 @@ use embassy_rp::i2c::InterruptHandler as I2cInterruptHandler;
 use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_time::{with_timeout, Duration};
 use static_cell::StaticCell;
 
 use ads1015::Ads1015;
-use ezal_core::ads1015::Mux;
-use ezal_core::feedback::{
-    AcquisitionState, FeedbackHealth, FeedbackMonitor, FeedbackReadError, FEEDBACK_PERIOD_MS,
-    FEEDBACK_READ_TIMEOUT_MS,
-};
-use ezal_core::position::{FeedbackVoltages, HARD_CODED_CALIBRATION};
+use ezal_core::position::FeedbackVoltages;
 use ezal_core::wifi::Credentials;
-use state::SharedState;
 use wifi::Wifi;
 
 // `use foo as _` keeps the crate linked in even though we never name any of
@@ -101,89 +96,26 @@ bind_interrupts!(struct Irqs {
 /// Station-mode WiFi credentials, baked in from `.env` at build time by
 /// `build.rs` (there's no filesystem on the Pico to read them at runtime).
 /// They're empty until you copy `.env.example` to `.env` and fill it in; the
-/// WiFi POST validates them and fails loudly at boot if they're unusable.
+/// WiFi supervisor validates them and parks if they cannot be used.
 const WIFI_SSID: &str = env!("EZAL_WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("EZAL_WIFI_PASSWORD");
-
-/// Delay between acquisitions; telemetry has its own slower cadence.
-const FEEDBACK_PERIOD: Duration = Duration::from_millis(FEEDBACK_PERIOD_MS);
 
 /// Bound the entire ADC self-test, including its presence and register checks.
 /// A stuck bus can suspend an async transaction without stalling the actuator
 /// task, so the actuator's watchdog alone cannot detect this startup failure.
 const ADC_POST_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// Own the ADC and its cancellation state together so a cancelled bus cannot be reused.
-struct FeedbackReader {
-    adc: Ads1015<'static>,
-    acquisition: AcquisitionState,
-}
-
-impl FeedbackReader {
-    fn new(adc: Ads1015<'static>) -> Self {
-        Self {
-            adc,
-            acquisition: AcquisitionState::default(),
-        }
-    }
-
-    async fn read(&mut self) -> Result<FeedbackVoltages, FeedbackReadError> {
-        if !self.acquisition.read_permitted() {
-            return Err(FeedbackReadError::TimedOut);
-        }
-        let result = match with_timeout(Duration::from_millis(FEEDBACK_READ_TIMEOUT_MS), async {
-            let a0_elevation_mv = self.adc.read_channel_mv(Mux::Ain0).await?;
-            let a1_azimuth_mv = self.adc.read_channel_mv(Mux::Ain1).await?;
-            Ok::<_, i2c::Error>(FeedbackVoltages {
-                a0_elevation_mv,
-                a1_azimuth_mv,
-            })
-        })
-        .await
-        {
-            Ok(Ok(readings)) => Ok(readings),
-            Ok(Err(_)) => Err(FeedbackReadError::Unavailable),
-            Err(_) => {
-                error!("feedback: ADC read timed out; reset required");
-                Err(FeedbackReadError::TimedOut)
-            }
-        };
-        self.acquisition.complete(result)
-    }
-}
-
-/// Sample feedback and publish health plus the actuator interlock.
-#[embassy_executor::task]
-async fn feedback_task(adc: Ads1015<'static>, state: &'static SharedState) -> ! {
-    let mut reader = FeedbackReader::new(adc);
-    let mut monitor = FeedbackMonitor::new(HARD_CODED_CALIBRATION, state.feedback().raw);
-    if let Some(error) = monitor.calibration_error() {
-        // Keep sampling anyway: the dashboard's raw millivolts are how an
-        // operator measures the endpoints again. Motion stays inhibited.
-        error!("feedback: calibration rejected: {=str}", error.as_str());
-    }
-    let mut last_health = FeedbackHealth::Unavailable;
-
-    loop {
-        // Timestamp before the oldest channel; include both reads in its age.
-        let sample_started_ms = Instant::now().as_millis();
-        let readings = reader.read().await;
-        let now_ms = Instant::now().as_millis();
-        let update = monitor.update(now_ms, sample_started_ms, readings);
-        state.publish_feedback(update.snapshot, update.interlock);
-        if update.snapshot.health != last_health {
-            info!("feedback: {=str}", update.snapshot.health.as_str());
-            last_health = update.snapshot.health;
-        }
-
-        Timer::after(FEEDBACK_PERIOD).await;
-    }
-}
-
 /// Drives the Embassy TCP/IP stack.
 #[embassy_executor::task]
 async fn net_task(mut runner: embassy_net::Runner<'static, NetDriver<'static>>) -> ! {
     runner.run().await
+}
+
+/// Stop this startup path while retaining its hardware. Already spawned tasks continue.
+async fn park<T>(resources: T) -> ! {
+    let never = core::future::pending::<core::convert::Infallible>().await;
+    drop(resources);
+    match never {}
 }
 
 // ─── entry point ────────────────────────────────────────────────────────
@@ -211,13 +143,10 @@ async fn main(spawner: Spawner) {
     );
     let mut watchdog = embassy_rp::watchdog::Watchdog::new(p.WATCHDOG);
     if watchdog::firmware_timeout_caused_reset(&mut watchdog) {
-        // Do not restart an autonomous pass after a panic or executor stall.
         // Keep the owned outputs low until a hardware reset clears the reason.
         watchdog.stop();
         error!("watchdog timeout: motion inhibited; inspect the fault, then reset the board");
-        loop {
-            Timer::after(Duration::from_secs(1)).await;
-        }
+        park((directions, watchdog)).await;
     }
     spawner.spawn(
         drive::direction_task(directions, &state::STATE, watchdog)
@@ -248,27 +177,23 @@ async fn main(spawner: Spawner) {
         }
         Ok(Err(e)) => {
             error!("ADS1015 POST FAILED: {}", e);
-            loop {
-                Timer::after(Duration::from_secs(1)).await;
-            }
+            park(adc).await;
         }
         Err(_) => {
             // Cancellation can leave a HAL transaction partially completed.
             // Keep the bus owned but never use it again before a hardware
             // reset. No feedback monitor has started, so outputs remain inhibited.
             error!("ADS1015 POST timed out; motion inhibited; reset required");
-            loop {
-                Timer::after(Duration::from_secs(1)).await;
-            }
+            park(adc).await;
         }
     }
 
-    spawner.spawn(feedback_task(adc, &state::STATE).expect("static task pool exhausted"));
+    spawner.spawn(feedback::run(adc, &state::STATE).expect("static task pool exhausted"));
     info!("ezal: manual control; outputs idle until operator input");
 
     // ─── WiFi: bring up the CYW43439 and join the AP (station mode) ───
     // The Pico 2 W's on-module radio. `Wifi::init` powers it and spawns its
-    // driver task; `wifi.post` joins the access point whose SSID/password were
+    // driver task; network supervision joins the access point whose credentials were
     // baked in from `.env` at build time. GP23/24/25/29, PIO0 and one DMA
     // channel are wired to the CYW43439 on the module and clash with nothing
     // else here. main owns `Irqs`, so it builds the two peripherals that
@@ -306,5 +231,5 @@ async fn main(spawner: Spawner) {
     // Start acceptors while offline. They remain registered across reconnects,
     // so successful retries expose the dashboard without rebuilding the stack.
     info!("ezal web: starting listener on http://<dhcp-address>/");
-    web::serve(spawner, stack).await;
+    web::spawn_servers(spawner, stack);
 }

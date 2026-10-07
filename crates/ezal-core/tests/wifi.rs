@@ -1,4 +1,4 @@
-//! Host unit tests for the pure WiFi credential logic.
+//! Host tests for WiFi credentials and the network supervisor's retry schedule.
 //!
 //! These run on the host with a plain `cargo test` (see
 //! `scripts/test-host.sh`). They pin down the boundaries of the 802.11 / WPA
@@ -157,4 +157,51 @@ fn debug_redacts_the_password() {
         assert!(rendered.contains("[REDACTED]"));
         assert!(!rendered.contains(creds.password));
     }
+}
+
+#[test]
+fn timed_out_joins_get_two_prompt_retries_before_backoff() {
+    let mut retries = ConnectionRetries::new();
+    assert_eq!(retries.association_timeout_ms(), 2_750);
+    assert!(retries.retry_timed_out_join());
+    assert_eq!(retries.association_timeout_ms(), 3_500);
+    assert!(retries.retry_timed_out_join());
+    assert_eq!(retries.association_timeout_ms(), 3_500);
+    assert!(!retries.retry_timed_out_join());
+    assert_eq!(retries.backoff_secs(), 1);
+
+    // Backoff begins a fresh group, including its shorter initial deadline.
+    assert_eq!(retries.association_timeout_ms(), 2_750);
+    assert!(retries.retry_timed_out_join());
+}
+
+#[test]
+fn cleanup_join_or_dhcp_failure_ends_the_prompt_retry_group() {
+    let mut retries = ConnectionRetries::new();
+    assert!(retries.retry_timed_out_join());
+    assert_eq!(retries.association_timeout_ms(), 3_500);
+
+    // A cleanup failure or a rejected join backs off instead of spending the
+    // remaining prompt retry. A join without DHCP uses the same failure path.
+    assert_eq!(retries.backoff_secs(), 1);
+    assert_eq!(retries.association_timeout_ms(), 2_750);
+    assert!(retries.retry_timed_out_join());
+    assert!(retries.retry_timed_out_join());
+    assert!(!retries.retry_timed_out_join());
+    assert_eq!(retries.backoff_secs(), 2);
+}
+
+#[test]
+fn repeated_failures_back_off_to_thirty_seconds_until_network_recovers() {
+    let mut retries = ConnectionRetries::new();
+    for expected in [1, 2, 4, 8, 16, 30, 30, 30] {
+        assert_eq!(retries.backoff_secs(), expected);
+    }
+    assert!(retries.retry_timed_out_join());
+
+    // The supervisor only calls this after both association and DHCP succeed.
+    retries.connected();
+    assert_eq!(retries.association_timeout_ms(), 2_750);
+    assert_eq!(retries.backoff_secs(), 1);
+    assert_eq!(retries.backoff_secs(), 2);
 }

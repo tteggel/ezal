@@ -136,17 +136,13 @@ impl Content for ForecastJson<'_> {
     }
 }
 
-/// Run the HTTP/WebSocket server forever.
-pub async fn serve(spawner: Spawner, stack: Stack<'static>) -> ! {
+/// Spawn the HTTP/WebSocket acceptors; each task owns its serving lifecycle.
+pub fn spawn_servers(spawner: Spawner, stack: Stack<'static>) {
     for task_id in 0..WEB_SERVER_TASKS {
         spawner.spawn(web_task(task_id as u8, stack).expect("web task pool exhausted"));
     }
 
     defmt::info!("ezal web: started {=usize} acceptors", WEB_SERVER_TASKS);
-
-    loop {
-        Timer::after(Duration::from_secs(3600)).await;
-    }
 }
 
 #[embassy_executor::task(pool_size = WEB_SERVER_TASKS)]

@@ -1,10 +1,10 @@
-//! CYW43439 WiFi bring-up + station-mode join self-test (POST).
+//! CYW43439 initialization, bounded association, and network supervision.
 //!
 //! This is the hardware-touching half of ezal's WiFi support, the counterpart
 //! to [`ezal_core::wifi`]'s pure credential rules. It powers the Pico 2 W's
 //! on-module Infineon **CYW43439** radio, spawns the driver's background task,
-//! and — as a power-on self-test — joins the access point whose SSID/password
-//! `build.rs` baked in from `.env`.
+//! and joins the access point whose SSID/password `build.rs` baked in from
+//! `.env`. Initialization runs once; the supervisor owns every retry.
 //!
 //! ## Why the radio needs a background task
 //!
@@ -24,27 +24,19 @@
 //! matter of [`Control::join`]-ing a network; there is no explicit mode call.
 //! (AP mode would instead use `control.start_ap_*`.)
 //!
-//! ## What the POST proves
+//! ## Association and recovery
 //!
-//! [`Wifi::post`] is a genuine self-test, mirroring the ADS1015 one:
+//! The supervisor validates immutable credentials once, then owns every retry,
+//! DHCP wait, and link/address check. [`Wifi::associate_once`] clears the old
+//! association, waits for it to settle, and attempts one bounded join.
 //!
-//!  1. **Credentials** — [`ezal_core::wifi::Credentials::validate`] rejects an
-//!     empty/oversized SSID or a bad-length passphrase after radio initialization
-//!     and before association, turning a mistyped `.env` into a clear message.
-//!  2. **Association** — a successful [`Control::join`] proves the whole chain
-//!     end to end: the PIO/DMA bus to the chip, the firmware upload, the
-//!     antenna, and that the AP actually accepted our credentials. A failure
-//!     here ends that bounded attempt. The long-lived supervisor retries with
-//!     backoff while keeping all motion inhibited.
-//!
-//! Getting an IP address (DHCP over `embassy-net`) is the natural next layer
-//! and deliberately out of scope here: this POST confirms we can *associate*,
-//! which is what "connect to an AP" means at the link layer.
+//! A successful join establishes station association; motion permission also
+//! requires a usable DHCP address. Every unsuccessful attempt stays offline.
 
 use cyw43::aligned_bytes;
 use cyw43::{Control, JoinAuth, JoinError, JoinOptions, NetDriver, PowerManagementMode};
 use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
-use defmt::{info, warn, Format};
+use defmt::{error, info, warn, Format};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select3, Either3};
 use embassy_net::{ConfigV4, Stack};
@@ -57,7 +49,7 @@ use embassy_time::{with_timeout, Duration, Timer};
 use static_cell::StaticCell;
 
 use ezal_core::network::NETWORK_POLL_MS;
-use ezal_core::wifi::{Credentials, Security};
+use ezal_core::wifi::{ConnectionRetries, Credentials, Security};
 
 use crate::state::SharedState;
 
@@ -84,28 +76,12 @@ const POWER_OFF_SETTLE: Duration = Duration::from_millis(250);
 /// so apply the same boundary before the first attempt as well.
 const JOIN_LEAVE_SETTLE: Duration = Duration::from_millis(500);
 
-/// WPA3/SAE can get into a stale first association on UniFi where the station
-/// reaches LINK/JOIN but never receives the PSK_SUP success event. A retry is
-/// consistently faster once the AP/chip state has been cleared, so keep the
-/// first attempt bounded below the normal retry timeout.
-const INITIAL_JOIN_TIMEOUT: Duration = Duration::from_millis(2750);
-
-/// Maximum time to wait for the CYW43 association event before treating the
-/// attempt as stale. `cyw43::Control::join` has no built-in timeout, so a
-/// missed event can otherwise pin boot forever.
-const JOIN_TIMEOUT: Duration = Duration::from_millis(3500);
-
 /// Bound disassociation too: a timed-out join may indicate an unresponsive
 /// driver, so waiting forever for its cleanup would defeat the join deadline.
 const LEAVE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Number of association attempts before POST fails.
-const JOIN_ATTEMPTS: usize = 3;
-
 /// A DHCP outage must release the join attempt for another bounded retry.
 const DHCP_TIMEOUT: Duration = Duration::from_secs(30);
-const RETRY_INITIAL_SECS: u64 = 1;
-const RETRY_MAX_SECS: u64 = 30;
 
 /// The CYW43439's long-lived driver task: it owns the PIO/DMA gSPI bus and
 /// pumps the chip's events for the life of the program. Spawned once by
@@ -123,27 +99,22 @@ async fn cyw43_task(
 
 /// A brought-up CYW43439 radio, reachable through its [`Control`] handle.
 ///
-/// Built by [`Wifi::init`]; [`Wifi::post`] then joins the configured AP.
+/// Built by [`Wifi::init`]; [`Wifi::associate_once`] joins the configured AP.
 pub struct Wifi<'d> {
     control: Control<'d>,
 }
 
-/// What a successful [`Wifi::post`] established, for logging.
+/// What a successful [`Wifi::associate_once`] established, for logging.
 #[derive(Format)]
-pub struct PostReport {
+struct AssociationReport {
     /// Whether the joined network is password-protected (`true`) or open
     /// (`false`).
-    pub protected: bool,
+    protected: bool,
 }
 
-/// Why a [`Wifi::post`] failed.
+/// Why a bounded association attempt failed.
 #[derive(Format)]
-pub enum PostError {
-    /// The baked-in credentials didn't pass [`Credentials::validate`] — the
-    /// radio was initialized but no association was attempted. The string
-    /// comes from [`ezal_core::wifi::CredentialError::message`]; the usual
-    /// cause is a missing or mis-filled `.env`.
-    InvalidCredentials(&'static str),
+enum AssociationError {
     /// The credentials were well-formed but the join failed — wrong password,
     /// AP out of range, or no AP with that SSID. Carries the driver's reason.
     Join(JoinError),
@@ -164,7 +135,7 @@ impl Wifi<'static> {
     /// [`cyw43-firmware/`](../cyw43-firmware/README.md)), spawns the
     /// [`cyw43_task`] driver task on `spawner`, loads the regulatory table,
     /// and applies [`POWER_MODE`]. Returns once the radio is idle in STA mode,
-    /// ready for [`Wifi::post`].
+    /// ready for [`Wifi::associate_once`].
     ///
     /// Hardware/firmware-upload failure can keep this initialization pending.
     /// The network permit remains offline, so motion stays inhibited. Such a
@@ -243,73 +214,35 @@ impl Wifi<'static> {
         (net_device, Wifi { control })
     }
 
-    /// Run the WiFi power-on self-test: validate the baked-in credentials,
-    /// then join the access point in station mode.
+    /// Clear the old association and attempt one join with validated settings.
     ///
-    /// On success the radio is associated with `creds.ssid` and the returned
-    /// [`PostReport`] notes whether the link is secured. Failure attempts a
-    /// bounded disassociation; if the radio cannot acknowledge it, its state
-    /// remains unknown. Supervision logs the error and retries cleanup after
-    /// backoff; every unsuccessful attempt leaves motion inhibited.
-    pub async fn post(&mut self, creds: &Credentials<'_>) -> Result<PostReport, PostError> {
-        // 1. Validate before association; init() has already powered the radio
-        //    and uploaded firmware. Report a clear error for a bad `.env`.
-        let security = creds
-            .validate()
-            .map_err(|e| PostError::InvalidCredentials(e.message()))?;
-
-        // 2. Join. An empty password means an open network; otherwise use the
-        //    configured WPA3/SAE handshake with the passphrase.
+    /// The supervisor supplies the join deadline and owns all retries. A failed
+    /// join needs cleanup before backoff or another attempt; a cleanup timeout
+    /// must itself back off without issuing another join.
+    async fn associate_once(
+        &mut self,
+        creds: &Credentials<'_>,
+        security: Security,
+        timeout: Duration,
+    ) -> Result<AssociationReport, AssociationError> {
         self.leave().await?;
         Timer::after(JOIN_LEAVE_SETTLE).await;
-
-        for attempt in 1..=JOIN_ATTEMPTS {
-            let options = match security {
-                Security::Open => JoinOptions::new_open(),
-                Security::Protected => {
-                    let mut options = JoinOptions::new(creds.password.as_bytes());
-                    options.auth = PROTECTED_JOIN_AUTH;
-                    options
-                }
-            };
-            let timeout = if attempt == 1 {
-                INITIAL_JOIN_TIMEOUT
-            } else {
-                JOIN_TIMEOUT
-            };
-
-            match with_timeout(timeout, self.control.join(creds.ssid, options)).await {
-                Ok(Ok(())) => {
-                    return Ok(PostReport {
-                        protected: matches!(security, Security::Protected),
-                    });
-                }
-                Ok(Err(error)) => {
-                    self.leave().await?;
-                    return Err(PostError::Join(error));
-                }
-                Err(_) if attempt < JOIN_ATTEMPTS => {
-                    if attempt == 1 && matches!(security, Security::Protected) {
-                        info!(
-                            "WiFi initial WPA3 join did not complete; clearing state and retrying"
-                        );
-                    } else {
-                        warn!(
-                            "WiFi join timed out; retrying ({=usize}/{=usize})",
-                            attempt, JOIN_ATTEMPTS
-                        );
-                    }
-                    self.leave().await?;
-                    Timer::after(JOIN_LEAVE_SETTLE).await;
-                }
-                Err(_) => {
-                    self.leave().await?;
-                    return Err(PostError::JoinTimeout);
-                }
+        let options = match security {
+            Security::Open => JoinOptions::new_open(),
+            Security::Protected => {
+                let mut options = JoinOptions::new(creds.password.as_bytes());
+                options.auth = PROTECTED_JOIN_AUTH;
+                options
             }
-        }
+        };
 
-        unreachable!()
+        match with_timeout(timeout, self.control.join(creds.ssid, options)).await {
+            Ok(Ok(())) => Ok(AssociationReport {
+                protected: matches!(security, Security::Protected),
+            }),
+            Ok(Err(error)) => Err(AssociationError::Join(error)),
+            Err(_) => Err(AssociationError::JoinTimeout),
+        }
     }
 
     /// Clear chip association state before another join or after a failed one.
@@ -318,10 +251,10 @@ impl Wifi<'static> {
     /// attempt; the supervisor backs off before retrying cleanup. Every later
     /// attempt must receive a successful disassociation before joining again.
     /// Readiness additionally requires that join and a new DHCP lease succeed.
-    async fn leave(&mut self) -> Result<(), PostError> {
+    async fn leave(&mut self) -> Result<(), AssociationError> {
         with_timeout(LEAVE_TIMEOUT, self.control.leave())
             .await
-            .map_err(|_| PostError::LeaveTimeout)
+            .map_err(|_| AssociationError::LeaveTimeout)
     }
 }
 
@@ -335,13 +268,26 @@ pub async fn supervise(
     creds: Credentials<'static>,
     state: &'static SharedState,
 ) -> ! {
-    let mut retry_secs = RETRY_INITIAL_SECS;
+    let security = match creds.validate() {
+        Ok(security) => security,
+        Err(error) => {
+            state.publish_network(false);
+            stack.set_config_v4(ConfigV4::None);
+            error!(
+                "WiFi credentials invalid: {=str}; motion inhibited; reconfigure and restart",
+                error.message()
+            );
+            crate::park(wifi).await;
+        }
+    };
+    let mut retries = ConnectionRetries::new();
     loop {
         state.publish_network(false);
         // Clear any cached address BEFORE retrying association. A lease from
         // the previous link must not count as successful DHCP on the new one.
         stack.set_config_v4(ConfigV4::None);
-        match wifi.post(&creds).await {
+        let timeout = Duration::from_millis(retries.association_timeout_ms());
+        match wifi.associate_once(&creds, security, timeout).await {
             Ok(report) => {
                 info!(
                     "WiFi associated ({=str}); waiting for DHCP",
@@ -355,7 +301,7 @@ pub async fn supervise(
                 .await
                 .is_ok();
                 if configured && network_ready(stack) {
-                    retry_secs = RETRY_INITIAL_SECS;
+                    retries.connected();
                     let address = stack.config_v4().map(|config| config.address);
                     info!("network ready; motion permission available");
                     loop {
@@ -385,13 +331,31 @@ pub async fn supervise(
                     warn!("DHCP unavailable after bounded wait; motion inhibited");
                 }
             }
-            Err(error) => warn!("WiFi attempt failed: {}; motion inhibited", error),
+            Err(AssociationError::JoinTimeout) if retries.retry_timed_out_join() => {
+                warn!("WiFi association timed out; clearing state and retrying");
+                // The next attempt performs bounded leave + settle before
+                // joining. If cleanup fails, it returns LeaveTimeout and
+                // takes the backoff path rather than consuming another join.
+                continue;
+            }
+            Err(error) => {
+                // Terminal join failures clear radio state before sleeping,
+                // just as prompt retries clear it before their next join.
+                // Initial cleanup failures must not immediately retry cleanup.
+                let error = match error {
+                    AssociationError::Join(_) | AssociationError::JoinTimeout => {
+                        wifi.leave().await.err().unwrap_or(error)
+                    }
+                    _ => error,
+                };
+                warn!("WiFi attempt failed: {}; motion inhibited", error);
+            }
         }
 
         state.publish_network(false);
+        let retry_secs = retries.backoff_secs();
         info!("network retry in {=u64}s", retry_secs);
         Timer::after(Duration::from_secs(retry_secs)).await;
-        retry_secs = (retry_secs * 2).min(RETRY_MAX_SECS);
     }
 }
 
