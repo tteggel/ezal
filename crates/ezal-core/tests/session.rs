@@ -117,7 +117,7 @@ fn command_envelopes_require_complete_ordered_movement_fields() {
     let token = freshness.issue(0).unwrap();
     let mut json = String::new();
     token.write_json(&mut json).unwrap();
-    assert_eq!(json, r#"{"type":"freshness","token":"12884901889"}"#);
+    assert_eq!(json, r#"{"token":"12884901889"}"#);
 }
 
 #[test]

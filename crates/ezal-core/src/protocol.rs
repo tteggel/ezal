@@ -6,6 +6,7 @@
 //! HTTP server and socket transport that carry these live in `ezal-firmware`;
 //! the drive semantics they wrap live in [`crate::drive`].
 
+use crate::coordination::TelemetrySnapshot;
 use core::fmt;
 
 pub use crate::coordination::ControlStatus;
@@ -95,13 +96,9 @@ impl ClientMessage {
 }
 
 impl CommandToken {
-    /// Write the proof completing a periodic application telemetry batch.
+    /// Write a proof nested inside its coherent telemetry observation.
     pub fn write_json(&self, out: &mut impl fmt::Write) -> fmt::Result {
-        write!(
-            out,
-            "{{\"type\":\"freshness\",\"token\":\"{}\"}}",
-            self.token
-        )
+        write!(out, "{{\"token\":\"{}\"}}", self.token)
     }
 }
 
@@ -221,4 +218,33 @@ impl FeedbackTelemetry {
 
 fn degrees_to_tenths(degrees: f32) -> i32 {
     (degrees * 10.0 + 0.5) as i32
+}
+
+/// Fixed maximum payload allocation for one periodic observation.
+pub const TELEMETRY_CAPACITY: usize = 512;
+
+/// One coherent domain observation and its original freshness proof.
+pub struct TelemetryMessage {
+    /// Values copied together from coordination state.
+    pub snapshot: TelemetrySnapshot,
+    /// Proof stamped before formatting and any socket write.
+    pub token: Option<CommandToken>,
+}
+
+impl TelemetryMessage {
+    /// Encode an entire periodic observation in one bounded WebSocket message.
+    pub fn write_json(&self, out: &mut impl fmt::Write) -> fmt::Result {
+        out.write_str("{\"type\":\"telemetry\",\"position\":")?;
+        PositionTelemetry::from(self.snapshot.feedback).write_json(out)?;
+        out.write_str(",\"feedback\":")?;
+        FeedbackTelemetry::from(self.snapshot.feedback).write_json(out)?;
+        out.write_str(",\"control\":")?;
+        self.snapshot.control.write_json(out)?;
+        out.write_str(",\"freshness\":")?;
+        match self.token {
+            Some(token) => token.write_json(out)?,
+            None => out.write_str("null")?,
+        }
+        out.write_str("}")
+    }
 }

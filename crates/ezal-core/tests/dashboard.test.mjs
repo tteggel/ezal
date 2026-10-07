@@ -291,6 +291,11 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
   const clock = new Clock();
   const sockets = [];
   const requests = [];
+  let telemetry = {
+    position: { type: "position", a0_mv: 0, a1_mv: 0 },
+    feedback: { type: "feedback", azimuth_tenths: null, elevation_tenths: null, control_state: "idle" },
+    control: { type: "control", controller: false, azimuth: null, elevation: null, network_ready: true, motion_fault: null },
+  };
   class WebSocket extends EventTarget {
     static OPEN = 1;
     readyState = 0;
@@ -301,6 +306,7 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
       super();
       this.url = url;
       sockets.push(this);
+      telemetry.control = { ...telemetry.control, controller: false, azimuth: null, elevation: null };
     }
 
     send(message) {
@@ -317,6 +323,7 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
     }
 
     receive(message) {
+      if (message.type === "control" && this === sockets.at(-1)) telemetry.control = { ...telemetry.control, ...message };
       this.dispatch("message", { data: JSON.stringify(message) });
     }
 
@@ -342,8 +349,9 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
     clearTimeout: (id) => clock.jobs.delete(id),
   }, { filename: "dashboard.html" });
   let token = 0;
-  const freshness = () => {
-    sockets.at(-1).receive({ type: "freshness", token: String(++token) });
+  const freshness = (updates = {}) => {
+    telemetry = { ...telemetry, ...updates };
+    sockets.at(-1).receive({ type: "telemetry", ...telemetry, freshness: { token: String(++token) } });
   };
   if (autoTelemetry) clock.schedule(() => {
     if (sockets.at(-1).readyState === WebSocket.OPEN) freshness();
@@ -584,10 +592,12 @@ test("failed reconnects back off and a successful open resets the delay", () => 
 test("telemetry renders measured position and feedback health", () => {
   const page = controller();
   page.socket.dispatch("message", { data: "{malformed" });
-  page.socket.receive({ type: "position", a0_mv: 901, a1_mv: -12 });
+  page.freshness({
+    position: { type: "position", a0_mv: 901, a1_mv: -12 },
+    feedback: { type: "feedback", control_state: "idle", azimuth_tenths: 4247, elevation_tenths: 3 },
+  });
   assert.equal(String(page.ids.get("a0").textContent), "901");
   assert.equal(String(page.ids.get("a1").textContent), "-12");
-  page.socket.receive({ type: "feedback", control_state: "idle", azimuth_tenths: 4247, elevation_tenths: 3 });
   assert.equal(page.ids.get("health").textContent, "idle");
   assert.equal(page.ids.get("azimuth").textContent, "424.7");
   assert.equal(page.ids.get("elevation").textContent, "0.3");
@@ -610,7 +620,7 @@ test("an open socket with a silent telemetry return path loses control and held 
   const page = controller(false);
   page.press("cw", 1);
   page.control(true, "cw");
-  page.socket.receive({ type: "position", a0_mv: 900, a1_mv: 1200 });
+  page.freshness({ position: { type: "position", a0_mv: 900, a1_mv: 1200 } });
   page.clock.advance(1000);
   assert.equal(page.socket.readyState, 1);
   assert.equal(page.socket.messages.at(-1), "stop");

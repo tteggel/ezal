@@ -13,7 +13,6 @@ use embassy_futures::yield_now;
 use embassy_net::Stack;
 use embassy_time::{Duration, Instant, Timer};
 use heapless::String;
-use picoserve::futures::Either;
 use picoserve::io::{Read, Write as PicoserveWrite};
 use picoserve::response::ws::{Message, SocketRx, SocketTx, WebSocketCallback, WebSocketUpgrade};
 use picoserve::response::{Content, Response};
@@ -23,15 +22,14 @@ use ezal_core::dashboard::INDEX_HTML;
 use ezal_core::drive::Command;
 use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::passes::Report;
-use ezal_core::protocol::{
-    ClientMessage, CommandFreshness, FeedbackTelemetry, PositionTelemetry, TELEMETRY_PERIOD_MS,
-    WS_PATH,
-};
+use ezal_core::protocol::{ClientMessage, TelemetryMessage, TELEMETRY_CAPACITY, WS_PATH};
+use ezal_core::session::{CommandFreshness, TELEMETRY_PERIOD_MS};
 
 use crate::state::{SharedState, STATE};
 
 #[path = "ws_receive.rs"]
 mod ws_receive;
+use ws_receive::{ReceiveError, ReceiveEvent};
 
 /// picoserve server configuration.
 ///
@@ -145,74 +143,56 @@ async fn web_task(task_id: u8, stack: Stack<'static>) -> ! {
         .await {}
 }
 
+/// A failed frame cannot be silently skipped while leaving its source alive.
+enum SocketError<E> {
+    Io(E),
+    Encoding,
+}
+
+impl<E> From<E> for SocketError<E> {
+    fn from(error: E) -> Self {
+        Self::Io(error)
+    }
+}
+
 async fn send_control_status<W: PicoserveWrite>(
     tx: &mut SocketTx<W>,
     state: &'static SharedState,
     client_id: u32,
-) -> Result<(), W::Error> {
+) -> Result<(), SocketError<W::Error>> {
     let mut payload: String<256> = String::new();
-    if state
+    state
         .control_status(client_id)
         .write_json(&mut payload)
-        .is_ok()
-    {
-        tx.send_text(&payload).await?;
-    }
+        .map_err(|_| SocketError::Encoding)?;
+    tx.send_text(&payload).await?;
     Ok(())
 }
 
-async fn send_position<W: PicoserveWrite>(
-    tx: &mut SocketTx<W>,
-    state: &'static SharedState,
-) -> Result<(), W::Error> {
-    let mut payload: String<96> = String::new();
-    if PositionTelemetry::from(state.feedback())
-        .write_json(&mut payload)
-        .is_ok()
-    {
-        tx.send_text(&payload).await?;
-    }
-    Ok(())
-}
-
-async fn send_feedback<W: PicoserveWrite>(
-    tx: &mut SocketTx<W>,
-    state: &'static SharedState,
-) -> Result<(), W::Error> {
-    let mut payload: String<384> = String::new();
-    if FeedbackTelemetry::from(state.feedback())
-        .write_json(&mut payload)
-        .is_ok()
-    {
-        tx.send_text(&payload).await?;
-    }
-    Ok(())
-}
-
-/// Complete one application telemetry batch before issuing its freshness
-/// proof. Movement acknowledgements deliberately do not issue tokens. A
-/// control transfer receives a complete fresh batch, as do periodic ticks.
+/// Send one observation with its proof. Acknowledgements do not issue proofs.
 async fn send_telemetry<W: PicoserveWrite>(
     tx: &mut SocketTx<W>,
     state: &'static SharedState,
     client_id: u32,
     freshness: &mut CommandFreshness,
-) -> Result<(), W::Error> {
-    // Timestamp before observing or writing the batch. A slow TCP write must
-    // not make already delayed telemetry eligible for a brand-new lease.
+) -> Result<(), SocketError<W::Error>> {
+    // Stamp before the state read and socket write. Slow delivery consumes the
+    // original token lifetime instead of granting a fresh lease on completion.
     let now_ms = Instant::now().as_millis();
-    let network = state.network();
-    freshness.observe_network(network.generation(), network.ready(now_ms));
-    let token = freshness.issue(now_ms);
-    send_position(tx, state).await?;
-    send_control_status(tx, state, client_id).await?;
-    send_feedback(tx, state).await?;
-    if let Some(token) = token {
-        let mut payload: String<64> = String::new();
-        if token.write_json(&mut payload).is_ok() {
-            tx.send_text(&payload).await?;
-        }
-    }
+    let snapshot = state.telemetry(client_id, now_ms);
+    freshness.observe_network(
+        snapshot.network.generation(),
+        snapshot.control.network_ready,
+    );
+    let message = TelemetryMessage {
+        snapshot,
+        token: freshness.issue(now_ms),
+    };
+    let mut payload: String<TELEMETRY_CAPACITY> = String::new();
+    message
+        .write_json(&mut payload)
+        .map_err(|_| SocketError::Encoding)?;
+    tx.send_text(&payload).await?;
     Ok(())
 }
 
@@ -246,9 +226,27 @@ impl Drop for ClientSession {
 impl WebSocketCallback for DashboardSocket {
     async fn run<R: Read, W: PicoserveWrite<Error = R::Error>>(
         self,
+        rx: SocketRx<R>,
+        tx: SocketTx<W>,
+    ) -> Result<(), W::Error> {
+        match self.run_session(rx, tx).await {
+            Ok(()) => Ok(()),
+            Err(SocketError::Io(error)) => Err(error),
+            Err(SocketError::Encoding) => {
+                // run_session has dropped its ownership guard before returning.
+                defmt::error!("dashboard telemetry exceeded its bounded buffer; closing session");
+                Ok(())
+            }
+        }
+    }
+}
+
+impl DashboardSocket {
+    async fn run_session<R: Read, W: PicoserveWrite<Error = R::Error>>(
+        self,
         mut rx: SocketRx<R>,
         mut tx: SocketTx<W>,
-    ) -> Result<(), W::Error> {
+    ) -> Result<(), SocketError<W::Error>> {
         let state = self.state;
         let session = ClientSession::register(state);
         let client_id = session.id;
@@ -269,12 +267,19 @@ impl WebSocketCallback for DashboardSocket {
             )
             .await
             {
-                Ok(Ok(event)) => event,
-                Ok(Err(error)) => return Err(error),
+                Ok(event) => event,
+                Err(ReceiveError::Io(error)) => return Err(SocketError::Io(error)),
+                Err(ReceiveError::Protocol(error)) => {
+                    drop(session);
+                    return tx
+                        .close(Some((error.code(), "invalid message")))
+                        .await
+                        .map_err(SocketError::Io);
+                }
                 // A partial frame cannot be retried after cancellation. End the
                 // connection before picoserve's bounded TCP shutdown; do not
                 // wait for a WebSocket close handshake from this peer.
-                Err(_) => return Ok(()),
+                Err(ReceiveError::TimedOut) => return Ok(()),
             };
 
             // Link recovery invalidates even commands already buffered on an
@@ -287,7 +292,7 @@ impl WebSocketCallback for DashboardSocket {
             );
 
             match event {
-                Either::First(Ok(Message::Text(message))) => {
+                ReceiveEvent::Message(Message::Text(message)) => {
                     let parsed = ClientMessage::parse(message);
                     let drive_signaled = match parsed {
                         Some(ClientMessage::TakeControl) => {
@@ -339,27 +344,22 @@ impl WebSocketCallback for DashboardSocket {
                         send_control_status(&mut tx, state, client_id).await?;
                     }
                 }
-                Either::First(Ok(Message::Binary(_))) => {
+                ReceiveEvent::Message(Message::Binary(_)) => {
                     freshness.reject();
                     if state.accept_command(client_id, CommandEnvelope::INHIBIT) {
                         yield_now().await;
                     }
                 }
-                Either::First(Ok(Message::Pong(_))) => {}
-                Either::First(Ok(Message::Ping(data))) => tx.send_pong(data).await?,
-                Either::First(Ok(Message::Close(reason))) => {
+                ReceiveEvent::Message(Message::Pong(_)) => {}
+                ReceiveEvent::Message(Message::Ping(data)) => tx.send_pong(data).await?,
+                ReceiveEvent::Message(Message::Close(reason)) => {
                     // Revoke motion before awaiting the close response: a peer
                     // that stopped reading must not keep ownership or motion
                     // alive for the socket's write timeout.
                     drop(session);
-                    return tx.close(reason).await;
+                    return tx.close(reason).await.map_err(SocketError::Io);
                 }
-                Either::First(Err(error)) => {
-                    // Framing errors end this command source immediately too.
-                    drop(session);
-                    return tx.close(Some((error.code(), "invalid message"))).await;
-                }
-                Either::Second(()) => {
+                ReceiveEvent::Telemetry => {
                     send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
 
                     while next_telemetry <= Instant::now() {

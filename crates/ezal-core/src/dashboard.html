@@ -369,8 +369,6 @@ header {
   let freshnessToken = null;
   let lastTelemetryAt = -Infinity;
   let inputSequence = 0;
-  let pendingPosition = null;
-  let pendingFeedback = null;
   let desired = { azimuth: null, elevation: null };
   let drive = { azimuth: null, elevation: null };
   const pointers = new Map();
@@ -538,23 +536,20 @@ header {
     ws.addEventListener("message", (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (message.type === "position") {
-          pendingPosition = message;
-          if (telemetryFresh()) applyPosition(message);
-        } else if (message.type === "control") {
+        if (message.type === "control") {
+          // A command acknowledgement never renews application telemetry.
           applyControl(message);
-        } else if (message.type === "feedback") {
-          pendingFeedback = message;
-          if (telemetryFresh()) applyFeedback(message);
-        } else if (message.type === "freshness" && typeof message.token === "string"
-          && /^\d+$/.test(message.token)) {
+        } else if (message.type === "telemetry" && message.position && message.feedback && message.control
+          && message.freshness && typeof message.freshness.token === "string"
+          && /^\d+$/.test(message.freshness.token)) {
           // Detect a gap even when suspension prevented the watchdog timer
           // from running before this message callback. Never restore intent.
           if (freshnessToken !== null && !telemetryFresh()) expireTelemetry();
-          freshnessToken = message.token;
+          freshnessToken = message.freshness.token;
           lastTelemetryAt = performance.now();
-          if (pendingPosition) applyPosition(pendingPosition);
-          if (pendingFeedback) applyFeedback(pendingFeedback);
+          applyControl(message.control);
+          applyPosition(message.position);
+          applyFeedback(message.feedback);
           setStatus(networkReady ? "online" : "network unavailable", networkReady);
           syncDriveIndicators(true);
           syncControl();
@@ -566,8 +561,6 @@ header {
     ws.addEventListener("close", () => {
       expireTelemetry();
       freshnessToken = null;
-      pendingPosition = null;
-      pendingFeedback = null;
       controller = false;
       networkReady = false;
       drive.azimuth = null;

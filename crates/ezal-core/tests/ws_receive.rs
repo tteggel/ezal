@@ -5,6 +5,8 @@
 #[path = "../../ezal-firmware/src/ws_receive.rs"]
 mod ws_receive;
 
+use ws_receive::{ReceiveError, ReceiveEvent};
+
 use core::future::{poll_fn, Future};
 use core::pin::pin;
 use core::task::{Context, Poll, Waker};
@@ -13,7 +15,6 @@ use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::rc::Rc;
 
-use picoserve::futures::Either;
 use picoserve::io::{BaseWrite, ErrorType, Read, Socket, Write};
 use picoserve::response::ws::{Message, SocketRx, SocketTx, WebSocketCallback, WebSocketUpgrade};
 use picoserve::routing::get;
@@ -190,19 +191,20 @@ impl WebSocketCallback for Receiver {
             )
             .await;
             let (event, done) = match result {
-                Ok(Ok(Either::First(Ok(Message::Text(text))))) => (Event::Text(text.into()), true),
-                Ok(Ok(Either::First(Ok(Message::Ping(data))))) => (Event::Ping(data.into()), true),
-                Ok(Ok(Either::First(Ok(Message::Binary(data))))) => {
+                Ok(ReceiveEvent::Message(Message::Text(text))) => (Event::Text(text.into()), true),
+                Ok(ReceiveEvent::Message(Message::Ping(data))) => (Event::Ping(data.into()), true),
+                Ok(ReceiveEvent::Message(Message::Binary(data))) => {
                     (Event::Binary(data.into()), true)
                 }
-                Ok(Ok(Either::First(Ok(Message::Close(_))))) => (Event::Close, true),
-                Ok(Ok(Either::First(Err(error)))) => (Event::ProtocolError(error.code()), true),
-                Ok(Ok(Either::Second(()))) => (
+                Ok(ReceiveEvent::Message(Message::Close(_))) => (Event::Close, true),
+                Err(ReceiveError::Protocol(error)) => (Event::ProtocolError(error.code()), true),
+                Ok(ReceiveEvent::Telemetry) => (
                     Event::Telemetry,
                     self.clock.0.get() >= self.telemetry_until_ms,
                 ),
-                Err(_) => (Event::Timeout, true),
-                _ => panic!("unexpected read or protocol error"),
+                Err(ReceiveError::TimedOut) => (Event::Timeout, true),
+                Err(ReceiveError::Io(error)) => return Err(error),
+                Ok(ReceiveEvent::Message(Message::Pong(_))) => panic!("unexpected Pong"),
             };
             self.events.borrow_mut().push((self.clock.0.get(), event));
             if done {

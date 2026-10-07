@@ -27,13 +27,29 @@ pub const MESSAGE_BUFFER_SIZE: usize = 128;
 // handing manual control to whichever client registers first.
 const _: () = assert!(TELEMETRY_PERIOD_MS < MESSAGE_TIMEOUT.as_millis());
 
-pub type ReceiveEvent<'a> = Either<Result<Message<'a>, ReadMessageError>, ()>;
+/// A complete message or a telemetry tick before the next message starts.
+#[derive(Debug)]
+pub enum ReceiveEvent<'a> {
+    Message(Message<'a>),
+    Telemetry,
+}
+
+/// A receive failure and the connection handling it requires.
+#[derive(Debug)]
+pub enum ReceiveError<E> {
+    /// The underlying socket failed while reading or replying to a Ping.
+    Io(E),
+    /// Invalid framing or message data; the caller may send a Close response.
+    Protocol(ReadMessageError),
+    /// The receive was cancelled; end the connection without resuming parsing.
+    TimedOut,
+}
 
 /// Read one message or an idle telemetry tick.
 ///
 /// picoserve's frame `signal` is only considered before the first message byte.
-/// Its receive future is not cancel-safe after that byte: on `TimeoutError`, the
-/// caller must end the connection, never resume parsing on this `SocketRx`.
+/// Its receive future is not cancel-safe after that byte: on
+/// [`ReceiveError::TimedOut`], end the connection without resuming this `SocketRx`.
 /// `EmbassyTimer` implements the outer deadline with `embassy_time::with_timeout`.
 ///
 /// picoserve 0.20.1's message assembler rejects control frames inside fragmented
@@ -47,10 +63,11 @@ pub async fn next_message<'a, Runtime, R: Read, W: Write<Error = R::Error>, T: T
     buffer: &'a mut [u8],
     timer: &T,
     telemetry: impl Future<Output = ()>,
-) -> Result<Result<ReceiveEvent<'a>, R::Error>, TimeoutError> {
+) -> Result<ReceiveEvent<'a>, ReceiveError<R::Error>> {
     timer
         .run_with_timeout(MESSAGE_TIMEOUT, assemble(rx, tx, buffer, telemetry))
         .await
+        .map_err(|TimeoutError| ReceiveError::TimedOut)?
 }
 
 async fn assemble<'a, R: Read, W: Write<Error = R::Error>>(
@@ -58,17 +75,22 @@ async fn assemble<'a, R: Read, W: Write<Error = R::Error>>(
     tx: &mut SocketTx<W>,
     buffer: &'a mut [u8],
     telemetry: impl Future<Output = ()>,
-) -> Result<ReceiveEvent<'a>, R::Error> {
+) -> Result<ReceiveEvent<'a>, ReceiveError<R::Error>> {
     let mut frame_buffer = [0; MESSAGE_BUFFER_SIZE];
-    let mut incoming = rx.next_frame(&mut frame_buffer, telemetry).await?;
+    let mut incoming = rx
+        .next_frame(&mut frame_buffer, telemetry)
+        .await
+        .map_err(ReceiveError::Io)?;
     let mut text = None;
     let mut length = 0;
 
     loop {
         let frame = match incoming {
-            Either::Second(()) => return Ok(Either::Second(())),
+            Either::Second(()) => return Ok(ReceiveEvent::Telemetry),
             Either::First(Err(error)) => {
-                return Ok(Either::First(Err(ReadMessageError::ReadFrameError(error))));
+                return Err(ReceiveError::Protocol(ReadMessageError::ReadFrameError(
+                    error,
+                )));
             }
             Either::First(Ok(frame)) => frame,
         };
@@ -78,19 +100,25 @@ async fn assemble<'a, R: Read, W: Write<Error = R::Error>>(
                 // A control frame is always final and at most 125 bytes,
                 // regardless of the surrounding application's message size.
                 if !frame.is_final || frame.length > 125 {
-                    return Ok(Either::First(Err(ReadMessageError::UnexpectedMessageStart)));
+                    return Err(ReceiveError::Protocol(
+                        ReadMessageError::UnexpectedMessageStart,
+                    ));
                 }
                 match control {
                     Control::Reserved(opcode) => {
-                        return Ok(Either::First(Err(ReadMessageError::ReservedOpcode(opcode))));
+                        return Err(ReceiveError::Protocol(ReadMessageError::ReservedOpcode(
+                            opcode,
+                        )));
                     }
-                    Control::Ping if text.is_some() => tx.send_pong(payload).await?,
+                    Control::Ping if text.is_some() => {
+                        tx.send_pong(payload).await.map_err(ReceiveError::Io)?;
+                    }
                     Control::Pong if text.is_some() => {}
                     control => {
                         let Some(output) = buffer.get_mut(..frame.length) else {
-                            return Ok(Either::First(Err(ReadMessageError::ReadFrameError(
+                            return Err(ReceiveError::Protocol(ReadMessageError::ReadFrameError(
                                 ReadFrameError::OutOfSpace,
-                            ))));
+                            )));
                         };
                         output.copy_from_slice(payload);
                         let message = match control {
@@ -110,7 +138,9 @@ async fn assemble<'a, R: Read, W: Write<Error = R::Error>>(
                             },
                             Control::Reserved(_) => unreachable!(),
                         };
-                        return Ok(Either::First(message));
+                        return message
+                            .map(ReceiveEvent::Message)
+                            .map_err(ReceiveError::Protocol);
                     }
                 }
             }
@@ -120,22 +150,26 @@ async fn assemble<'a, R: Read, W: Write<Error = R::Error>>(
                     (Data::Binary, None) => text = Some(false),
                     (Data::Continue, Some(_)) => {}
                     (Data::Continue, None) => {
-                        return Ok(Either::First(Err(
+                        return Err(ReceiveError::Protocol(
                             ReadMessageError::MessageStartsWithContinuation,
-                        )));
+                        ));
                     }
                     (Data::Reserved(opcode), _) => {
-                        return Ok(Either::First(Err(ReadMessageError::ReservedOpcode(opcode))));
+                        return Err(ReceiveError::Protocol(ReadMessageError::ReservedOpcode(
+                            opcode,
+                        )));
                     }
                     (Data::Text | Data::Binary, Some(_)) => {
-                        return Ok(Either::First(Err(ReadMessageError::UnexpectedMessageStart)));
+                        return Err(ReceiveError::Protocol(
+                            ReadMessageError::UnexpectedMessageStart,
+                        ));
                     }
                 }
                 let end = length + frame.length;
                 let Some(output) = buffer.get_mut(length..end) else {
-                    return Ok(Either::First(Err(ReadMessageError::ReadFrameError(
+                    return Err(ReceiveError::Protocol(ReadMessageError::ReadFrameError(
                         ReadFrameError::OutOfSpace,
-                    ))));
+                    )));
                 };
                 output.copy_from_slice(payload);
                 length = end;
@@ -147,7 +181,9 @@ async fn assemble<'a, R: Read, W: Write<Error = R::Error>>(
                     } else {
                         Ok(Message::Binary(&buffer[..length]))
                     };
-                    return Ok(Either::First(message));
+                    return message
+                        .map(ReceiveEvent::Message)
+                        .map_err(ReceiveError::Protocol);
                 }
             }
         }
@@ -156,6 +192,7 @@ async fn assemble<'a, R: Read, W: Write<Error = R::Error>>(
         // any number of control frames; a keepalive cannot extend it.
         incoming = rx
             .next_frame(&mut frame_buffer, core::future::pending())
-            .await?;
+            .await
+            .map_err(ReceiveError::Io)?;
     }
 }

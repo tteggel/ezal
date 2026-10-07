@@ -221,3 +221,62 @@ fn parse_command(text: &str) -> Option<DriveCommand> {
         _ => None,
     }
 }
+
+#[test]
+fn telemetry_encodes_one_observation_with_its_proof() {
+    use ezal_core::coordination::CoordinationState;
+    use ezal_core::protocol::TelemetryMessage;
+    use ezal_core::session::CommandToken;
+
+    let message = TelemetryMessage {
+        snapshot: CoordinationState::new().telemetry(1, 0),
+        token: Some(CommandToken {
+            token: 42,
+            expires_ms: 1000,
+        }),
+    };
+    let mut json = String::new();
+    message.write_json(&mut json).unwrap();
+    assert_eq!(
+        json,
+        r#"{"type":"telemetry","position":{"type":"position","a0_mv":0,"a1_mv":0},"feedback":{"type":"feedback","azimuth_tenths":0,"elevation_tenths":0,"control_state":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null},"freshness":{"token":"42"}}"#
+    );
+}
+
+#[test]
+fn telemetry_fits_its_fixed_buffer_and_reports_formatting_failure() {
+    use ezal_core::coordination::CoordinationState;
+    use ezal_core::motion::MotionFault;
+    use ezal_core::position::FeedbackVoltages;
+    use ezal_core::protocol::{TelemetryMessage, TELEMETRY_CAPACITY};
+    use ezal_core::session::CommandToken;
+
+    let mut snapshot = CoordinationState::new().telemetry(1, 0);
+    snapshot.feedback.raw = Some(FeedbackVoltages {
+        a0_elevation_mv: i32::MIN,
+        a1_azimuth_mv: i32::MIN,
+    });
+    snapshot.feedback.health = FeedbackHealth::CalibrationInvalid;
+    snapshot.feedback.last_valid = Some(common::sample(Pointing::new(360.0, 90.0), 0));
+    snapshot.control.motion_fault = Some(MotionFault::ElevationImplausibleSpeed);
+    snapshot.control.drive = DriveCommand {
+        azimuth: Some(AzimuthDirection::CounterClockwise),
+        elevation: Some(ElevationDirection::Down),
+    };
+    let mut message = TelemetryMessage {
+        snapshot,
+        token: Some(CommandToken {
+            token: u64::MAX,
+            expires_ms: u64::MAX,
+        }),
+    };
+    let mut payload: heapless::String<TELEMETRY_CAPACITY> = heapless::String::new();
+    message.write_json(&mut payload).unwrap();
+    assert!(payload.ends_with(r#""18446744073709551615"}}"#));
+    let mut undersized: heapless::String<16> = heapless::String::new();
+    assert!(message.write_json(&mut undersized).is_err());
+    payload.clear();
+    message.token = None;
+    message.write_json(&mut payload).unwrap();
+    assert!(payload.ends_with(r#""freshness":null}"#));
+}
