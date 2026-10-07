@@ -40,7 +40,7 @@ pub struct ActuatorUpdate {
     pub next_deadline_ms: Option<u64>,
 }
 
-/// Leased, debounced, feedback-interlocked output state.
+/// Leased output state with feedback, network and motion supervision.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Actuator {
     guard: ActuatorGuard,
@@ -110,54 +110,6 @@ impl Actuator {
         }
     }
 
-    /// Enforce feedback and motion supervision, then advance relay/lease timers.
-    ///
-    /// Returns `true` when the applicable output changed.
-    pub fn service(&mut self, interlock: &FeedbackInterlock, now_ms: u64) -> bool {
-        let before = self.guard.actual();
-        self.enforce(interlock, now_ms);
-        // Inhibition precedes pending transitions, so an activation due now
-        // is checked against current feedback before it can energise.
-        self.guard.update(now_ms);
-        self.motion.applied(self.guard.actual(), now_ms);
-        self.guard.actual() != before
-    }
-
-    /// Admit a command through the interlock.
-    ///
-    /// Timers are not advanced first: the command may cancel an activation
-    /// that falls due at this instant. Returns `true` when the output changed.
-    pub fn command(
-        &mut self,
-        command: Command,
-        interlock: &FeedbackInterlock,
-        now_ms: u64,
-    ) -> bool {
-        self.command_until(command, interlock, now_ms, u64::MAX)
-    }
-
-    /// Admit a command whose source already established an absolute expiry.
-    /// Queueing and transport delays consume that lifetime; receiving it here
-    /// cannot grant it a fresh lease. Ordinary local callers use [`Self::command`].
-    pub fn command_until(
-        &mut self,
-        command: Command,
-        interlock: &FeedbackInterlock,
-        now_ms: u64,
-        valid_until_ms: u64,
-    ) -> bool {
-        let before = self.guard.actual();
-        self.enforce(interlock, now_ms);
-        let permitted = if self.motion.fault().is_some() {
-            Command::Inhibit
-        } else {
-            interlock.guard_command(command, now_ms)
-        };
-        self.guard.command_until(permitted, now_ms, valid_until_ms);
-        self.motion.applied(self.guard.actual(), now_ms);
-        self.guard.actual() != before
-    }
-
     fn enforce(&mut self, interlock: &FeedbackInterlock, now_ms: u64) {
         // Observe the output that actually existed throughout the elapsed
         // interval, before any freshness check or incoming stop changes it.
@@ -178,9 +130,8 @@ impl Actuator {
         }
     }
 
-    /// Next instant at which relay timing, the lease, feedback, or lack of
-    /// motion progress may change the output. Call [`Self::service`] at or after it.
-    pub fn next_deadline_ms(&self, interlock: &FeedbackInterlock, now_ms: u64) -> Option<u64> {
+    /// Physical deadlines, combined with operating permission by `step`.
+    fn next_deadline_ms(&self, interlock: &FeedbackInterlock, now_ms: u64) -> Option<u64> {
         let transition = self.guard.next_transition_ms(now_ms);
         let feedback = interlock.deadline_ms(self.guard.actual(), now_ms);
         [transition, feedback, self.motion.deadline_ms(now_ms)]
@@ -216,3 +167,6 @@ impl Default for Actuator {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests;

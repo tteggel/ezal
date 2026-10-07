@@ -1,6 +1,6 @@
 //! Exercise motion supervision through the same boundary used by firmware.
 
-mod common;
+use super::common;
 
 use common::{installed, sample};
 use ezal_core::actuator::Actuator;

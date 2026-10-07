@@ -9,7 +9,7 @@ use picoserve::response::ws::{
 };
 use picoserve::time::{Duration, TimeoutError, Timer};
 
-use ezal_core::protocol::TELEMETRY_PERIOD_MS;
+use ezal_core::session::TELEMETRY_PERIOD_MS;
 
 /// Maximum time spent in one receive operation. Idle connections still return
 /// their telemetry signal normally; once a message starts, this deadline also

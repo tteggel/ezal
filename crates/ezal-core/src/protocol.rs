@@ -9,7 +9,7 @@
 use crate::coordination::TelemetrySnapshot;
 use core::fmt;
 
-pub use crate::coordination::ControlStatus;
+use crate::coordination::ControlStatus;
 use crate::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
 use crate::feedback::{FeedbackHealth, FeedbackSnapshot};
 use crate::motion::MotionFault;
@@ -20,11 +20,7 @@ pub const WS_PATH: &str = "/ws";
 /// WebSocket message used by a viewer to become the controller.
 pub const TAKE_CONTROL_MESSAGE: &str = "control:take";
 
-// The transport exports these timing values for existing dashboard consumers.
-pub use crate::session::{
-    CommandFreshness, CommandToken, MovementRequest, COMMAND_MAX_AGE_MS, COMMAND_REFRESH_MS,
-    COMMAND_TIMEOUT_MS, TELEMETRY_PERIOD_MS,
-};
+use crate::session::{CommandToken, MovementRequest};
 
 /// Decode only movement directions; freshness and ownership are separate policy.
 fn parse_drive(message: &str) -> Option<DriveCommand> {

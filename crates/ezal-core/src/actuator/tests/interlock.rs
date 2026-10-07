@@ -1,6 +1,6 @@
 //! Feedback interlock behaviour through the shared actuator sequence.
 
-mod common;
+use super::common;
 
 use common::{installed, sample, TEST_CALIBRATION};
 use ezal_core::actuator::Actuator;

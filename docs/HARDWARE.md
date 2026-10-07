@@ -46,7 +46,7 @@ The firmware now brings up the Pico 2 W's onboard **CYW43439** radio at boot
 and joins WiFi in station mode (see
 [`wifi.rs`](../crates/ezal-firmware/src/wifi.rs) and
 [WiFi credentials](#wifi-credentials) below), so the target is specifically
-the **W** variant. On a plain (non-W) Pico 2 the WiFi POST has no radio to
+the **W** variant. On a plain (non-W) Pico 2 the WiFi initialization has no radio to
 talk to and the bring-up stalls there.
 
 The CYW43439 hangs off four RP2350 GPIOs that are *not* brought out to the
@@ -94,7 +94,7 @@ The radio joins your access point in **station mode**. The Pico has no
 filesystem to read credentials from at runtime, so they are baked into the
 firmware image at *build* time: copy [`.env.example`](../.env.example) to
 `.env` at the repo root and set `EZAL_WIFI_SSID` / `EZAL_WIFI_PASSWORD`.
-`crates/ezal-firmware/build.rs` reads that file and the WiFi POST joins the
+`crates/ezal-firmware/build.rs` reads that file and network supervision joins the
 network at boot (an empty password selects an open network; protected joins
 use WPA3/SAE). Credential validation runs after radio initialization and before
 association. `.env` is git-ignored, but the credentials do end up in the flashed `.elf`/`.uf2`
@@ -199,7 +199,7 @@ The interface circuit (canonical version in
   The wider ADC range leaves room around the measured 2033 mV endpoint
   for the **25 mV endpoint margin** and observable overrange readings.
   The old ±2.048 V range saturated at 2047 mV, inside that accepted margin.
-  Both supervisors validate that the entire calibration band sits above zero
+  The installed calibration model validates that its entire band sits above zero
   and below **3200 mV**, the lower of the ±4.096 V saturation code (4094 mV)
   and the 3.3 V supply-rail ceiling. The ceiling matters because the ADS1015
   cannot report a reading above its own supply: a band reaching that high

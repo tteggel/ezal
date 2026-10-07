@@ -3,13 +3,14 @@
 mod common;
 
 use common::TEST_CALIBRATION;
+use ezal_core::coordination::ControlStatus;
 use ezal_core::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
 use ezal_core::feedback::{FeedbackHealth, FeedbackMonitor, FeedbackReadError, FeedbackSnapshot};
 use ezal_core::position::Pointing;
 use ezal_core::protocol::{
-    ClientMessage, ControlStatus, FeedbackTelemetry, MovementRequest, PositionTelemetry,
-    TAKE_CONTROL_MESSAGE,
+    ClientMessage, FeedbackTelemetry, PositionTelemetry, TAKE_CONTROL_MESSAGE,
 };
+use ezal_core::session::MovementRequest;
 
 #[test]
 fn parses_direction_commands() {
@@ -152,7 +153,7 @@ fn formats_control_status_as_compact_json() {
 }
 
 #[test]
-fn formats_calibrated_feedback_without_demo_fields() {
+fn formats_calibrated_feedback_as_compact_json() {
     let mut json = String::new();
     FeedbackTelemetry {
         azimuth_tenths: 4247,

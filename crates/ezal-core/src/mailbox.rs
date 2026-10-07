@@ -21,7 +21,7 @@ impl CommandEnvelope {
 
 /// One pending request; unconsumed inhibition cannot be overwritten.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommandMailbox {
+pub(crate) struct CommandMailbox {
     pending: Option<CommandEnvelope>,
 }
 

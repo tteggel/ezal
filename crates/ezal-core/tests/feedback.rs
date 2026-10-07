@@ -3,7 +3,7 @@
 mod common;
 
 use common::{installed, sample, TEST_CALIBRATION};
-use ezal_core::actuator::Actuator;
+use ezal_core::actuator::{Actuator, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{AzimuthDirection, Command, DriveCommand};
 use ezal_core::feedback::{
@@ -11,6 +11,8 @@ use ezal_core::feedback::{
     FEEDBACK_MAX_AGE_MS, FEEDBACK_MAX_LATENCY_MS, FEEDBACK_PERIOD_MS,
 };
 use ezal_core::interlock::FeedbackInterlock;
+use ezal_core::mailbox::CommandEnvelope;
+use ezal_core::network::NetworkGate;
 use ezal_core::position::{CalibrationError, FeedbackVoltages, Pointing};
 
 fn feedback(azimuth: f32, elevation: f32) -> Result<FeedbackVoltages, FeedbackReadError> {
@@ -31,20 +33,35 @@ fn feedback_faults_cut_manual_motion_during_the_minimum_on_time() {
     ] {
         let mut monitor = FeedbackMonitor::new(TEST_CALIBRATION, None);
         let mut actuator = Actuator::new();
+        let mut network = NetworkGate::new();
+        network.observe(2_000, true);
         let initial = monitor.update(2_000, 2_000, feedback(100.0, 20.0));
-        actuator.command(
-            Command::Jog(DriveCommand {
-                azimuth: Some(AzimuthDirection::Clockwise),
-                elevation: None,
-            }),
-            &initial.interlock,
+        actuator.step(
+            ActuatorInput {
+                interlock: initial.interlock,
+                network,
+                command: Some(CommandEnvelope {
+                    command: Command::Jog(DriveCommand {
+                        azimuth: Some(AzimuthDirection::Clockwise),
+                        elevation: None,
+                    }),
+                    valid_until_ms: 2_750,
+                }),
+            },
             2_000,
         );
         assert!(actuator.actual().is_active());
         let fault = monitor.update(2_100, 2_050, readings);
         assert_eq!(fault.snapshot.last_valid, initial.snapshot.last_valid);
         assert_eq!(fault.interlock.feedback(), None);
-        actuator.service(&fault.interlock, 2_100);
+        actuator.step(
+            ActuatorInput {
+                interlock: fault.interlock,
+                network,
+                command: None,
+            },
+            2_100,
+        );
         assert_eq!(actuator.actual(), DriveCommand::IDLE);
         assert_eq!(actuator.target(), DriveCommand::IDLE);
     }

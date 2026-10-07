@@ -9,7 +9,7 @@
 # the exact one pinned by `flake.lock` — the same `cargo`, `clippy`,
 # `picotool`, and `node` a contributor gets locally. The Rust jobs load the
 # *lean* `.#ci` shell (Rust toolchain + picotool, no probe-rs/node/python) and
-# the dashboard job loads `.#dashboard` (Node only), both via
+# the dashboard job loads `.#dashboard` (Rust configuration exporter + Node), both via
 # `nicknovitski/nix-develop`, which exports the shell's environment to every
 # later step, so plain commands and `Swatinem/rust-cache` all see it.
 #

@@ -1,80 +1,33 @@
-//! # ezal-core
+//! Deterministic, hardware-independent policy for ezal.
 //!
-//! Hardware-independent logic for the **ezal** antenna-tracker project.
+//! This crate is `no_std`; policy receives values and explicit monotonic times.
+//! Firmware owns peripherals, synchronization and asynchronous I/O. Run
+//! `./scripts/test-host.sh` to test the same policy on the host.
 //!
-//! This crate is `no_std` by default so it can be compiled into the
-//! [`ezal-firmware`](../ezal_firmware/index.html) binary that runs on the
-//! Raspberry Pi Pico 2 W, but it also builds for the host. Run
-//! `./scripts/test-host.sh` to select the host target; the workspace's default
-//! target is embedded. `cfg(test)` enables `std` only for the test harness.
+//! The control path has four owners:
+//! * [`feedback`] validates acquisition results using [`position::InstalledCalibration`].
+//! * [`session`] admits fresh, ordered operator intent.
+//! * [`coordination`] owns manual authority and coherent command delivery.
+//! * [`actuator::Actuator::step`] is the complete physical-output decision.
 //!
-//! ## Modules
+//! [`interlock`], [`motion`], [`network`] and private [`drive`] timing helpers
+//! support that boundary. [`mailbox::CommandEnvelope`] preserves a source's
+//! absolute deadline. [`protocol`] supplies wire parsing and telemetry encoding;
+//! [`dashboard`] supplies the page and firmware-owned client configuration.
 //!
-//! * [`ads1015`] — the pure register model for the ADS1015 position-feedback
-//!   ADC: Config-register packing, conversion-result decoding, and the
-//!   power-on self-test predicates. The bus transactions that use it live in
-//!   the firmware crate.
-//! * [`position`] — azimuth/elevation units, hard-coded installation
-//!   calibration, and calibrated angle ↔ feedback-millivolt conversion.
-//! * [`feedback`] — acquisition health and calibrated observations, independent of telemetry.
-//! * [`interlock`] — feedback freshness and travel-aware directional endpoint
-//!   checks at the final actuator boundary.
-//! * [`actuator`] — the safety-ordered sequence that enforces the interlock
-//!   before relay timing and admits every command through it.
-//! * [`motion`] — latched motion-progress and plausibility supervision using
-//!   applied outputs, feedback resolution, and accumulated energised time.
-//! * [`coordination`] — exclusive manual ownership and atomic command delivery.
-//! * [`session`] — source freshness and ordered operator intent.
-//! * [`mailbox`] — a pending command slot where safety inhibition takes
-//!   precedence over movement refreshes.
-//! * [`wifi`] — validation of the station-mode WiFi credentials that
-//!   `build.rs` bakes in from `.env`. Pure predicates the firmware's WiFi
-//!   POST checks after radio initialization and before association.
-//! * [`drive`] — the rotator's transport-independent motion vocabulary
-//!   (azimuth/elevation directions, the combined [`drive::DriveCommand`], the
-//!   [`drive::Command`] surface), relay timing, and [`drive::ActuatorGuard`].
-//!   Ordinary controller stops obey relay timing; safety inhibition, operator
-//!   release, and lease expiry immediately clear applicable outputs. The GPIO
-//!   adapter lives in firmware.
-//! * [`protocol`] — the dashboard's WebSocket wire protocol: parsing browser
-//!   messages ([`protocol::ClientMessage`]) and framing telemetry and control
-//!   state ([`protocol::PositionTelemetry`], [`protocol::ControlStatus`]) as
-//!   compact JSON.
-//! * [`dashboard`] — the single static HTML/CSS/JS page served at `/`.
-//! * [`ntp`] — SNTP validation and an expiring, injected UTC anchor.
-//! * [`http`] — sans-I/O HTTP/1.1 response framing for the element download.
-//! * [`orbit`] — TLE validation, SGP4 library adapter, streamed catalog
-//!   updates and observer geometry.
-//! * [`passes`] — incremental, pure reception-window prediction, forecast
-//!   assembly and the `/api/passes` report.
-//!
-//! ## What goes in this crate
-//!
-//! Anything that is:
-//!   * pure (no global state, no I/O),
-//!   * deterministic (same input → same output),
-//!   * `no_std` (no `Box`, `Vec`, `HashMap`, etc., unless `heapless`).
-//!
-//! ## What does **not** go in this crate
-//!
-//! Anything that:
-//!   * touches a peripheral (GPIO, SPI, UART, USB, …),
-//!   * needs `embassy-*`, `embedded-hal`, or any chip-specific crate,
-//!   * blocks on real time (use `embassy_time::Timer` in the firmware).
-//!
-//! Pushing those concerns into `ezal-firmware` keeps this crate trivially
-//! testable on the host — exactly the property we want as the satellite
-//! pointing maths get more elaborate.
+//! [`ads1015`] models ADC registers and decoding; [`wifi`] contains credential
+//! validation and reconnect timing. Advisory prediction is separate: [`ntp`]
+//! supplies an expiring UTC anchor, [`http`] frames streamed downloads, and
+//! [`orbit`]/[`passes`] validate elements and calculate reception windows.
 
-// `no_std` for embedded use, but allow `std` when the test harness builds
-// us. `cargo test` defines `cfg(test)` on this crate (but not on its
-// dependents), so the firmware always sees the `no_std` version.
 #![cfg_attr(not(test), no_std)]
-// Hard-line safety lints: this crate is pure logic and has no business
-// reaching for unsafe. If we ever need it, we'll add a justified `#[allow]`.
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
+
+// Unit and integration tests share the same calibrated observation fixtures.
+#[cfg(test)]
+extern crate self as ezal_core;
 
 pub mod actuator;
 pub mod ads1015;

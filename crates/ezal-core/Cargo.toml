@@ -3,7 +3,7 @@
 # ────────────────────────────────────────────────────────────────────────────
 #
 # This crate is deliberately hardware-independent. It holds calibration,
-# pointing units, pass simulation, feedback supervision, actuator interlocks, wire
+# pointing units, advisory pass prediction, feedback validation, actuator policy, wire
 # protocol, ADC register logic, and the embedded dashboard asset.
 #
 # Because it has no hardware dependencies, it can be:

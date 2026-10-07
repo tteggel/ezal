@@ -89,7 +89,7 @@ bakes the same values with or without direnv. Later lines override earlier
 ones, and an unquoted value ends at a ` #` comment (quote a value to keep
 ` #` in it; `#` with no space before it is kept). Leave the password blank
 for an open network; protected joins use WPA3/SAE. Building *without* a `.env` still compiles — CI does
-exactly that — but the firmware's WiFi POST then fails at boot until the
+exactly that — but the network supervisor parks with a credential error until the
 credentials are set. The CYW43439's own firmware blobs are vendored in-tree
 (`crates/ezal-firmware/cyw43-firmware/`), so there's nothing else to fetch.
 
@@ -133,8 +133,9 @@ pip install --user schemdraw matplotlib
 
 You're then responsible for keeping versions roughly in sync with what
 the flake pins. CI runs its Rust jobs inside the flake's lean `.#ci` shell
-(`nix develop .#ci`) and the dashboard job inside `.#dashboard` (Node only),
-so `flake.lock` is the authoritative pin for the toolchain — `picotool`,
+(`nix develop .#ci`) and the dashboard job inside `.#dashboard` (Rust
+configuration exporter and Node), so `flake.lock` is the authoritative pin
+for the toolchain — `picotool`,
 Node.js and all — that the build is checked against.
 
 ## Day-to-day workflow
@@ -180,11 +181,9 @@ Illustrative logs (timings and the ADC config's conversion-ready bit vary):
 ```
 0.000123 INFO  ezal adc-bringup: POSTing ADS1015 at 0x48
 0.002456 INFO  ADS1015 POST OK: config=0xc383, A0=1280 mV, A1=114 mV
-0.003234 INFO  ezal wifi-bringup: joining "my-network" in STA mode
-2.310456 INFO  WiFi POST OK: joined "my-network" (secured)
-2.320789 INFO  ezal net: waiting for DHCP
-3.100123 INFO  ezal net: DHCP OK
-3.101234 INFO  ezal web: listening on http://<dhcp-address>/
+0.003234 INFO  ezal: manual control; outputs idle until operator input
+2.310456 INFO  WiFi associated (secured); waiting for DHCP
+3.100123 INFO  network ready; motion permission available
 ```
 
 Feedback sampling starts before the network, but movement waits for a station
@@ -262,7 +261,7 @@ straight from the command line.
 This is equivalent to `cargo test -p ezal-core` with the right `--target`
 override (since the workspace default target is the Pico's ARM core,
 running tests for the host needs an explicit triple — the script computes
-it from `rustc -vV`). Host tests cover the composed supervisor, the feedback
+it from `rustc -vV`). Host tests cover feedback validation, the feedback
 gate and its travel-aware endpoint band, ownership, the command mailbox, and
 the actuator sequence the firmware itself runs, as well as the actual pinned
 picoserve HTTP upgrade/WebSocket parser with deterministic timeouts. Pass
@@ -276,9 +275,11 @@ Apart from one sanity test of the installed calibration, the policy tests use
 their own fixture in `crates/ezal-core/tests/common/`, so replacing
 `HARD_CODED_CALIBRATION` with your measurements cannot break them.
 
-The dashboard script runs the actual embedded JavaScript against simulated
-DOM, sockets and timers using Node's built-in runner. It checks pointer
-ownership, release/cancellation, command refresh, control takeover, reconnect,
+The dashboard script first exports the production client configuration with
+Rust, then runs the served JavaScript against simulated DOM, sockets and timers
+using Node's built-in runner. Both tools are in the default and `.#dashboard`
+Nix shells. It checks pointer ownership, release/cancellation, command refresh,
+control takeover, reconnect,
 telemetry expiry, fresh-press recovery, and rendered telemetry without
 installing npm packages. Its forecast tests also render
 `crates/ezal-core/tests/fixtures/passes-report.json`, the exact `/api/passes`

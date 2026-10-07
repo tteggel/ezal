@@ -20,8 +20,8 @@
 //!     (so CI or a one-off command can inject it), otherwise the `.env`
 //!     file at the workspace root, otherwise empty. Empty is deliberately
 //!     *not* a hard error: the firmware must still cross-compile in CI, which
-//!     has no `.env` — instead the on-chip WiFi POST validates the baked-in
-//!     credentials and fails loudly at boot if they're unset. We do emit a
+//!     has no `.env` — instead network supervision validates the baked-in
+//!     credentials and parks offline at boot if they're unset. We do emit a
 //!     build warning so it's not silent.
 //!
 //!     Note: this build-time provisioning scheme stores credentials in the
@@ -139,12 +139,12 @@ fn bake_configuration() {
 
     // An empty SSID means the radio can't join anything; warn (don't fail —
     // CI needs the cross-compile to succeed without a `.env`). The runtime
-    // POST is the real gate. An empty *password* is legitimate: it selects an
-    // open network, so it never warns.
+    // supervisor validates them before association. An empty password selects
+    // an open network, so it never warns.
     if ssid.is_empty() {
         println!(
             "cargo:warning=EZAL_WIFI_SSID is empty after environment/.env resolution ({}); \
-             the WiFi POST will fail at boot until you copy .env.example to .env and fill it in.",
+             networking will stay offline until you copy .env.example to .env and fill it in.",
             env_path.display()
         );
     }

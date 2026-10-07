@@ -2,11 +2,11 @@
 //!
 //! The two independent axes of the G-5500 rotator — azimuth and elevation —
 //! and the [`Command`]s that move them, expressed independently of any
-//! transport. Autonomous control and the hardware dashboard both speak the
-//! same [`DriveCommand`] without knowing anything about GPIOs.
+//! transport. Manual input uses [`DriveCommand`] without knowing anything
+//! about GPIOs.
 //!
-//! [`Debouncer`] enforces ordinary relay minimum on/off intervals.
-//! [`ActuatorGuard`] adds movement leases and safety inhibition, which can
+//! Private relay timing enforces ordinary minimum on/off intervals.
+//! The actuator's lease guard adds movement expiry and safety inhibition, which can
 //! interrupt the minimum on-time. Reactivation still respects the minimum
 //! off-time, and a leased output starts only when its lease covers the minimum
 //! on-time. [`crate::actuator`] orders these checks with the feedback
@@ -101,245 +101,169 @@ pub enum Command {
     Inhibit,
 }
 
-/// Minimum active/inactive-time filter for the four physical direction outputs.
-///
-/// Ordinary releases respect [`OUTPUT_MIN_ACTIVE_MS`]; [`Command::Inhibit`]
-/// and operator releases through [`Command::Jog`] remove active outputs
-/// immediately. All reactivation and reversal respects
-/// [`OUTPUT_MIN_INACTIVE_MS`]. The firmware applies this pure state machine's
-/// resulting outputs at the GPIO boundary.
+/// One axis's relay state. Only the applied direction owns a minimum-on
+/// deadline; both directions share the inactive hold before reactivation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Debouncer {
-    target: DriveCommand,
-    actual: DriveCommand,
-    cw_until_ms: u64,
-    ccw_until_ms: u64,
-    azimuth_off_until_ms: u64,
-    up_until_ms: u64,
-    down_until_ms: u64,
-    elevation_off_until_ms: u64,
+struct AxisRelay<D> {
+    target: Option<D>,
+    actual: Option<D>,
+    on_until_ms: u64,
+    off_until_ms: u64,
 }
 
-impl Debouncer {
-    /// Create an idle debouncer.
-    pub const fn new() -> Self {
+impl<D: Copy + Eq> AxisRelay<D> {
+    const fn new() -> Self {
         Self {
-            target: DriveCommand::IDLE,
-            actual: DriveCommand::IDLE,
-            cw_until_ms: 0,
-            ccw_until_ms: 0,
-            azimuth_off_until_ms: 0,
-            up_until_ms: 0,
-            down_until_ms: 0,
-            elevation_off_until_ms: 0,
+            target: None,
+            actual: None,
+            on_until_ms: 0,
+            off_until_ms: 0,
         }
     }
 
-    /// The currently requested drive state.
-    pub const fn target(&self) -> DriveCommand {
-        self.target
+    fn inhibit(&mut self, now_ms: u64) {
+        self.target = None;
+        if self.actual.take().is_some() {
+            self.off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
+        }
     }
 
-    /// The drive state that is allowed to be physically applied now.
-    pub const fn actual(&self) -> DriveCommand {
-        self.actual
+    fn update(&mut self, now_ms: u64, activation_limit_ms: u64) {
+        if self.actual == self.target {
+            return;
+        }
+        if self.actual.is_some() {
+            if now_ms < self.on_until_ms {
+                return;
+            }
+            self.actual = None;
+            self.off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
+        }
+        if now_ms < self.off_until_ms {
+            return;
+        }
+        let on_until_ms = now_ms.saturating_add(OUTPUT_MIN_ACTIVE_MS);
+        if self.target.is_some() && on_until_ms <= activation_limit_ms {
+            self.actual = self.target;
+            self.on_until_ms = on_until_ms;
+        }
     }
 
-    /// Set a new target command and advance the debounced output state.
-    ///
-    /// Returns `true` when [`actual`](Self::actual) changed.
-    pub fn set_target(&mut self, command: Command, now_ms: u64) -> bool {
+    fn next_transition_ms(&self, now_ms: u64, activation_limit_ms: u64) -> Option<u64> {
+        if self.actual == self.target {
+            None
+        } else if self.actual.is_some() {
+            Some(self.on_until_ms.max(now_ms))
+        } else {
+            activation_ms(self.off_until_ms, now_ms, activation_limit_ms)
+        }
+    }
+}
+
+/// Relay timing for two independent axes. Ordinary release respects minimum
+/// on-time; inhibition and operator release cut at once. Every activation
+/// respects the shared off-time for its axis and the available command lease.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RelayTiming {
+    azimuth: AxisRelay<AzimuthDirection>,
+    elevation: AxisRelay<ElevationDirection>,
+}
+
+impl RelayTiming {
+    const fn new() -> Self {
+        Self {
+            azimuth: AxisRelay::new(),
+            elevation: AxisRelay::new(),
+        }
+    }
+
+    const fn target(&self) -> DriveCommand {
+        DriveCommand {
+            azimuth: self.azimuth.target,
+            elevation: self.elevation.target,
+        }
+    }
+
+    const fn actual(&self) -> DriveCommand {
+        DriveCommand {
+            azimuth: self.azimuth.actual,
+            elevation: self.elevation.actual,
+        }
+    }
+
+    fn set_target(&mut self, command: Command, now_ms: u64) -> bool {
         self.set_target_until(command, now_ms, u64::MAX)
     }
 
-    /// Like [`set_target`](Self::set_target), but start an output only if it
-    /// can stay on for its minimum active time by `activation_limit_ms`.
     fn set_target_until(
         &mut self,
         command: Command,
         now_ms: u64,
         activation_limit_ms: u64,
     ) -> bool {
-        let before = self.actual;
-        match command {
+        let before = self.actual();
+        let drive = match command {
             Command::Inhibit => {
-                self.inhibit_axes(true, true, now_ms);
+                return self.inhibit_axes(true, true, now_ms);
             }
             Command::Jog(drive) => {
-                // Releasing a held control cuts that output at once. Its
-                // inactive hold still delays the next activation.
                 self.inhibit_axes(
-                    self.actual.azimuth.is_some() && self.actual.azimuth != drive.azimuth,
-                    self.actual.elevation.is_some() && self.actual.elevation != drive.elevation,
+                    self.azimuth.actual.is_some() && self.azimuth.actual != drive.azimuth,
+                    self.elevation.actual.is_some() && self.elevation.actual != drive.elevation,
                     now_ms,
                 );
-                self.target = drive;
-                self.update_until(now_ms, activation_limit_ms);
+                drive
             }
-            Command::Drive(drive) => {
-                self.target = drive;
-                self.update_until(now_ms, activation_limit_ms);
-            }
-            Command::Stop => {
-                self.target = DriveCommand::IDLE;
-                self.update_until(now_ms, activation_limit_ms);
-            }
-        }
-        self.actual != before
+            Command::Drive(drive) => drive,
+            Command::Stop => DriveCommand::IDLE,
+        };
+        self.azimuth.target = drive.azimuth;
+        self.elevation.target = drive.elevation;
+        self.update_until(now_ms, activation_limit_ms);
+        self.actual() != before
     }
 
     fn inhibit_axes(&mut self, azimuth: bool, elevation: bool, now_ms: u64) -> bool {
-        let before = self.actual;
+        let before = self.actual();
         if azimuth {
-            self.target.azimuth = None;
-            if self.actual.azimuth.take().is_some() {
-                self.azimuth_off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
-            }
+            self.azimuth.inhibit(now_ms);
         }
         if elevation {
-            self.target.elevation = None;
-            if self.actual.elevation.take().is_some() {
-                self.elevation_off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
-            }
+            self.elevation.inhibit(now_ms);
         }
-        self.actual != before
+        self.actual() != before
     }
 
-    /// Advance the debounced output state at `now_ms`.
-    ///
-    /// Returns `true` when [`actual`](Self::actual) changed.
-    pub fn update(&mut self, now_ms: u64) -> bool {
+    #[cfg(test)]
+    fn update(&mut self, now_ms: u64) -> bool {
         self.update_until(now_ms, u64::MAX)
     }
 
     fn update_until(&mut self, now_ms: u64, activation_limit_ms: u64) -> bool {
-        let before = self.actual;
-        self.update_azimuth(now_ms, activation_limit_ms);
-        self.update_elevation(now_ms, activation_limit_ms);
-        self.actual != before
+        let before = self.actual();
+        self.azimuth.update(now_ms, activation_limit_ms);
+        self.elevation.update(now_ms, activation_limit_ms);
+        self.actual() != before
     }
 
-    /// Next millisecond instant where a delayed target may become applicable.
-    pub fn next_transition_ms(&self, now_ms: u64) -> Option<u64> {
+    #[cfg(test)]
+    fn next_transition_ms(&self, now_ms: u64) -> Option<u64> {
         self.next_transition_until(now_ms, u64::MAX)
     }
 
-    /// Next transition, excluding activations that `activation_limit_ms`
-    /// would refuse. Such an activation waits for a later limit, not time.
     fn next_transition_until(&self, now_ms: u64, activation_limit_ms: u64) -> Option<u64> {
-        let mut next = None;
-
-        if self.actual.azimuth != self.target.azimuth {
-            let deadline = match self.actual.azimuth {
-                Some(direction) => Some(self.azimuth_until_ms(direction).max(now_ms)),
-                None => activation_ms(self.azimuth_off_until_ms, now_ms, activation_limit_ms),
-            };
-            if let Some(deadline) = deadline {
-                next = Some(min_option(next, deadline));
-            }
-        }
-
-        if self.actual.elevation != self.target.elevation {
-            let deadline = match self.actual.elevation {
-                Some(direction) => Some(self.elevation_until_ms(direction).max(now_ms)),
-                None => activation_ms(self.elevation_off_until_ms, now_ms, activation_limit_ms),
-            };
-            if let Some(deadline) = deadline {
-                next = Some(min_option(next, deadline));
-            }
-        }
-
-        next
-    }
-
-    fn update_azimuth(&mut self, now_ms: u64, activation_limit_ms: u64) {
-        if self.actual.azimuth == self.target.azimuth {
-            return;
-        }
-
-        if let Some(current) = self.actual.azimuth {
-            if now_ms < self.azimuth_until_ms(current) {
-                return;
-            }
-            self.actual.azimuth = None;
-            self.azimuth_off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
-        }
-
-        if now_ms < self.azimuth_off_until_ms {
-            return;
-        }
-
-        let until_ms = now_ms.saturating_add(OUTPUT_MIN_ACTIVE_MS);
-        if let Some(target) = self.target.azimuth {
-            if until_ms <= activation_limit_ms {
-                self.actual.azimuth = Some(target);
-                self.set_azimuth_until_ms(target, until_ms);
-            }
-        }
-    }
-
-    fn update_elevation(&mut self, now_ms: u64, activation_limit_ms: u64) {
-        if self.actual.elevation == self.target.elevation {
-            return;
-        }
-
-        if let Some(current) = self.actual.elevation {
-            if now_ms < self.elevation_until_ms(current) {
-                return;
-            }
-            self.actual.elevation = None;
-            self.elevation_off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
-        }
-
-        if now_ms < self.elevation_off_until_ms {
-            return;
-        }
-
-        let until_ms = now_ms.saturating_add(OUTPUT_MIN_ACTIVE_MS);
-        if let Some(target) = self.target.elevation {
-            if until_ms <= activation_limit_ms {
-                self.actual.elevation = Some(target);
-                self.set_elevation_until_ms(target, until_ms);
-            }
-        }
-    }
-
-    const fn azimuth_until_ms(&self, direction: AzimuthDirection) -> u64 {
-        match direction {
-            AzimuthDirection::Clockwise => self.cw_until_ms,
-            AzimuthDirection::CounterClockwise => self.ccw_until_ms,
-        }
-    }
-
-    fn set_azimuth_until_ms(&mut self, direction: AzimuthDirection, until_ms: u64) {
-        match direction {
-            AzimuthDirection::Clockwise => self.cw_until_ms = until_ms,
-            AzimuthDirection::CounterClockwise => self.ccw_until_ms = until_ms,
-        }
-    }
-
-    const fn elevation_until_ms(&self, direction: ElevationDirection) -> u64 {
-        match direction {
-            ElevationDirection::Up => self.up_until_ms,
-            ElevationDirection::Down => self.down_until_ms,
-        }
-    }
-
-    fn set_elevation_until_ms(&mut self, direction: ElevationDirection, until_ms: u64) {
-        match direction {
-            ElevationDirection::Up => self.up_until_ms = until_ms,
-            ElevationDirection::Down => self.down_until_ms = until_ms,
-        }
+        [
+            self.azimuth.next_transition_ms(now_ms, activation_limit_ms),
+            self.elevation
+                .next_transition_ms(now_ms, activation_limit_ms),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 }
 
-impl Default for Debouncer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Fail-safe movement lease wrapped around the relay-protecting debouncer.
+/// Fail-safe movement lease around the two-axis relay timing.
 ///
 /// Every active command must be refreshed before [`MOVEMENT_LEASE_MS`]
 /// elapses. Expiry clears both requested and applied movement immediately,
@@ -350,8 +274,8 @@ impl Default for Debouncer {
 /// The firmware services these deadlines; host tests exercise their
 /// interaction with relay timing deterministically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ActuatorGuard {
-    debouncer: Debouncer,
+pub(crate) struct ActuatorGuard {
+    relays: RelayTiming,
     lease_deadline_ms: Option<u64>,
 }
 
@@ -359,7 +283,7 @@ impl ActuatorGuard {
     /// Create an idle guard with no active lease.
     pub const fn new() -> Self {
         Self {
-            debouncer: Debouncer::new(),
+            relays: RelayTiming::new(),
             lease_deadline_ms: None,
         }
     }
@@ -391,7 +315,7 @@ impl ActuatorGuard {
                 }
             }
         }
-        self.debouncer
+        self.relays
             .set_target_until(command, now_ms, self.activation_limit_ms());
         // Ordinary release may leave an axis on until minimum-on ends. Its
         // existing movement lease must still bound that remaining motion.
@@ -399,15 +323,13 @@ impl ActuatorGuard {
         self.actual() != before
     }
 
-    /// Advance lease and debounce timers.
+    /// Advance lease and relay timers.
     ///
-    /// Lease expiry is handled before the debouncer is advanced, so an
+    /// Lease expiry is handled before relay timing advances, so an
     /// unrefreshed output can never be re-energised by a pending transition.
     pub fn update(&mut self, now_ms: u64) -> bool {
         let changed = self.expire_lease(now_ms)
-            || self
-                .debouncer
-                .update_until(now_ms, self.activation_limit_ms());
+            || self.relays.update_until(now_ms, self.activation_limit_ms());
         self.clear_idle_lease();
         changed
     }
@@ -418,7 +340,7 @@ impl ActuatorGuard {
             .is_some_and(|deadline| deadline <= now_ms);
         if expired {
             self.lease_deadline_ms = None;
-            self.debouncer.set_target(Command::Inhibit, now_ms)
+            self.relays.set_target(Command::Inhibit, now_ms)
         } else {
             false
         }
@@ -439,19 +361,19 @@ impl ActuatorGuard {
     /// The other axis keeps its command and lease. Repeated inhibition does not
     /// extend an already-inactive axis's hold; reactivation still waits 2 s.
     pub fn inhibit_axes(&mut self, azimuth: bool, elevation: bool, now_ms: u64) -> bool {
-        let changed = self.debouncer.inhibit_axes(azimuth, elevation, now_ms);
+        let changed = self.relays.inhibit_axes(azimuth, elevation, now_ms);
         self.clear_idle_lease();
         changed
     }
 
     /// Drive state currently permitted at the physical output boundary.
     pub const fn actual(&self) -> DriveCommand {
-        self.debouncer.actual()
+        self.relays.actual()
     }
 
     /// Drive state most recently requested, after any lease expiry.
     pub const fn target(&self) -> DriveCommand {
-        self.debouncer.target()
+        self.relays.target()
     }
 
     /// Current movement-lease deadline, if an active command owns one.
@@ -463,7 +385,7 @@ impl ActuatorGuard {
     /// activation the lease cannot cover waits for a refresh or the expiry.
     pub fn next_transition_ms(&self, now_ms: u64) -> Option<u64> {
         let transition = self
-            .debouncer
+            .relays
             .next_transition_until(now_ms, self.activation_limit_ms());
         match (transition, self.lease_deadline_ms) {
             (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
@@ -485,9 +407,5 @@ fn activation_ms(off_until_ms: u64, now_ms: u64, activation_limit_ms: u64) -> Op
     (start_ms.saturating_add(OUTPUT_MIN_ACTIVE_MS) <= activation_limit_ms).then_some(start_ms)
 }
 
-const fn min_option(current: Option<u64>, candidate: u64) -> u64 {
-    match current {
-        Some(current) if current < candidate => current,
-        _ => candidate,
-    }
-}
+#[cfg(test)]
+mod tests;

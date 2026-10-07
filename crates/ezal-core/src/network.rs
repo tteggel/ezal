@@ -7,8 +7,6 @@
 //! pending. Link/address recovery grants a new generation, so command sources
 //! can discard work prepared before an interruption.
 
-use crate::drive::Command;
-
 /// Expected interval between link/address observations in the firmware.
 pub const NETWORK_POLL_MS: u64 = 100;
 
@@ -79,14 +77,5 @@ impl NetworkGate {
         }
         self.observed_ms = Some(now_ms);
         expired
-    }
-
-    /// Gate every command at consumption, retaining immediate stop semantics.
-    pub fn guard_command(&self, command: Command, now_ms: u64) -> Command {
-        if self.ready(now_ms) {
-            command
-        } else {
-            Command::Inhibit
-        }
     }
 }

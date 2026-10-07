@@ -21,12 +21,11 @@ settings, satellite coverage, acquisition/loss thresholds, and limitations.
 `ezal` (read it "ez/al", for *azimuth/elevation*) drives a Yaesu **G-5500**
 az/el rotator to track a low-earth-orbit (LEO) satellite as it passes
 overhead. The pure core now computes satellite az/el and reception windows
-from TLEs using SGP4. A future tracking source can supply those targets to
-the controller, which will
-drive the G-5500's direction inputs through transistor switches, and
-read the controller's position feedback via an Adafruit ADS1015 I²C
-ADC to close the loop. See [HARDWARE.md](docs/HARDWARE.md) and the
-[design/](design/) folder for the interface details and schematic.
+from TLEs using SGP4. Manual control drives the G-5500's direction inputs
+through transistor switches and reads calibrated position feedback via an
+Adafruit ADS1015 I²C ADC. Automatic target following remains future work.
+See [HARDWARE.md](docs/HARDWARE.md) and the [design/](design/) folder for the
+interface details and schematic.
 
 The firmware runs on a **Raspberry Pi Pico 2 W** (RP2350 and CYW43439 radio). The chip has
 plenty of headroom for this job — async I/O, two Cortex-M33 cores, 520 KiB
@@ -48,36 +47,40 @@ embedded Rust.
 │   ├── ezal-core/                  # pure no_std logic, host-testable
 │   │   └── src/
 │   │       ├── position.rs        # calibrated degrees ↔ ADC millivolts
-│   │       ├── control.rs         # feedback timing, samples, and health
-│   │       ├── supervisor.rs      # feedback validation, faults, telemetry
-│   │       ├── authority.rs       # manual ownership and command routing
+│   │       ├── feedback.rs        # validated observations and acquisition health
+│   │       ├── coordination.rs    # ownership, coherent snapshots, command delivery
+│   │       ├── session.rs         # source freshness and ordered manual intent
 │   │       ├── interlock.rs       # fresh feedback and endpoint motion gate
 │   │       ├── mailbox.rs         # pending inhibition has priority
-│   │       ├── actuator.rs        # interlock first, then lease and relay timing
+│   │       ├── actuator.rs        # complete output decision in one step
 │   │       ├── motion.rs          # latched progress, direction, and speed checks
 │   │       ├── network.rs         # expiring network permission for motion
 │   │       ├── ntp.rs             # SNTP validation + expiring UTC anchor
 │   │       ├── http.rs            # streamed HTTP framing for TLE downloads
 │   │       ├── orbit.rs           # TLE validation, catalog, SGP4 look angles
 │   │       ├── passes.rs          # pass search, forecasts, /api/passes JSON
-│   │       └── drive.rs           # command lease + relay timing
+│   │       ├── protocol.rs        # wire parsing and coherent telemetry
+│   │       ├── dashboard.rs       # browser asset and shared timing configuration
+│   │       └── drive.rs           # vocabulary and private relay timing
 │   └── ezal-firmware/              # the on-chip application
 │       ├── build.rs                # stages memory.x; bakes .env creds + station in
 │       ├── memory.x                # linker memory layout
 │       ├── cyw43-firmware/         # vendored CYW43439 radio blobs
 │       └── src/
-│           ├── main.rs            # boot graph + feedback task
-│           ├── state.rs           # typed snapshots, commands, and wake signal
+│           ├── main.rs            # startup checks and task wiring
+│           ├── feedback.rs        # ADC resource ownership and sampling
+│           ├── state.rs           # synchronization and actuator wake hint
 │           ├── drive.rs           # guarded direction GPIOs, watchdog feeding
 │           ├── watchdog.rs        # independent hardware reset fallback
 │           ├── web.rs             # dashboard, ownership, telemetry, passes
 │           ├── time.rs            # NTP over DNS/UDP
 │           ├── prediction.rs      # TLE download + cooperative forecasts
 │           ├── ws_receive.rs      # complete-message receive deadline
-│           ├── wifi.rs            # CYW43439 bring-up + STA-join POST
+│           ├── wifi.rs            # radio initialization and reconnect supervision
 │           └── ads1015.rs         # ADS1015 I²C driver + POST
 ├── docs/
-│   ├── ARCHITECTURE.md             # how the pieces fit together
+│   ├── ARCHITECTURE.md             # layers and resource ownership
+│   ├── CONTROL_CONTRACT.md         # safeguard effects, ordering, and recovery
 │   ├── CALIBRATION.md              # installed-system calibration procedure
 │   ├── HARDWARE.md                 # G-5500 wiring, debug probe, ...
 │   ├── PASS_PREDICTION.md          # station settings, catalog, limits

@@ -1,10 +1,6 @@
 //! Manual rotator control, feedback acquisition and advisory pass prediction.
 //! Firmware boots idle; only fresh operator input can request movement.
 
-// ─── crate attributes ───────────────────────────────────────────────────
-// `no_std`  : we have no operating system and no Rust std library.
-// `no_main` : we provide our own entry point via cortex-m-rt's runtime
-//             (which #[embassy_executor::main] wraps).
 #![no_std]
 #![no_main]
 #![recursion_limit = "256"]
@@ -41,50 +37,16 @@ use ezal_core::position::FeedbackVoltages;
 use ezal_core::wifi::Credentials;
 use wifi::Wifi;
 
-// `use foo as _` keeps the crate linked in even though we never name any of
-// its items. These two carry essential runtime plumbing:
-//
-//   defmt_rtt   — installs a global `defmt::Logger` that forwards log frames
-//                 over RTT (Real-Time Transfer). probe-rs reads those frames
-//                 and prints them on the host.
-//   panic_probe — logs and halts on panic. Once the output task has armed the
-//                 hardware watchdog, a halt causes a reset within 500 ms.
-//                 Boot then inhibits motion until an operator resets the board.
+// Panic halts feeding the actuator-owned watchdog. A resulting watchdog reset
+// boots with motion inhibited until an explicit board reset.
 use defmt_rtt as _;
 use panic_probe as _;
 
-// ─── RP2350 image header ────────────────────────────────────────────────
-//
-// The RP2350 boot ROM does not trust arbitrary code; it walks the start of
-// flash looking for a *block loop* that contains a valid "image definition"
-// block. If it doesn't find one, the chip enters BOOTSEL mode and refuses to
-// run our binary. This is the RP2350 equivalent of the RP2040's "boot2"
-// 2nd-stage bootloader — but simpler, because the RP2350 has hardware XIP
-// support built in. We literally just say "yes, please run me".
-//
-// We don't need to write the static manually: `embassy-rp` does it for us
-// when the `imagedef-secure-exe` feature is enabled (see the workspace
-// `Cargo.toml`). It places a `static IMAGE_DEF: ImageDef` in the
-// `.start_block` linker section. Crucially, cortex-m-rt's `link.x` does *not*
-// place `.start_block` — our `memory.x` does, pinning it into the first 4 KiB
-// of flash where the boot ROM scans for it. (Without that the section lands
-// at the end of the image and the chip won't boot — see the long note in
-// `memory.x`.) If you ever need a *non-secure* or *signed* image, swap the
-// feature flag for `imagedef-nonsecure-exe` (or disable embassy's auto-insert
-// with `imagedef-none` and provide your own static).
-//
-// You can confirm it's there with:
-//     llvm-objdump -t target/.../ezal-firmware | grep IMAGE_DEF
+// The `imagedef-secure-exe` Embassy feature supplies the RP2350 image header.
+// memory.x places its .start_block within the first 4 KiB, where boot ROM must
+// find it to accept the image. Keep that section placement when changing links.
 
-// ─── interrupts ─────────────────────────────────────────────────────────
-//
-// Each async driver completes its transfers from an interrupt, so we bind the
-// vectors they use to embassy-rp's handlers. `bind_interrupts!` generates the
-// single `Irqs` type we hand to each `::new` below:
-//
-//   I2C0_IRQ    — the ADS1015 I²C bus.
-//   PIO0_IRQ_0  — the CYW43439's gSPI, emulated on PIO0 (see wifi.rs).
-//   DMA_IRQ_0   — the DMA channel that PIO gSPI streams through.
+// Each async peripheral receives the interrupt binding owned by main.
 bind_interrupts!(struct Irqs {
     I2C0_IRQ => I2cInterruptHandler<I2C0>;
     PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
@@ -122,10 +84,6 @@ async fn park<T>(resources: T) -> ! {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // `embassy_rp::init` consumes the global Peripherals singleton and hands
-    // us a struct of every chip resource (`p.PIN_10`, `p.I2C0`, …). After
-    // this point, peripheral ownership is tracked by Rust's normal move
-    // semantics — you cannot accidentally talk to a pin from two places.
     let p = embassy_rp::init(Default::default());
 
     // Direction-switch outputs, initially low and ordered to match the

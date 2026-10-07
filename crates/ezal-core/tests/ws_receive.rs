@@ -487,7 +487,8 @@ fn utf8_is_validated_after_all_text_fragments_are_reassembled() {
 
 #[test]
 fn delayed_complete_and_partial_commands_do_not_receive_a_new_movement_lease() {
-    use ezal_core::protocol::{ClientMessage, CommandFreshness};
+    use ezal_core::protocol::ClientMessage;
+    use ezal_core::session::CommandFreshness;
     let message = b"press:4294967297:1:drive:cw";
     let full_frame = frame(true, 1, message);
     let delayed_messages = [

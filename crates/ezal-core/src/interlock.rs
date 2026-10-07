@@ -76,7 +76,7 @@ impl AxisLimits {
 }
 
 impl FeedbackInterlock {
-    /// A gate that permits no motion, used before any supervisor publishes.
+    /// A gate that permits no motion, used before usable feedback is published.
     pub const INHIBITED: Self = Self {
         limits: None,
         feedback: None,

@@ -1,7 +1,7 @@
-//! Tests for the rotator drive model and actuator-safety debouncer.
+//! Tests for private lease enforcement and two-axis relay timing.
 
-use ezal_core::drive::{
-    ActuatorGuard, AzimuthDirection, Command, Debouncer, DriveCommand, ElevationDirection,
+use super::{
+    ActuatorGuard, AzimuthDirection, Command, DriveCommand, ElevationDirection, RelayTiming,
     MOVEMENT_LEASE_MS, OUTPUT_MIN_ACTIVE_MS, OUTPUT_MIN_INACTIVE_MS,
 };
 
@@ -57,32 +57,32 @@ fn remaining_absolute_lifetime_must_cover_the_minimum_on_time() {
 }
 
 #[test]
-fn debouncer_holds_active_outputs_for_the_minimum_time() {
-    let mut debouncer = Debouncer::new();
+fn relay_timing_holds_active_outputs_for_the_minimum_time() {
+    let mut relay_timing = RelayTiming::new();
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
     };
 
-    assert!(debouncer.set_target(Command::Drive(cw), 10));
-    assert_eq!(debouncer.actual(), cw);
-    assert_eq!(debouncer.target(), cw);
+    assert!(relay_timing.set_target(Command::Drive(cw), 10));
+    assert_eq!(relay_timing.actual(), cw);
+    assert_eq!(relay_timing.target(), cw);
 
-    assert!(!debouncer.set_target(Command::Stop, 100));
-    assert_eq!(debouncer.actual(), cw);
-    assert_eq!(debouncer.next_transition_ms(100), Some(510));
+    assert!(!relay_timing.set_target(Command::Stop, 100));
+    assert_eq!(relay_timing.actual(), cw);
+    assert_eq!(relay_timing.next_transition_ms(100), Some(510));
 
-    assert!(!debouncer.update(509));
-    assert_eq!(debouncer.actual(), cw);
+    assert!(!relay_timing.update(509));
+    assert_eq!(relay_timing.actual(), cw);
 
-    assert!(debouncer.update(510));
-    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
-    assert_eq!(debouncer.next_transition_ms(510), None);
+    assert!(relay_timing.update(510));
+    assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
+    assert_eq!(relay_timing.next_transition_ms(510), None);
 }
 
 #[test]
-fn debouncer_delays_reversals_without_conflicting_outputs() {
-    let mut debouncer = Debouncer::new();
+fn relay_timing_delays_reversals_without_conflicting_outputs() {
+    let mut relay_timing = RelayTiming::new();
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -92,72 +92,72 @@ fn debouncer_delays_reversals_without_conflicting_outputs() {
         elevation: None,
     };
 
-    assert!(debouncer.set_target(Command::Drive(cw), 0));
-    assert!(!debouncer.set_target(Command::Drive(ccw), 125));
-    assert_eq!(debouncer.target(), ccw);
-    assert_eq!(debouncer.actual(), cw);
+    assert!(relay_timing.set_target(Command::Drive(cw), 0));
+    assert!(!relay_timing.set_target(Command::Drive(ccw), 125));
+    assert_eq!(relay_timing.target(), ccw);
+    assert_eq!(relay_timing.actual(), cw);
     assert_eq!(
-        debouncer.next_transition_ms(125),
+        relay_timing.next_transition_ms(125),
         Some(OUTPUT_MIN_ACTIVE_MS)
     );
 
-    assert!(debouncer.update(OUTPUT_MIN_ACTIVE_MS));
-    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+    assert!(relay_timing.update(OUTPUT_MIN_ACTIVE_MS));
+    assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
     assert_eq!(
-        debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS),
+        relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS),
         Some(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS)
     );
 
-    assert!(!debouncer.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1));
-    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+    assert!(!relay_timing.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1));
+    assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
 
-    assert!(debouncer.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS));
-    assert_eq!(debouncer.actual(), ccw);
+    assert!(relay_timing.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS));
+    assert_eq!(relay_timing.actual(), ccw);
     assert_eq!(
-        debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS),
+        relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS),
         None
     );
 
-    assert!(!debouncer.set_target(
+    assert!(!relay_timing.set_target(
         Command::Stop,
         OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS + 1
     ));
-    assert_eq!(debouncer.actual(), ccw);
+    assert_eq!(relay_timing.actual(), ccw);
     assert_eq!(
-        debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS + 1),
+        relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS + 1),
         Some(OUTPUT_MIN_ACTIVE_MS * 2 + OUTPUT_MIN_INACTIVE_MS)
     );
 }
 
 #[test]
-fn debouncer_holds_inactive_outputs_for_the_minimum_time() {
-    let mut debouncer = Debouncer::new();
+fn relay_timing_holds_inactive_outputs_for_the_minimum_time() {
+    let mut relay_timing = RelayTiming::new();
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
     };
 
-    assert!(debouncer.set_target(Command::Drive(cw), 0));
-    assert!(debouncer.set_target(Command::Stop, OUTPUT_MIN_ACTIVE_MS));
-    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+    assert!(relay_timing.set_target(Command::Drive(cw), 0));
+    assert!(relay_timing.set_target(Command::Stop, OUTPUT_MIN_ACTIVE_MS));
+    assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
 
-    assert!(!debouncer.set_target(Command::Drive(cw), OUTPUT_MIN_ACTIVE_MS + 100));
-    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+    assert!(!relay_timing.set_target(Command::Drive(cw), OUTPUT_MIN_ACTIVE_MS + 100));
+    assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
     assert_eq!(
-        debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + 100),
+        relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + 100),
         Some(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS)
     );
 
-    assert!(!debouncer.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1));
-    assert_eq!(debouncer.actual(), DriveCommand::IDLE);
+    assert!(!relay_timing.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1));
+    assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
 
-    assert!(debouncer.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS));
-    assert_eq!(debouncer.actual(), cw);
+    assert!(relay_timing.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS));
+    assert_eq!(relay_timing.actual(), cw);
 }
 
 #[test]
-fn debouncer_keeps_axis_timing_independent() {
-    let mut debouncer = Debouncer::new();
+fn relay_timing_keeps_axis_timing_independent() {
+    let mut relay_timing = RelayTiming::new();
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -171,20 +171,20 @@ fn debouncer_keeps_axis_timing_independent() {
         elevation: Some(ElevationDirection::Up),
     };
 
-    assert!(debouncer.set_target(Command::Drive(cw), 0));
-    assert!(debouncer.set_target(Command::Drive(cw_up), 100));
-    assert_eq!(debouncer.actual(), cw_up);
+    assert!(relay_timing.set_target(Command::Drive(cw), 0));
+    assert!(relay_timing.set_target(Command::Drive(cw_up), 100));
+    assert_eq!(relay_timing.actual(), cw_up);
 
-    assert!(!debouncer.set_target(Command::Drive(up), 200));
-    assert_eq!(debouncer.actual(), cw_up);
+    assert!(!relay_timing.set_target(Command::Drive(up), 200));
+    assert_eq!(relay_timing.actual(), cw_up);
     assert_eq!(
-        debouncer.next_transition_ms(200),
+        relay_timing.next_transition_ms(200),
         Some(OUTPUT_MIN_ACTIVE_MS)
     );
 
-    assert!(debouncer.update(OUTPUT_MIN_ACTIVE_MS));
-    assert_eq!(debouncer.actual(), up);
-    assert_eq!(debouncer.next_transition_ms(OUTPUT_MIN_ACTIVE_MS), None);
+    assert!(relay_timing.update(OUTPUT_MIN_ACTIVE_MS));
+    assert_eq!(relay_timing.actual(), up);
+    assert_eq!(relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS), None);
 }
 
 #[test]

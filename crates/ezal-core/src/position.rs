@@ -3,7 +3,7 @@
 //! The G-5500 reports each axis as an analog voltage. [`AxisCalibration`]
 //! captures the two measured mechanical end points and provides both sides of
 //! the mapping: ADC millivolts to degrees for feedback, and degrees to
-//! millivolts for simulation and diagnostics.
+//! millivolts for calibration checks and test fixtures.
 
 use crate::ads1015::FullScale;
 
