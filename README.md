@@ -3,16 +3,14 @@
 > A satellite-tracking antenna rotator controller, written in Rust for the
 > Raspberry Pi Pico 2 W.
 
-**Status: hardware-driving walking skeleton.** The default firmware boots with
-a deterministic, horizon-to-horizon **METOP-C** target source, POSTs the real
-ADS1015, waits for WiFi and DHCP, drives the dish to the next pass's start position, and settles before
-starting the 180-second pass clock. It then supplies no target for a 30-second
-pause and reacquires the next pass in the opposite direction. Real feedback,
-calibration, controller, movement lease, relay timing, GPIO outputs, rotator,
-shared state, and dashboard telemetry participate in the same runtime path.
+**Status: manual hardware control with advisory pass prediction.** The firmware
+boots with all direction outputs idle, POSTs the real ADS1015, and waits for
+WiFi and DHCP. Movement requires explicit dashboard input, current calibrated
+feedback, and network permission. Movement leases, relay timing, endpoint
+checks, and motion supervision guard the physical GPIO outputs.
 
-Both firmware modes also synchronize UTC with NTP, download weather-satellite
-TLEs, and predict the next six hours of L-band HRPT reception windows on the
+The firmware also synchronizes UTC with NTP, downloads weather-satellite
+TLEs, and predicts the next six hours of L-band HRPT reception windows on the
 dashboard. The default station is **All Saints Church, Clevedon**. Prediction
 is advisory; selecting or automatically tracking a real orbital pass is not
 implemented yet. See [pass prediction](docs/PASS_PREDICTION.md) for station
@@ -50,15 +48,14 @@ embedded Rust.
 │   ├── ezal-core/                  # pure no_std logic, host-testable
 │   │   └── src/
 │   │       ├── position.rs        # calibrated degrees ↔ ADC millivolts
-│   │       ├── control.rs         # hysteretic fail-safe controller
-│   │       ├── supervisor.rs      # feedback, fault, sequencing, telemetry policy
+│   │       ├── control.rs         # feedback timing, samples, and health
+│   │       ├── supervisor.rs      # feedback validation, faults, telemetry
 │   │       ├── authority.rs       # manual ownership and command routing
 │   │       ├── interlock.rs       # fresh feedback and endpoint motion gate
 │   │       ├── mailbox.rs         # pending inhibition has priority
 │   │       ├── actuator.rs        # interlock first, then lease and relay timing
 │   │       ├── motion.rs          # latched progress, direction, and speed checks
 │   │       ├── network.rs         # expiring network permission for motion
-│   │       ├── simulation.rs      # METOP-C source + pass sequencer
 │   │       ├── ntp.rs             # SNTP validation + expiring UTC anchor
 │   │       ├── http.rs            # streamed HTTP framing for TLE downloads
 │   │       ├── orbit.rs           # TLE validation, catalog, SGP4 look angles
@@ -69,7 +66,7 @@ embedded Rust.
 │       ├── memory.x                # linker memory layout
 │       ├── cyw43-firmware/         # vendored CYW43439 radio blobs
 │       └── src/
-│           ├── main.rs            # boot graph + simulator/feedback tasks
+│           ├── main.rs            # boot graph + feedback task
 │           ├── state.rs           # typed snapshots, commands, and wake signal
 │           ├── drive.rs           # guarded direction GPIOs, watchdog feeding
 │           ├── watchdog.rs        # independent hardware reset fallback
@@ -115,8 +112,8 @@ direnv allow                        # one-time: load the dev shell
 # One-time: set your WiFi credentials for the station-mode POST.
 cp .env.example .env && $EDITOR .env
 
-# WARNING: default mode drives the connected rotator automatically.
-# Build/flash it and stream defmt logs.
+# Build/flash manual control firmware and stream defmt logs.
+# Complete calibration before commanding the connected rotator.
 cargo run -p ezal-firmware --release
 ```
 
@@ -135,22 +132,13 @@ the details.
 
 ADS1015 POST and feedback sampling start before WiFi bring-up. Outputs remain
 inhibited until the station link and a usable DHCP address are available; an
-outage cuts motion and recovery restarts acquisition. Once DHCP completes,
-the dashboard shows the pass number, acquire/track/pause phase and countdown,
-target and calibrated position, raw A0/A1 millivolts, controller health, and
-guarded drive state. Acquisition requires the dish to remain within 4° on both
-axes for one second; failure to get there within 120 seconds stops the outputs
-in an `acquire-timeout` fault.
+outage cuts motion and recovery requires ownership and fresh operator input.
+The dashboard shows calibrated position, raw A0/A1 millivolts, feedback health,
+and applied drive state alongside the advisory pass forecast.
 
-Manual ADC/drive mode disables the synthetic target source:
-
-```bash
-cargo run -p ezal-firmware --release --no-default-features
-```
-
-Both modes enable physical outputs and require current network permission and
-fresh, valid calibrated ADS1015 feedback before permitting movement. They read both feedback channels under a
-500 ms deadline, reject a pair that took longer than 150 ms to read, and wait
+Manual movement requires current network permission and fresh, valid calibrated
+ADS1015 feedback. The firmware reads both feedback channels under a
+500 ms deadline, rejects a pair that took longer than 150 ms to read, and waits
 100 ms after each one. The ADC uses ±4.096 V with 2 mV steps; the final output
 gate stops outward motion one ADC code before a calibrated endpoint, widened by
 the travel the rotator could have made since that sample began. Follow
@@ -160,8 +148,8 @@ measurement procedure, before enabling motor commands.
 Faults, stale feedback, expired movement leases, and released dashboard
 controls inhibit the affected outputs immediately when the actuator task
 handles them — releasing one of two held buttons stops that axis at once.
-Ordinary controller stops respect relay timing. A separate 500 ms hardware
-watchdog resets a stalled or panicked system; after such a timeout, boot holds
+A separate 500 ms hardware watchdog resets a stalled or panicked system; after
+such a timeout, boot holds
 outputs low until an explicit reset or power cycle, while a flashing tool's
 reboot through the same watchdog is not mistaken for it. These safeguards still
 require on-board verification of output release and motor stopping behavior. The
@@ -179,12 +167,14 @@ need installation tuning; see [CALIBRATION.md](docs/CALIBRATION.md). Browser
 movement carries an expiring server token, and missing telemetry clears held
 controls. Network supervision retries association/DHCP with backoff, while the
 output task independently expires network permission after 300 ms without a
-successful check. Internet access and a connected dashboard are not required.
+successful check. Manual control requires the dashboard but not internet access.
 
 ## Documentation
 
-- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — simulator/hardware data flow,
+- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — manual control and prediction data flow,
   core/firmware boundary, control tick, and safety layers.
+- **[CONTROL_CONTRACT.md](docs/CONTROL_CONTRACT.md)** — safeguard ownership,
+  recovery, and output ordering.
 - **[HARDWARE.md](docs/HARDWARE.md)** — the Pico 2, the G-5500 rotator,
   the debug probe, expected wiring.
 - **[CALIBRATION.md](docs/CALIBRATION.md)** — safe endpoint measurement,
@@ -198,19 +188,17 @@ successful check. Internet access and a connected dashboard are not required.
 |------|-----------------------------------------------------------------|----------|
 | 1    | Direction outputs + ADS1015 feedback                            | ✅ done  |
 | 2    | Calibrated az/el ↔ voltage mapping                              | ✅ done  |
-| 3    | Hysteretic controller, watchdog lease, limits, relay protection | ✅ done  |
-| 4    | Repeating METOP-C simulator + 30-second inter-pass pause        | ✅ done  |
-| 5    | Autonomous dashboard telemetry                                 | ✅ done  |
+| 3    | Feedback validity, watchdog lease, limits, relay protection     | ✅ done  |
+| 4    | Leased manual dashboard control and exclusive ownership        | ✅ done  |
+| 5    | Calibrated feedback and applied-output dashboard telemetry     | ✅ done  |
 | 6    | NTP time, TLE download, advisory HRPT pass prediction           | ✅ done  |
 | 7    | Persisted calibration + authenticated calibration UI           | planned  |
 | 8    | Production target transport (authenticated TLEs → controller)   | planned  |
 
-Simulator mode deliberately still drives a representative target profile. The
-firmware now propagates current TLEs, but only to list upcoming passes; feeding
-predictions to the controller needs an authenticated data path (see
-[pass prediction](docs/PASS_PREDICTION.md)) and is the next production
-boundary. The downstream control and safety chain does not depend on where a
-valid timestamped target came from.
+The firmware propagates current TLEs only to list upcoming passes. Real tracking
+is deferred: it needs an explicit arming and stop policy plus an authenticated
+data path (see [pass prediction](docs/PASS_PREDICTION.md)). Predictions never
+authorize movement.
 
 ## License
 

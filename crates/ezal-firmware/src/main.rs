@@ -1,54 +1,5 @@
-//! # ezal-firmware — autonomous tracking walking skeleton
-//!
-//! The default `simulator` feature begins acquisition for a synthetic METOP-C
-//! pass after the ADS1015 power-on test and network readiness. It reads the installed rotator through A0
-//! and A1, acquires and settles at the pass start, then follows the target with
-//! the real direction GPIOs through the fail-safe controller and actuator
-//! guard. This is intentionally a hardware-driving walking skeleton.
-//!
-//! Network loss inhibits both manual and autonomous motion. Association and
-//! DHCP retry with backoff; recovery begins a fresh acquisition of the current
-//! pass, while previously latched hardware/acquisition faults remain latched.
-//! After network bring-up the dashboard reports target, calibrated position,
-//! raw feedback-domain values, pass/pause countdown, controller state, and the
-//! guarded logical output. Each pass has a 180-second target duration, followed
-//! by a 30-second no-target pause before acquiring the next reversed pass.
-//! Phase changes occur on the first supervisor tick at or after each deadline.
-//!
-//! Building with `--no-default-features` selects manual hardware/calibration
-//! mode with the same ADC deadline, feedback interlock, and watchdog protection.
-//! A watchdog timeout leaves outputs inhibited on the next boot until an
-//! explicit reset. Flashing tools also restart the chip through the watchdog,
-//! so boot only inhibits motion after a timeout this firmware armed. See
-//! `docs/CALIBRATION.md` before driving a rotator.
-//!
-//! ## How it runs
-//!
-//!   1. `cortex-m-rt` provides the reset handler and ISR vector table.
-//!   2. The RP2350 boot ROM finds our `ImageDef` block at the start of flash
-//!      and jumps to the reset handler.
-//!   3. `cortex-m-rt`'s startup code zeroes BSS, copies `.data` from flash to
-//!      RAM, sets up the stack, and calls into Rust.
-//!   4. `#[embassy_executor::main]` builds a single-thread async executor and
-//!      runs our `main` future on it.
-//!   5. `main` claims idle direction pins, starts the actuator and selected
-//!      feedback/control graph, then brings up WiFi, TCP/IP, and the dashboard.
-//!
-//! ## How to flash
-//!
-//! ```text
-//! cargo run -p ezal-firmware --release         # via probe-rs (SWD)
-//! ```
-//!
-//! Or, if you have no debug probe, build a UF2 and drag-and-drop it onto the
-//! Pico 2's BOOTSEL drive:
-//!
-//! ```text
-//! ./scripts/build-uf2.sh                       # → ezal-firmware.uf2
-//! # hold BOOTSEL, plug in, copy the .uf2 onto the "RP2350" drive
-//! ```
-//!
-//! See [`docs/DEVELOPMENT.md`](../../../../docs/DEVELOPMENT.md) for setup.
+//! Manual rotator control, feedback acquisition and advisory pass prediction.
+//! Firmware boots idle; only fresh operator input can request movement.
 
 // ─── crate attributes ───────────────────────────────────────────────────
 // `no_std`  : we have no operating system and no Rust std library.
@@ -89,12 +40,8 @@ use ezal_core::ads1015::Mux;
 use ezal_core::control::{ControlState, FEEDBACK_PERIOD_MS, FEEDBACK_TIMEOUT_MS};
 use ezal_core::position::{FeedbackVoltages, HARD_CODED_CALIBRATION};
 use ezal_core::protocol::PositionTelemetry;
-use ezal_core::simulation::{PassPhase, SIMULATED_SATELLITE};
 use ezal_core::supervisor::FeedbackReadError;
-#[cfg(not(feature = "simulator"))]
 use ezal_core::supervisor::ManualSupervisor;
-#[cfg(feature = "simulator")]
-use ezal_core::supervisor::TrackingSupervisor;
 use ezal_core::wifi::Credentials;
 use state::SharedState;
 use wifi::Wifi;
@@ -158,11 +105,7 @@ bind_interrupts!(struct Irqs {
 const WIFI_SSID: &str = env!("EZAL_WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("EZAL_WIFI_PASSWORD");
 
-/// Sample both modes at the core's feedback period. Manual mode samples just
-/// as fast as autonomous tracking: the actuator's interlock needs a sample
-/// newer than its validity window before it will admit any browser jog, and a
-/// front-panel move must be visible to the endpoint checks just as quickly.
-/// Dashboard publication has its own slower cadence.
+/// Delay between acquisitions; telemetry has its own slower cadence.
 const FEEDBACK_PERIOD: Duration = Duration::from_millis(FEEDBACK_PERIOD_MS);
 
 /// Bound the entire ADC self-test, including its presence and register checks.
@@ -199,42 +142,17 @@ async fn read_feedback(
     }
 }
 
-/// The mode's supervision policy: a synthetic pass sequencer driving the real
-/// rotator, or manual feedback health for browser-owned motion. Both validate
-/// the same calibration, deadlines, and faults.
-#[cfg(feature = "simulator")]
-type Supervisor = TrackingSupervisor;
-#[cfg(not(feature = "simulator"))]
-type Supervisor = ManualSupervisor;
-
-#[cfg(feature = "simulator")]
-fn new_supervisor(now_ms: u64) -> Supervisor {
-    TrackingSupervisor::new(HARD_CODED_CALIBRATION, now_ms)
-}
-
-#[cfg(not(feature = "simulator"))]
-fn new_supervisor(_now_ms: u64) -> Supervisor {
-    ManualSupervisor::new(HARD_CODED_CALIBRATION)
-}
-
-/// Sample feedback, publish telemetry and the actuator's interlock, and submit
-/// whatever command the mode's supervision produced.
-///
-/// One loop serves both modes: only the supervisor differs, so the deadlines,
-/// fault precedence, and publication path cannot drift apart between them.
+/// Sample feedback and publish health plus the actuator interlock.
 #[embassy_executor::task]
 async fn feedback_task(mut adc: Ads1015<'static>, state: &'static SharedState) -> ! {
-    let mut supervisor = new_supervisor(Instant::now().as_millis());
+    let mut supervisor = ManualSupervisor::new(HARD_CODED_CALIBRATION);
     if let Some(error) = supervisor.calibration_error() {
         // Keep sampling anyway: the dashboard's raw millivolts are how an
         // operator measures the endpoints again. Motion stays inhibited.
         error!("feedback: calibration rejected: {=str}", error.as_str());
     }
     let read_timeout = Duration::from_millis(FEEDBACK_TIMEOUT_MS);
-    let mut last_phase = PassPhase::Pause;
     let mut last_control_state = ControlState::FeedbackUnavailable;
-    #[cfg(feature = "simulator")]
-    let mut network_generation = 0;
 
     loop {
         // Timestamp before the oldest channel; include both reads in its age.
@@ -242,37 +160,11 @@ async fn feedback_task(mut adc: Ads1015<'static>, state: &'static SharedState) -
         let readings =
             read_feedback(&mut adc, read_timeout, supervisor.feedback_read_permitted()).await;
         let now_ms = Instant::now().as_millis();
-        #[cfg(feature = "simulator")]
-        {
-            let network = state.network();
-            if !network.ready(now_ms) || network_generation != network.generation() {
-                // Do not spend acquisition/settling time while output is
-                // inhibited by networking. The recovery generation catches
-                // even an outage that starts and ends during the ADC read.
-                // This preserves ADC cancellation and acquisition fault latches.
-                supervisor.restart_tracking(now_ms);
-                network_generation = network.generation();
-            }
-        }
         let update = supervisor.update(now_ms, sample_started_ms, readings);
-        state.publish_feedback(update.raw_feedback, update.tracking, update.interlock);
-        if let Some(command) = update.command {
-            state.submit_command(command);
-        }
-
-        if update.tracking.phase != last_phase {
-            info!(
-                "tracking: {=str} {=str} {=u64}, {=u64} ms remaining",
-                SIMULATED_SATELLITE,
-                update.tracking.phase.as_str(),
-                u64::from(update.tracking.pass_index) + 1,
-                update.tracking.phase_remaining_ms
-            );
-            last_phase = update.tracking.phase;
-        }
-        if update.decision.state != last_control_state {
-            info!("feedback: {=str}", update.decision.state.as_str());
-            last_control_state = update.decision.state;
+        state.publish_feedback(update.raw_feedback, update.feedback, update.interlock);
+        if update.state != last_control_state {
+            info!("feedback: {=str}", update.state.as_str());
+            last_control_state = update.state;
         }
 
         Timer::after(FEEDBACK_PERIOD).await;
@@ -362,14 +254,8 @@ async fn main(spawner: Spawner) {
         }
     }
 
-    #[cfg(feature = "simulator")]
-    state::STATE.set_autonomous(true);
     spawner.spawn(feedback_task(adc, &state::STATE).expect("static task pool exhausted"));
-    if cfg!(feature = "simulator") {
-        info!("ezal: autonomous walking skeleton; waiting for network permission");
-    } else {
-        info!("ezal: manual hardware mode");
-    }
+    info!("ezal: manual control; outputs idle until operator input");
 
     // ─── WiFi: bring up the CYW43439 and join the AP (station mode) ───
     // The Pico 2 W's on-module radio. `Wifi::init` powers it and spawns its

@@ -3,15 +3,15 @@
 This document describes the Pico 2 W, interface board, ADS1015 feedback path,
 and Yaesu G-5500 that ezal is designed to drive.
 
-## Pico 2 W and walking-skeleton modes
+## Pico 2 W and manual control
 
 Board connector and pin details are in the
 [Pico 2 W datasheet](https://datasheets.raspberrypi.com/picow/pico-2-w-datasheet.pdf).
 
-The default firmware is an end-to-end hardware walking skeleton. It requires
-the Pico 2 W, interface board, ADS1015, calibrated G-5500 feedback, and a
-connected rotator. On boot it can raise the direction pins to acquire the
-simulated METOP-C pass start:
+The firmware provides manual hardware control. It requires the Pico 2 W,
+interface board, ADS1015, calibrated G-5500 feedback, and a connected rotator.
+All direction pins start low; movement requires explicit dashboard input and
+current feedback and network permission:
 
 ```
 ┌──────────────────────────┐
@@ -80,13 +80,13 @@ one DMA channel — that's what the `PIO0_IRQ_0` / `DMA_IRQ_0` bindings and the
 | GND             | many       |      —      |                              |
 
 The four direction pins above are claimed by the firmware and can be driven by
-the default walking skeleton; their G-5500 wiring is in
+manual dashboard commands; their G-5500 wiring is in
 [`design/circuit.py`](../design/circuit.py) / `circuit.svg`. The I²C
 feedback pins (GP4 = SDA, GP5 = SCL, to the ADS1015 at 0x48) are driven by
 the firmware's ADS1015 driver
 ([`crates/ezal-firmware/src/ads1015.rs`](../crates/ezal-firmware/src/ads1015.rs)),
-which self-tests (POSTs) the ADC at boot and samples both channels in default
-and explicit `--no-default-features` manual hardware builds.
+which self-tests (POSTs) the ADC at boot and samples both channels throughout
+manual operation.
 
 ### WiFi credentials
 
@@ -219,10 +219,10 @@ The interface circuit (canonical version in
   giving it I²C address 0x48. Per-unit calibration of the divider
   ratios is captured in software.
 
-There is no speed control on this interface; control is bang-bang. The
-firmware-side strategy is therefore a hysteretic / deadband controller:
-read the current angle, compare with the target, energise the appropriate
-direction transistor until the error is within tolerance, stop.
+There is no speed control on this interface: each direction is either energised
+or idle. Manual dashboard input requests a direction; the actuator checks
+feedback and timing before applying it. A future target-following controller
+will need to select directions and stop within a suitable angular tolerance.
 
 ## Calibration
 
@@ -267,7 +267,7 @@ overlaps either is rejected.
 The complete safety setup, channel worksheet, source location, edit example,
 and verification steps are in [CALIBRATION.md](CALIBRATION.md). Flash-backed
 calibration storage is not implemented yet; the checked-in constants are the
-source of truth for this walking skeleton.
+source of truth for the firmware.
 
 ## Motor switching budget
 
@@ -314,13 +314,13 @@ completeness.
 | typical during a LEO pass     | 0.05 – 0.2 Hz                 |
 | idle / no satellite           | 0                             |
 
-### Implications for the controller
+### Implemented output timing
 
 The implemented rules are in
-[`drive.rs`](../crates/ezal-core/src/drive.rs) and
-[`control.rs`](../crates/ezal-core/src/control.rs):
+[`drive.rs`](../crates/ezal-core/src/drive.rs) and the
+[manual control contract](CONTROL_CONTRACT.md):
 
-1. **Ordinary minimum on-time: 500 ms per axis.** Routine target release
+1. **Ordinary minimum on-time: 500 ms per axis.** Ordinary release
    respects this hold. Feedback faults, endpoint inhibition, browser stops,
    releasing or reversing a held browser control, ownership changes, and
    movement-lease expiry clear the relevant output immediately when serviced,
@@ -329,11 +329,9 @@ The implemented rules are in
 2. **Minimum off-time: 2 s per axis.** Reversal and reactivation wait for
    the inactive interval, including after a safety inhibition. At the ordinary
    500 ms minimum on-time, a complete on/off cycle is at least 2.5 s.
-3. **Controller thresholds: engage at 4°, release at 1.5°.** Both modes
-   sample feedback approximately every 100 ms and reject a pair that took
-   longer than 150 ms to read, while relay transitions are governed
-   independently. These thresholds require validation with the installed
-   antenna and load.
+3. **Feedback sampling:** the next paired read starts 100 ms after the previous
+   read completes. A pair that took longer than 150 ms is rejected. Relay
+   transitions are governed independently from sampling.
 
 Every active command has a **750 ms movement lease**, and an output starts
 only when its lease covers the 500 ms minimum on-time — a stalled command
@@ -357,8 +355,9 @@ that can hold a pin's last output state through a reset until boot
 reinitialises the pad, so measure the pin *during* the reset window rather
 than only after the reboot (see [DEVELOPMENT.md](DEVELOPMENT.md)). Startup
 checks for a watchdog timeout this firmware armed and leaves outputs low
-without restarting a pass; a UF2 or `picotool` reboot, which also restarts the
-chip through the watchdog, is not mistaken for one. A board reset, power
+without accepting movement until an explicit reset; a UF2 or `picotool` reboot,
+which also restarts the chip through the watchdog, is not mistaken for one.
+A board reset, power
 cycle, or debugger warm reset clears that reason. The watchdog relies on the
 chip's clock and reset hardware; this board has no separate external
 motor-enable interlock. See the
@@ -370,16 +369,16 @@ motor-enable interlock. See the
   300 ms ranges above are typicals, not measured).
 - Whether the Yaesu relay has any extra contact protection beyond the
   snubber we see, which might extend the electrical-life rating.
-- Whether the 4° engage / 1.5° release thresholds suit the antenna beam-widths
-  and measured slew rates. The G-5500 manual gives approximately 58 s per
-  360° azimuth and 67 s per 180° elevation at 60 Hz; measure the installed
-  system before changing the controller settings.
+- The installed slew rates under the expected antenna load. The G-5500 manual
+  gives approximately 58 s per 360° azimuth and 67 s per 180° elevation at
+  60 Hz; measure the installed
+  system before changing the motion-supervision limits.
 - Whether an energised direction pin stays high through a watchdog reset.
   Capture the pin across the reset itself, not just after the reboot: the pad
   isolation latch can hold the last output state until boot claims the pin.
 - Fault-injection checks: invalid feedback, interrupted command refresh,
-  executor stall, watchdog reset, and confirmation that no pass restarts
-  until an explicit reset.
+  executor stall, watchdog reset, and confirmation that movement stays inhibited
+  until an explicit reset and fresh operator input.
 
 ## Debug probe
 

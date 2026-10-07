@@ -16,19 +16,15 @@
 //!   the firmware crate.
 //! * [`position`] — azimuth/elevation units, hard-coded installation
 //!   calibration, and calibrated angle ↔ feedback-millivolt conversion.
-//! * [`control`] — timestamp watchdogs, bounds checks, and the hysteretic
-//!   two-axis fail-safe controller.
-//! * [`simulation`] — the repeating METOP-C pass profile and its
-//!   acquire → track → pause sequencer.
-//! * [`supervisor`] — shared ADC validation, read-timeout latching, autonomous
-//!   sequencing, and telemetry assembly for autonomous and manual modes.
+//! * [`control`] — feedback timing and health.
+//! * [`supervisor`] — feedback validation for manual operation.
 //! * [`interlock`] — feedback freshness and travel-aware directional endpoint
 //!   checks at the final actuator boundary.
 //! * [`actuator`] — the safety-ordered sequence that enforces the interlock
 //!   before relay timing and admits every command through it.
 //! * [`motion`] — latched motion-progress and plausibility supervision using
 //!   applied outputs, feedback resolution, and accumulated energised time.
-//! * [`authority`] — exclusive browser or autonomous command ownership;
+//! * [`authority`] — exclusive browser command ownership;
 //!   browser movement becomes operator-held jogs.
 //! * [`mailbox`] — a pending command slot where safety inhibition takes
 //!   precedence over movement refreshes.
@@ -97,6 +93,5 @@ pub mod orbit;
 pub mod passes;
 pub mod position;
 pub mod protocol;
-pub mod simulation;
 pub mod supervisor;
 pub mod wifi;

@@ -15,7 +15,7 @@ use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::mailbox::CommandMailbox;
 use ezal_core::motion::MotionFault;
 use ezal_core::network::NetworkGate;
-use ezal_core::protocol::{ControlStatus, PositionTelemetry, TrackingTelemetry};
+use ezal_core::protocol::{ControlStatus, FeedbackTelemetry, PositionTelemetry};
 
 /// The one shared-state instance, wired to every task from `main`.
 pub static STATE: SharedState = SharedState::new();
@@ -23,7 +23,7 @@ pub static STATE: SharedState = SharedState::new();
 /// Values read or changed together while the critical section is held.
 struct Snapshot {
     position: PositionTelemetry,
-    tracking: TrackingTelemetry,
+    feedback: FeedbackTelemetry,
     authority: ControlAuthority,
     applied_drive: DriveCommand,
     interlock: FeedbackInterlock,
@@ -53,7 +53,7 @@ impl SharedState {
         Self {
             snapshot: Mutex::new(RefCell::new(Snapshot {
                 position: PositionTelemetry::ZERO,
-                tracking: TrackingTelemetry::ZERO,
+                feedback: FeedbackTelemetry::ZERO,
                 authority: ControlAuthority::new(),
                 applied_drive: DriveCommand::IDLE,
                 interlock: FeedbackInterlock::INHIBITED,
@@ -130,19 +130,19 @@ impl SharedState {
         self.with(|snapshot| snapshot.position)
     }
 
-    /// Publish one supervision tick: raw readings, tracking status, and the
+    /// Publish one supervision tick: raw readings, feedback status, and the
     /// output interlock built from the supervisor's own calibration.
     pub fn publish_feedback(
         &self,
         position: Option<PositionTelemetry>,
-        tracking: TrackingTelemetry,
+        feedback: FeedbackTelemetry,
         interlock: FeedbackInterlock,
     ) {
         self.with(|snapshot| {
             if let Some(position) = position {
                 snapshot.position = position;
             }
-            snapshot.tracking = tracking;
+            snapshot.feedback = feedback;
             snapshot.interlock = interlock;
             // Only an energised output can travel toward an endpoint or
             // outlive its sample, so only then must the actuator re-evaluate
@@ -153,18 +153,9 @@ impl SharedState {
         });
     }
 
-    /// Read the latest internally coherent tracking snapshot.
-    pub fn tracking(&self) -> TrackingTelemetry {
-        self.with(|snapshot| snapshot.tracking)
-    }
-
-    /// Enable or disable autonomous ownership of the actuator command stream.
-    #[cfg(feature = "simulator")]
-    pub fn set_autonomous(&self, autonomous: bool) {
-        self.with(|snapshot| {
-            let command = snapshot.authority.set_autonomous(autonomous);
-            self.submit(snapshot, command);
-        });
+    /// Read the latest internally coherent feedback snapshot.
+    pub fn feedback(&self) -> FeedbackTelemetry {
+        self.with(|snapshot| snapshot.feedback)
     }
 
     /// Allocate a WebSocket id and assign unclaimed manual control.
@@ -239,11 +230,6 @@ impl SharedState {
                 None => false,
             }
         })
-    }
-
-    /// Queue a command from the firmware's own supervision.
-    pub fn submit_command(&self, command: Command) {
-        self.with(|snapshot| self.submit(snapshot, command));
     }
 
     /// Record the drive state currently applied to the output GPIOs.

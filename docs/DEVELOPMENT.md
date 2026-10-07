@@ -145,16 +145,11 @@ Node.js and all — that the build is checked against.
 cargo build -p ezal-firmware --release
 ```
 
-That command builds the default hardware-driving walking skeleton. It POSTs the
-ADS1015 and autonomously drives the rotator to a synthetic pass start. Manual
-hardware mode disables the autonomous target source:
+The firmware POSTs the ADS1015 and starts with all direction outputs idle.
+Movement requires explicit dashboard input and current feedback and network
+permission. Real orbital predictions remain advisory.
 
-```bash
-cargo build -p ezal-firmware --release --no-default-features
-```
-
-Do not flash either mode onto a connected rotator until completing
-[CALIBRATION.md](CALIBRATION.md).
+Complete [CALIBRATION.md](CALIBRATION.md) before commanding a connected rotator.
 
 The output lands at:
 
@@ -185,8 +180,6 @@ Illustrative logs (timings and the ADC config's conversion-ready bit vary):
 ```
 0.000123 INFO  ezal adc-bringup: POSTing ADS1015 at 0x48
 0.002456 INFO  ADS1015 POST OK: config=0xc383, A0=1280 mV, A1=114 mV
-0.002789 INFO  ezal: autonomous walking skeleton; hardware drive enabled
-0.003012 INFO  tracking: METOP-C acquire 1, 120000 ms remaining
 0.003234 INFO  ezal wifi-bringup: joining "my-network" in STA mode
 2.310456 INFO  WiFi POST OK: joined "my-network" (secured)
 2.320789 INFO  ezal net: waiting for DHCP
@@ -194,17 +187,14 @@ Illustrative logs (timings and the ADC config's conversion-ready bit vary):
 3.101234 INFO  ezal web: listening on http://<dhcp-address>/
 ```
 
-Feedback sampling starts before the network, but outputs wait for a station
-link and usable DHCP address. The tracker then acquires and settles at the
-pass start, runs a 180-second pass, stops for 30 seconds, and reacquires the
-next start. Network loss inhibits the four direction outputs and invalidates
-pending commands. On recovery, autonomous mode reacquires the pass start;
-manual mode requires control ownership and fresh operator input. Existing
-ADC, acquisition, and motion fault latches survive network recovery.
+Feedback sampling starts before the network, but movement waits for a station
+link, usable DHCP address, and fresh operator input. Network loss inhibits
+the four direction outputs and invalidates pending commands. Recovery requires
+control ownership and fresh input. Existing ADC and motion fault latches
+survive network recovery.
 
-With `--no-default-features`, the ADS1015 remains active but the dashboard
-exposes manual leased direction controls instead of the autonomous pass. Both
-modes require fresh, valid calibrated feedback at the final GPIO boundary.
+The dashboard exposes leased manual direction controls. Movement requires
+fresh, valid calibrated feedback at the final GPIO boundary.
 Initial calibration uses the G-5500 front-panel controls with the Pico's
 direction leads disconnected; see [CALIBRATION.md](CALIBRATION.md).
 
@@ -212,11 +202,10 @@ The output task arms a 500 ms hardware watchdog, serviced on a fixed 100 ms
 schedule while the executor runs normally. It continues counting during a
 debugger halt. A timeout resets the output hardware and boot then inhibits
 motion before ADC or network startup. Inspect the fault before clearing that
-state with a board reset, debugger reset, or power cycle. Flashing/debugging
-can reset the board and therefore re-enable the default autonomous startup
-behavior; a UF2 or `picotool` reboot also goes through the watchdog, and boot
-distinguishes it from a firmware-armed timeout, so a freshly flashed board
-starts normally instead of looking dead.
+state with a board reset, debugger reset, or power cycle. A UF2 or `picotool`
+reboot also goes through the watchdog; boot distinguishes it from a
+firmware-armed timeout. A freshly flashed board starts idle and waits for
+manual input.
 
 Network supervision retries association and 30-second DHCP attempts with
 exponential backoff capped at 30 seconds. HTTP acceptors are started without
@@ -232,7 +221,6 @@ USB bootloader instead. Build a UF2 image:
 
 ```bash
 ./scripts/build-uf2.sh                 # release; --debug for a debug build
-./scripts/build-uf2.sh --no-default-features  # manual mode
 ```
 
 The UF2 lands next to the elf:
@@ -317,17 +305,15 @@ cargo fmt --all -- --check
 HOST_TRIPLE=$(rustc -vV | sed -n 's/host: //p')
 cargo clippy -p ezal-core --target "$HOST_TRIPLE" --all-targets --all-features -- -D warnings
 cargo clippy -p ezal-firmware --bins -- -D warnings
-cargo clippy -p ezal-firmware --bins --no-default-features -- -D warnings
 ```
 
 Use `cargo fmt --all` to apply formatting. Firmware has no embedded `libtest`,
 so do not select its test targets with `--workspace --all-targets`.
 
-CI runs these checks, both test scripts, and one firmware job that builds,
-lints and packages UF2 images for autonomous and manual modes, uploading them
-under `dist/<mode>/`. Both feature sets write the same ELF/UF2 path, so the
-last build — locally, or within that job — determines which mode that file
-contains.
+CI runs these checks, the test scripts, and one firmware job that builds,
+lints and packages the manual firmware, uploading its ELF and UF2 under
+`dist/`. The optional `cyw43-firmware-logs` feature enables radio diagnostics
+independently; it does not select a control mode.
 
 ### Watching for file changes
 
@@ -425,7 +411,7 @@ outputs, verify:
    activation is delayed by the 2-second off interval, a lease with less than
    500 ms left leaves the relay alone entirely — check that no brief click
    occurs, and that a refreshed lease then starts the output normally.
-3. Invalid, missing, or stalled ADC feedback inhibits both operating modes;
+3. Invalid, missing, or stalled ADC feedback inhibits movement;
    a cancelled read is not retried until reset. A read slower than 150 ms
    reports `feedback-stale` without latching.
 4. At each measured endpoint, an outward jog is inhibited and an inward jog

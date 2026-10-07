@@ -1,10 +1,11 @@
 # Pass prediction
 
-Both firmware modes display a rolling six-hour forecast at `/api/passes` and
+The firmware displays a rolling six-hour forecast at `/api/passes` and
 in the dashboard. NTP synchronization starts after DHCP. TLE download waits
 for valid UTC, then the firmware computes SGP4 reception windows independently
-of dashboard connections. These windows do not command the motors; the default
-hardware-driving simulator and the manual mode retain their existing behavior.
+of dashboard connections. These windows are advisory and never authorize
+movement. The firmware boots idle and moves only in response to manual
+dashboard input; real tracking is deferred.
 
 ## Station configuration
 
@@ -174,5 +175,4 @@ execution timing still require validation on the installed Pico/receiver.
 ./scripts/test-dashboard.sh
 ./scripts/test-build-tools.sh
 cargo build --locked -p ezal-firmware --release
-cargo build --locked -p ezal-firmware --release --no-default-features
 ```

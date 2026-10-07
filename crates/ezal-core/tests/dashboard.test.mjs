@@ -581,34 +581,16 @@ test("failed reconnects back off and a successful open resets the delay", () => 
   assert.equal(page.sockets.length, count + 1);
 });
 
-test("telemetry renders positions, countdown and nullable targets across modes", () => {
+test("telemetry renders measured position and feedback health", () => {
   const page = controller();
   page.socket.dispatch("message", { data: "{malformed" });
   page.socket.receive({ type: "position", a0_mv: 901, a1_mv: -12 });
   assert.equal(String(page.ids.get("a0").textContent), "901");
   assert.equal(String(page.ids.get("a1").textContent), "-12");
-  const tracking = {
-    type: "tracking", mode: "hardware-walking-skeleton", satellite: "METOP-C",
-    pass: 2, phase: "pause", remaining_ms: 29500, control_state: "idle",
-    azimuth_tenths: 4247, elevation_tenths: 3,
-    target_azimuth_tenths: null, target_elevation_tenths: null,
-  };
-  page.socket.receive(tracking);
-  assert.equal(page.body.classList.contains("autonomous"), true);
-  assert.equal(page.ids.get("source").textContent, "METOP-C · hardware-walking-skeleton");
-  assert.equal(page.ids.get("run").textContent, "pass 2");
-  assert.equal(page.ids.get("phase").textContent, "pause · 0:30");
+  page.socket.receive({ type: "feedback", control_state: "idle", azimuth_tenths: 4247, elevation_tenths: 3 });
   assert.equal(page.ids.get("health").textContent, "idle");
   assert.equal(page.ids.get("azimuth").textContent, "424.7");
   assert.equal(page.ids.get("elevation").textContent, "0.3");
-  assert.equal(page.ids.get("target-azimuth").textContent, "--");
-  assert.equal(page.ids.get("target-elevation").textContent, "--");
-  page.socket.receive({ ...tracking, mode: "manual", satellite: null, target_azimuth_tenths: 201 });
-  assert.equal(page.body.classList.contains("autonomous"), false);
-  assert.equal(page.ids.get("source").textContent, "manual · manual");
-  assert.equal(page.ids.get("run").textContent, "manual");
-  assert.equal(page.ids.get("phase").textContent, "calibration");
-  assert.equal(page.ids.get("target-azimuth").textContent, "20.1");
 });
 
 test("movement carries a server token and increasing input sequence; refreshes cannot rearm", () => {

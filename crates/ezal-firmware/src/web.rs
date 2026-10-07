@@ -168,12 +168,12 @@ async fn send_position<W: PicoserveWrite>(
     Ok(())
 }
 
-async fn send_tracking<W: PicoserveWrite>(
+async fn send_feedback<W: PicoserveWrite>(
     tx: &mut SocketTx<W>,
     state: &'static SharedState,
 ) -> Result<(), W::Error> {
     let mut payload: String<384> = String::new();
-    if state.tracking().write_json(&mut payload).is_ok() {
+    if state.feedback().write_json(&mut payload).is_ok() {
         tx.send_text(&payload).await?;
     }
     Ok(())
@@ -196,7 +196,7 @@ async fn send_telemetry<W: PicoserveWrite>(
     let token = freshness.issue(now_ms);
     send_position(tx, state).await?;
     send_control_status(tx, state, client_id).await?;
-    send_tracking(tx, state).await?;
+    send_feedback(tx, state).await?;
     if let Some(token) = token {
         let mut payload: String<64> = String::new();
         if token.write_json(&mut payload).is_ok() {

@@ -1,8 +1,8 @@
 # Position calibration
 
 ezal converts the G-5500's two feedback voltages into angles with a linear
-two-point calibration for each axis. The default walking skeleton uses that
-mapping with the real ADS1015. For now the four installed-system endpoints are
+two-point calibration for each axis. The manual firmware uses that mapping
+with the real ADS1015. For now the four installed-system endpoints are
 deliberately hard-coded; this document is the procedure for replacing them
 with measurements from your unit.
 
@@ -16,9 +16,9 @@ The single source of truth is `HARD_CODED_CALIBRATION` in
 | A0          | elevation     | 0°–90°           | 1281 mV at 0°, 58 mV at 90° |
 | A1          | azimuth       | 0°–360°          | 114 mV at 0°, 2033 mV at 360° |
 
-These checked-in installation values drive both autonomous and manual mode.
+These checked-in installation values govern manual movement.
 The mapping accepts at most 25 mV of endpoint noise before declaring feedback
-invalid and stopping the controller.
+invalid and inhibiting movement.
 
 ## Safety setup
 
@@ -28,15 +28,14 @@ motor power. Never use software as the only protection against an unverified
 end stop. Start with the Pico disconnected from the four direction inputs and
 confirm that all direction GPIOs are low during reset.
 
-The default walking skeleton raises physical direction pins automatically as
-it acquires a simulated pass. Do not use it for initial calibration. Build the
-explicit manual hardware mode instead:
+The firmware boots with all direction outputs idle. Build and flash it for
+manual calibration:
 
 ```bash
-cargo run -p ezal-firmware --release --no-default-features
+cargo run -p ezal-firmware --release
 ```
 
-In manual hardware mode the dashboard's buttons are leased controls. A held
+The dashboard's buttons are leased controls. A held
 button refreshes its command every 150 ms. Releasing or reversing a held
 button, lease expiry at 750 ms, an operator stop, and feedback faults bypass
 the relay minimum-on timer; the 2-second minimum-off interval still applies
@@ -44,9 +43,9 @@ before reactivation. An output only starts when its lease covers the 500 ms
 minimum on-time, so a stalled network cannot produce a brief relay click.
 Electrical output removal does not stop mechanical coasting instantly.
 
-Both modes also require a working station link and DHCP address. Network loss
-cuts motion; reconnecting requires fresh manual input, while autonomous mode
-reacquires. A browser hold also expires after one second without fresh
+Movement also requires a working station link and DHCP address. Network loss
+cuts motion; reconnecting requires ownership and fresh manual input.
+A browser hold also expires after one second without fresh
 application telemetry. Expiring server tokens prevent delayed commands from
 receiving a new unrestricted lease when they eventually arrive.
 
@@ -150,14 +149,13 @@ permitted mechanical travel, not to make an intermediate reading look better;
 if the mechanism is non-linear, that is a feedback hardware fault a two-point
 calibration should not hide.
 
-## 4. Verify before tracking hardware
+## 4. Verify before commanding hardware
 
-Run the host suite and rebuild both modes:
+Run the host suite and rebuild the firmware:
 
 ```bash
 ./scripts/test-host.sh
 cargo build -p ezal-firmware --release
-cargo build -p ezal-firmware --release --no-default-features
 ```
 
 The host suite checks that your calibration is one the feedback ADC can
@@ -166,7 +164,7 @@ and of the supply-rail ceiling. The policy tests use their own fixture rather
 than the installed numbers, so a correct measurement cannot fail them — a
 failure here means the calibration needs another look, not the tests.
 
-Then, still in manual hardware mode, stop at 0%, 25%, 50%, 75%, and 100% of
+Then stop at 0%, 25%, 50%, 75%, and 100% of
 each scale. Compare the dashboard angle with the G-5500 meter or a trusted
 mechanical reference. Record the four endpoint readings, date, controller
 serial number, and resulting error table with the installation maintenance

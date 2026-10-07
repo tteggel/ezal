@@ -6,11 +6,10 @@ use ezal_core::drive::{
     AzimuthDirection, Command, DriveCommand, ElevationDirection, OUTPUT_MIN_ACTIVE_MS,
 };
 use ezal_core::protocol::{
-    parse_command, ClientMessage, CommandFreshness, ControlStatus, MovementRequest,
-    PositionTelemetry, TrackingMode, TrackingTelemetry, COMMAND_MAX_AGE_MS, COMMAND_REFRESH_MS,
-    COMMAND_TIMEOUT_MS, TAKE_CONTROL_MESSAGE,
+    parse_command, ClientMessage, CommandFreshness, ControlStatus, FeedbackTelemetry,
+    MovementRequest, PositionTelemetry, COMMAND_MAX_AGE_MS, COMMAND_REFRESH_MS, COMMAND_TIMEOUT_MS,
+    TAKE_CONTROL_MESSAGE,
 };
-use ezal_core::simulation::PassPhase;
 
 #[test]
 fn parses_direction_commands() {
@@ -157,39 +156,19 @@ fn formats_control_status_as_compact_json() {
 }
 
 #[test]
-fn formats_tracking_telemetry_with_nullable_pause_targets() {
+fn formats_calibrated_feedback_without_demo_fields() {
     let mut json = String::new();
-    TrackingTelemetry {
-        mode: TrackingMode::HardwareWalkingSkeleton,
-        pass_index: 1,
-        phase: PassPhase::Pause,
-        phase_remaining_ms: 29_500,
-        azimuth_tenths: 4_247,
+    FeedbackTelemetry {
+        azimuth_tenths: 4247,
         elevation_tenths: 3,
-        target_azimuth_tenths: None,
-        target_elevation_tenths: None,
         control_state: ControlState::Idle,
     }
     .write_json(&mut json)
     .unwrap();
-
     assert_eq!(
         json,
-        r#"{"type":"tracking","mode":"hardware-walking-skeleton","satellite":"METOP-C","phase":"pause","pass":2,"remaining_ms":29500,"azimuth_tenths":4247,"elevation_tenths":3,"target_azimuth_tenths":null,"target_elevation_tenths":null,"control_state":"idle"}"#
+        r#"{"type":"feedback","azimuth_tenths":4247,"elevation_tenths":3,"control_state":"idle"}"#
     );
-}
-
-#[test]
-fn formats_the_largest_pass_index_without_overflow() {
-    let mut json = String::new();
-    TrackingTelemetry {
-        pass_index: u32::MAX,
-        ..TrackingTelemetry::ZERO
-    }
-    .write_json(&mut json)
-    .unwrap();
-
-    assert!(json.contains(r#""pass":4294967296,"#));
 }
 
 #[test]

@@ -19,9 +19,8 @@
 #   test-host      — `cargo test` for ezal-core, on the host
 #   test-dashboard — Node's test runner against the served dashboard JS
 #   clippy-host    — clippy lints for the host build of ezal-core
-#   build-firmware — cross-compiles ezal-firmware for the Pico 2 in both
-#                    feature modes, lints each, packages their UF2 images,
-#                    and uploads the elf and UF2 per mode
+#   build-firmware — cross-compiles and lints ezal-firmware for the Pico 2,
+#                    packages its UF2 image, and uploads the elf and UF2
 #
 # All five are required to pass before a PR can be merged (configure that
 # in GitHub's branch-protection settings).
@@ -111,7 +110,7 @@ jobs:
 
   # ── Cross-compile firmware + package UF2 ─────────────────────────────
   build-firmware:
-    name: Build firmware (both modes)
+    name: Build firmware
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -120,12 +119,10 @@ jobs:
         with:
           arguments: ".#ci"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Build, lint, and package both modes
-        # One job, so the dependency graph — fat-LTO and all — is compiled
-        # once for two feature sets that enable no dependency features
-        # between them. Default target (from .cargo/config.toml) is
-        # thumbv8m.main-none-eabihf, and both modes write the same elf path,
-        # so each mode's images are copied out before the next build starts.
+      - name: Build, lint, and package firmware
+        # The default target (from .cargo/config.toml) is
+        # thumbv8m.main-none-eabihf. There is one manual control firmware
+        # configuration; optional radio diagnostics do not select a mode.
         #
         # build-uf2.sh is the same script contributors run locally, so the
         # picotool convert flags live in exactly one place; its `cargo build`
@@ -136,19 +133,15 @@ jobs:
         # the bin target only.
         run: |
           set -euo pipefail
-          for mode in autonomous manual; do
-            args=""
-            [ "$mode" = manual ] && args="--no-default-features"
-            cargo build --locked -p ezal-firmware --release $args
-            cargo clippy --locked -p ezal-firmware --bins $args -- -D warnings
-            ./scripts/build-uf2.sh $args
-            mkdir -p "dist/$mode"
-            cp target/thumbv8m.main-none-eabihf/release/ezal-firmware \
-               target/thumbv8m.main-none-eabihf/release/ezal-firmware.uf2 \
-               "dist/$mode/"
-          done
+          cargo build --locked -p ezal-firmware --release
+          cargo clippy --locked -p ezal-firmware --bins -- -D warnings
+          ./scripts/build-uf2.sh
+          mkdir -p dist
+          cp target/thumbv8m.main-none-eabihf/release/ezal-firmware \
+             target/thumbv8m.main-none-eabihf/release/ezal-firmware.uf2 \
+             dist/
       - name: Upload firmware artefacts
-        # Lets reviewers download either mode from a PR run without building
+        # Lets reviewers download the firmware from a PR run without building
         # it: the elf for a debug probe (probe-rs / SWD), and the UF2 for
         # drag-and-drop BOOTSEL flashing with no extra tooling.
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

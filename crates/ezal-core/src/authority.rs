@@ -8,12 +8,11 @@
 
 use crate::drive::Command;
 
-/// Allocation and routing policy for manual and autonomous drive commands.
+/// Allocation and routing policy for manual drive commands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlAuthority {
     next_client_id: u32,
     controller_id: Option<u32>,
-    autonomous: bool,
 }
 
 impl Default for ControlAuthority {
@@ -28,7 +27,6 @@ impl ControlAuthority {
         Self {
             next_client_id: 1,
             controller_id: None,
-            autonomous: false,
         }
     }
 
@@ -36,7 +34,7 @@ impl ControlAuthority {
     pub fn register_client(&mut self) -> u32 {
         let id = self.next_client_id;
         self.next_client_id = id.wrapping_add(1).max(1);
-        if !self.autonomous && self.controller_id.is_none() {
+        if self.controller_id.is_none() {
             self.controller_id = Some(id);
         }
         id
@@ -44,18 +42,11 @@ impl ControlAuthority {
 
     /// Whether this connection owns the manual command stream.
     pub fn is_controller(&self, client_id: u32) -> bool {
-        !self.autonomous && self.controller_id == Some(client_id)
-    }
-
-    /// Change command source, clearing manual ownership and stale movement.
-    pub fn set_autonomous(&mut self, autonomous: bool) -> Command {
-        self.autonomous = autonomous;
-        self.controller_id = None;
-        Command::Inhibit
+        self.controller_id == Some(client_id)
     }
 
     /// Forget manual ownership after a network interruption. Keeping the id
-    /// allocator and selected mode prevents old sockets from silently becoming
+    /// allocator prevents old sockets from silently becoming
     /// owners again when connectivity returns.
     pub fn revoke_manual(&mut self) {
         self.controller_id = None;
@@ -63,7 +54,7 @@ impl ControlAuthority {
 
     /// Transfer manual control and revoke the previous owner's drive request.
     pub fn take_control(&mut self, client_id: u32) -> Option<Command> {
-        if self.autonomous || client_id == 0 {
+        if client_id == 0 {
             return None;
         }
         self.controller_id = Some(client_id);
@@ -149,25 +140,6 @@ mod tests {
     }
 
     #[test]
-    fn autonomous_mode_excludes_all_browser_commands_and_takeovers() {
-        let mut authority = ControlAuthority::new();
-        let previous_owner = authority.register_client();
-        assert_eq!(authority.set_autonomous(true), Command::Inhibit);
-        let new_client = authority.register_client();
-        for client in [previous_owner, new_client] {
-            assert!(!authority.is_controller(client));
-            assert_eq!(authority.accept_command(client, MOVE), None);
-            assert_eq!(authority.accept_command(client, Command::Stop), None);
-            assert_eq!(authority.take_control(client), None);
-            assert_eq!(authority.release_client(client), None);
-        }
-        assert_eq!(authority.set_autonomous(false), Command::Inhibit);
-        assert_eq!(authority.accept_command(previous_owner, MOVE), None);
-        assert_eq!(authority.take_control(new_client), Some(Command::Inhibit));
-        assert_eq!(authority.accept_command(new_client, MOVE), Some(JOG));
-    }
-
-    #[test]
     fn allocation_never_uses_zero_when_counter_wraps() {
         let mut authority = ControlAuthority::new();
         authority.next_client_id = u32::MAX;
@@ -183,8 +155,5 @@ mod tests {
         assert_eq!(authority.accept_command(owner, MOVE), None);
         assert_eq!(authority.take_control(owner), Some(Command::Inhibit));
         assert_eq!(authority.accept_command(owner, MOVE), Some(JOG));
-        authority.set_autonomous(true);
-        authority.revoke_manual();
-        assert_eq!(authority.take_control(owner), None);
     }
 }
