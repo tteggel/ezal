@@ -5,6 +5,8 @@
 //! the mapping: ADC millivolts to degrees for feedback, and degrees to
 //! millivolts for simulation and diagnostics.
 
+use crate::ads1015::FullScale;
+
 /// Small voltage excursion accepted beyond a measured endpoint before the
 /// feedback channel is treated as faulty. Values inside this margin clamp to
 /// the mechanical endpoint; larger excursions fail safe.
@@ -64,20 +66,39 @@ pub struct AxisCalibration {
 /// Why a calibrated conversion could not be trusted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CalibrationError {
-    /// Calibration angles are non-finite/reversed, or voltage has no span.
+    /// Calibration angles or their span are non-finite/reversed, voltage has
+    /// no span, or a hardware calibration exceeds the supported rotator range.
     InvalidCalibration,
     /// Requested angle lies outside the calibrated mechanical range.
     AngleOutOfRange,
     /// Feedback voltage lies outside the endpoint fault margin.
     VoltageOutOfRange,
+    /// The accepted endpoint margin overlaps a single-ended ADC rail.
+    AdcRangeTooNarrow,
+    /// Feedback is at or beyond a single-ended ADC rail, before calibration.
+    AdcSaturated,
+}
+
+impl CalibrationError {
+    /// Stable token for logs.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidCalibration => "invalid-calibration",
+            Self::AngleOutOfRange => "angle-out-of-range",
+            Self::VoltageOutOfRange => "voltage-out-of-range",
+            Self::AdcRangeTooNarrow => "adc-range-too-narrow",
+            Self::AdcSaturated => "adc-saturated",
+        }
+    }
 }
 
 impl AxisCalibration {
-    /// Check that the angle endpoints increase and the voltage endpoints differ.
-    /// Voltage may increase or decrease with angle.
+    /// Check that the angle endpoints increase with a finite span and the
+    /// voltage endpoints differ. Voltage may increase or decrease with angle.
     pub fn validate(self) -> Result<(), CalibrationError> {
         if !self.angle_min_deg.is_finite()
             || !self.angle_max_deg.is_finite()
+            || !(self.angle_max_deg - self.angle_min_deg).is_finite()
             || self.angle_max_deg <= self.angle_min_deg
             || self.voltage_max_mv == self.voltage_min_mv
         {
@@ -98,8 +119,10 @@ impl AxisCalibration {
         }
 
         let fraction = (angle_deg - self.angle_min_deg) / (self.angle_max_deg - self.angle_min_deg);
-        let millivolts = self.voltage_min_mv as f32
-            + fraction * (self.voltage_max_mv - self.voltage_min_mv) as f32;
+        // Widen before subtracting: the public mathematical API accepts every
+        // i32 voltage endpoint, even though physical ADC validation is tighter.
+        let voltage_span_mv = i64::from(self.voltage_max_mv) - i64::from(self.voltage_min_mv);
+        let millivolts = self.voltage_min_mv as f32 + fraction * voltage_span_mv as f32;
         Ok(round_nearest(millivolts))
     }
 
@@ -110,17 +133,20 @@ impl AxisCalibration {
     /// disconnected, shorted, or otherwise untrustworthy feedback channel.
     pub fn voltage_to_angle(self, millivolts: i32) -> Result<f32, CalibrationError> {
         self.validate()?;
-        let voltage_low_mv = self.voltage_min_mv.min(self.voltage_max_mv);
-        let voltage_high_mv = self.voltage_min_mv.max(self.voltage_max_mv);
-        if millivolts < voltage_low_mv - FEEDBACK_ENDPOINT_MARGIN_MV
-            || millivolts > voltage_high_mv + FEEDBACK_ENDPOINT_MARGIN_MV
+        let voltage_low_mv = i64::from(self.voltage_min_mv.min(self.voltage_max_mv));
+        let voltage_high_mv = i64::from(self.voltage_min_mv.max(self.voltage_max_mv));
+        let millivolts = i64::from(millivolts);
+        // The accepted noise band can extend past i32::MIN/MAX; comparisons
+        // and interpolation must remain well-defined at those boundaries.
+        if millivolts < voltage_low_mv - i64::from(FEEDBACK_ENDPOINT_MARGIN_MV)
+            || millivolts > voltage_high_mv + i64::from(FEEDBACK_ENDPOINT_MARGIN_MV)
         {
             return Err(CalibrationError::VoltageOutOfRange);
         }
 
         let clamped = millivolts.clamp(voltage_low_mv, voltage_high_mv);
-        let fraction = (clamped - self.voltage_min_mv) as f32
-            / (self.voltage_max_mv - self.voltage_min_mv) as f32;
+        let fraction = (clamped - i64::from(self.voltage_min_mv)) as f32
+            / (i64::from(self.voltage_max_mv) - i64::from(self.voltage_min_mv)) as f32;
         Ok(self.angle_min_deg + fraction * (self.angle_max_deg - self.angle_min_deg))
     }
 }
@@ -148,6 +174,51 @@ impl PositionCalibration {
     pub fn validate(self) -> Result<(), CalibrationError> {
         self.azimuth.validate()?;
         self.elevation.validate()
+    }
+
+    /// Require the entire accepted feedback band to fit strictly between
+    /// ground and the lowest saturated reading: the ADC's positive saturation
+    /// code or the supply-rail ceiling. Both increasing and decreasing voltage
+    /// mappings need observable fault margins. Mechanical endpoints must also
+    /// fit the G-5500 envelope used by the final output interlock.
+    pub fn validate_for_adc(self, full_scale: FullScale) -> Result<(), CalibrationError> {
+        self.validate()?;
+        // The supervisor and final interlock must agree on usable positions.
+        // A mathematically sound voltage mapping outside this rotator's range
+        // would otherwise report healthy feedback that cannot permit motion.
+        let minimum = Pointing::new(self.azimuth.angle_min_deg, self.elevation.angle_min_deg);
+        let maximum = Pointing::new(self.azimuth.angle_max_deg, self.elevation.angle_max_deg);
+        if !minimum.is_valid() || !maximum.is_valid() {
+            return Err(CalibrationError::InvalidCalibration);
+        }
+        for axis in [self.azimuth, self.elevation] {
+            let low = i64::from(axis.voltage_min_mv.min(axis.voltage_max_mv));
+            let high = i64::from(axis.voltage_min_mv.max(axis.voltage_max_mv));
+            if low - i64::from(FEEDBACK_ENDPOINT_MARGIN_MV) <= 0
+                || high + i64::from(FEEDBACK_ENDPOINT_MARGIN_MV)
+                    >= i64::from(full_scale.saturation_limit_mv())
+            {
+                return Err(CalibrationError::AdcRangeTooNarrow);
+            }
+        }
+        Ok(())
+    }
+
+    /// Check single-ended ADC and supply rails before applying calibrated
+    /// endpoint clamping. Pure mathematical conversions remain available
+    /// through [`Self::feedback_to_position`]; hardware supervision uses this.
+    pub fn feedback_to_position_for_adc(
+        self,
+        feedback: FeedbackVoltages,
+        full_scale: FullScale,
+    ) -> Result<Pointing, CalibrationError> {
+        for millivolts in [feedback.a0_elevation_mv, feedback.a1_azimuth_mv] {
+            if millivolts <= 0 || millivolts >= full_scale.saturation_limit_mv() {
+                return Err(CalibrationError::AdcSaturated);
+            }
+        }
+        self.validate_for_adc(full_scale)?;
+        self.feedback_to_position(feedback)
     }
 
     /// Convert a position into the voltages the installed feedback chain

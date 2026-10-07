@@ -5,6 +5,9 @@ and Yaesu G-5500 that ezal is designed to drive.
 
 ## Pico 2 W and walking-skeleton modes
 
+Board connector and pin details are in the
+[Pico 2 W datasheet](https://datasheets.raspberrypi.com/picow/pico-2-w-datasheet.pdf).
+
 The default firmware is an end-to-end hardware walking skeleton. It requires
 the Pico 2 W, interface board, ADS1015, calibrated G-5500 feedback, and a
 connected rotator. On boot it can raise the direction pins to acquire the
@@ -12,7 +15,7 @@ simulated METOP-C pass start:
 
 ```
 ┌──────────────────────────┐
-│   Raspberry Pi Pico 2    │
+│  Raspberry Pi Pico 2 W   │
 │  (RP2350A, 4 MiB flash)  │
 │                          │
 │  USB ────────── host PC  │
@@ -31,7 +34,7 @@ simulated METOP-C pass start:
 You need:
 
 - one Raspberry Pi **Pico 2 W** (WiFi is required for the dashboard),
-- a USB-C cable for power,
+- a micro-USB cable for power and BOOTSEL flashing,
 - *optionally* a Raspberry Pi Debug Probe (or any CMSIS-DAP probe) for
   flashing + log streaming with `probe-rs`. Without one you can still
   flash via the BOOTSEL UF2 mechanism, but you won't see the live RTT log,
@@ -92,8 +95,9 @@ filesystem to read credentials from at runtime, so they are baked into the
 firmware image at *build* time: copy [`.env.example`](../.env.example) to
 `.env` at the repo root and set `EZAL_WIFI_SSID` / `EZAL_WIFI_PASSWORD`.
 `crates/ezal-firmware/build.rs` reads that file and the WiFi POST joins the
-network at boot (an empty password selects an open network). `.env` is
-git-ignored, but note the credentials do end up in the flashed `.elf`/`.uf2`
+network at boot (an empty password selects an open network; protected joins
+use WPA3/SAE). Credential validation runs after radio initialization and before
+association. `.env` is git-ignored, but the credentials do end up in the flashed `.elf`/`.uf2`
 in the clear — there's no secure element on the board.
 
 The CYW43439 also needs three firmware blobs uploaded at every boot
@@ -105,9 +109,10 @@ their provenance and licence.
 
 ## G-5500 rotator
 
-The [Yaesu G-5500](https://www.yaesu.com/) (and the -DC variant) is the
-target rotator. Its "external control" connector is an 8-pin DIN. The
-interface is **switch closures** for direction (not analog speed control;
+The Yaesu G-5500 (and the -DC variant) is the target rotator. The nominal
+feedback ranges and connector functions below follow the
+[G-5500 instruction manual, page 5](https://www.yaesu.com/Files/4CB6273C-1018-01AF-FA4D504B591F641A/G-5500_IM_ENG_E12901004.pdf).
+Its "external control" connector is an 8-pin DIN. The interface is **switch closures** for direction (not analog speed control;
 the speed comes from the G-5500's own controller) plus **analog
 feedback** voltages for position.
 
@@ -119,17 +124,16 @@ feedback** voltages for position.
 | 4   | input     | Short to pin 8 → rotate left (counter-clockwise azimuth)     |
 | 5   | input     | Short to pin 8 → rotate down                                 |
 | 6   | output    | Azimuth feedback: 2.0–4.5 VDC corresponds to 0°–450°         |
-| 7   | output    | Auxiliary supply: 8–13 VDC at up to 100 mA                   |
+| 7   | output    | Auxiliary supply, unused by ezal; consult your model manual |
 | 8   | —         | Common ground                                                |
 
 In ezal terms, the data flow is:
 
 ```
-host PC ──USB-serial──▶ Pico 2 ──×4 transistor switches──▶ G-5500 pins 2-5
-                        ▲ ▲                                       │
-                        │ └── I²C ── ADS1015 ──×2 R-dividers ─────┤
-                        │                                         │
-                        └─────────── shared GND ─────── G-5500 pin 8
+browser ──WiFi/WebSocket──▶ Pico 2 W ──×4 switches──▶ G-5500 pins 2–5
+                              ▲                               │
+                              └── I²C ── ADS1015 ──dividers──┤
+                              └──── shared GND ──────── pin 8
 ```
 
 The interface circuit (canonical version in
@@ -179,11 +183,31 @@ The interface circuit (canonical version in
                     ≈ 0.448
   ```
 
-  At the G-5500's 4.5 V full-scale that gives **2.02 V** into the
-  ADS1015 — 99% of the ±2.048 V FSR PGA setting, which keeps the LSB
-  at ≈ 1 mV. The 2.0 V minimum maps to 0.90 V, so we get ~1120 useful
-  codes across the working range: 0.16°/code on elevation and
-  0.40°/code on azimuth.
+  This nominal divider model maps a 2.0–4.5 V source to approximately
+  **0.90–2.02 V** at the ADC. Firmware uses **±4.096 V full scale**, or
+  **2 mV per ADC code**: about 560 codes across that nominal span. This
+  corresponds to approximately 0.32° per code over 180° elevation or 0.80°
+  per code over 450° azimuth. Full-scale selection and code size follow
+  [ADS1015 datasheet Table 7-1](https://www.ti.com/lit/ds/symlink/ads1015.pdf).
+
+  Runtime calibration uses measured ADC millivolts, rather than those
+  nominal ranges. The checked-in installation maps azimuth **114–2033 mV
+  to 0–360°**, and elevation **1281–58 mV to 0–90°**. Its resolution is
+  approximately **0.375° per code in azimuth** and **0.147° per code in
+  elevation**. The reversed elevation voltage scale is intentional.
+
+  The wider ADC range leaves room around the measured 2033 mV endpoint
+  for the **25 mV endpoint margin** and observable overrange readings.
+  The old ±2.048 V range saturated at 2047 mV, inside that accepted margin.
+  Both supervisors validate that the entire calibration band sits above zero
+  and below **3200 mV**, the lower of the ±4.096 V saturation code (4094 mV)
+  and the 3.3 V supply-rail ceiling. The ceiling matters because the ADS1015
+  cannot report a reading above its own supply: a band reaching that high
+  would make an input stuck at the rail indistinguishable from a valid
+  endpoint. Zero, negative, rail, and saturated samples are rejected before
+  endpoint clamping. The ±4.096 V PGA setting does not increase the chip's
+  permitted input voltage above its supply; retain the divider and 3.3 V
+  input-supply constraints.
 
   There is no filter capacitor across the 82 K resistor: the dividers
   feed the ADS1015 inputs directly. The only analog filtering on the
@@ -207,58 +231,38 @@ the G-5500, one inside ezal — and both matter.
 
 ### Stage 1: G-5500 hardware trim (one-off, on the bench)
 
-Two trimpots inside the controller set the gain of the position-feedback
-amplifier so each axis's mechanical end-stops produce the documented
-2.0 V and 4.5 V at the external DIN feedback pins. The schematic calls
-them:
+Check the front-panel angle indications using the G-5500 manual's
+pre-installation adjustment procedure. The rear **FULL SCALE ADJ** controls
+align the meter scales: azimuth at the marked full-turn position and
+elevation at its 180° markers. Consult the procedure for the particular
+controller model before adjusting it.
 
-- **VR0003** (elevation) with R0002 = 22 K
-- **VR0004** (azimuth) with R0004 = 3.9 K
-
-(The different fixed resistors compensate for the two axes' different
-travel ranges — 180° vs 450° — so both end up in the same 2.0–4.5 V
-window after scaling.)
-
-They're accessible from the **rear panel** of the controller, labelled
-**FULL SCALE ADJ**, above the corresponding antenna terminals. The
-manual's procedure is:
-
-- **Azimuth** — drive the rotator to its LEFT end-stop and mark its
-  housing. Press RIGHT to slew a full turn back to the mark; the meter
-  should read 360°. Adjust VR0004 until it does. Continue clockwise to
-  the right end-stop; the meter should read 90° at the right edge of
-  the scale (controller wraps at 360° + 90° = 450°).
-- **Elevation** — drive the elevation rotator UP to its 180° mark; the
-  meter should read 180° at the right edge of the scale. If not, adjust
-  VR0003.
-
-This is a one-time step. Once set, the trimpots stay put — the only
-time to revisit them is if the front-panel meter visibly disagrees with
-where the antenna is actually pointed.
+These meter checks do not establish ezal's ADC endpoints. Measure the
+complete connected feedback chain separately; the installed values below
+differ from the nominal DIN voltage description.
 
 ### Stage 2: ezal software calibration (one-off, at first install)
 
-Even with the G-5500 perfectly trimmed, ezal's own signal path has
-sources of unknown offset and gain — divider resistor tolerance (~1 %),
-ADS1015 PGA offset (~ 1 mV), op-amp aging in the G-5500 over time — so
-we can't simply assume that an ADC reading of *X* counts means *Y*
-degrees. ezal therefore captures its own ADC → angle calibration
-against the *mechanical* end-stops, which are repeatable to within a
-few arcminutes:
+Record two known angles per axis and the corresponding dashboard **ADC
+millivolts**, including both angle endpoints and both voltage endpoints in
+[`HARD_CODED_CALIBRATION`](../crates/ezal-core/src/position.rs). The current
+installation covers 0–360° azimuth and 0–90° elevation; those limits are not
+interchangeable with the G-5500's full 450°/180° travel.
 
-1. Slew azimuth to its CCW end-stop and record the ADC code (`az_min`).
-2. Slew azimuth fully CW to its other end-stop and record `az_max`.
-3. Same for elevation: `el_min` at the down end-stop, `el_max` at the
-   up end-stop.
-4. Enter all four in the firmware's hard-coded calibration. From then on,
-   angle = linear interpolation between the two endpoints.
+Use the G-5500's own controls to obtain initial measurements when ezal's
+feedback interlock blocks browser movement. Manual firmware still publishes
+raw readings when calibration rejects a sample, and keeps sampling even when
+the calibration itself is rejected — it reports `calibration-invalid` and
+inhibits motion, so the endpoints can be measured again. It has no
+feedback-interlock bypass, and a cancelled I²C read requires a reset before
+more reads or motion.
 
-This makes the system insensitive to G-5500 trimpot drift, divider
-tolerance, ADC offset, and slow degradation of the rotator's position
-pots over time. It is *not* a substitute for the G-5500 trim above,
-though, because that trim is what keeps the ADC operating near full
-scale — pinching the input range below ~70 % of FSR starts to eat into
-our angular resolution.
+The linear mapping accounts for offset, voltage direction, and gain at the
+time of measurement. It cannot compensate for later drift or nonlinear
+feedback; repeat measurements when the hardware changes or independent
+angle checks disagree. Keep the full 25 mV endpoint tolerance inside the
+ADC's unsaturated range and below the supply-rail ceiling; a calibration that
+overlaps either is rejected.
 
 The complete safety setup, channel worksheet, source location, edit example,
 and verification steps are in [CALIBRATION.md](CALIBRATION.md). Flash-backed
@@ -268,9 +272,9 @@ source of truth for this walking skeleton.
 ## Motor switching budget
 
 > **Rough notes.** Numbers below are paraphrased datasheet / typical
-> figures, not bench-measured. Worth verifying once we have hardware
-> wired up. Captured now so the order-of-magnitude doesn't get lost
-> between here and the firmware controller (roadmap step 4).
+> figures, not bench-measured operating guarantees. The implemented firmware
+> limits are listed separately below; verify motor and relay behavior on the
+> installed hardware.
 
 ### Three constraints
 
@@ -312,24 +316,53 @@ completeness.
 
 ### Implications for the controller
 
-Three rules together hold the rate inside that envelope:
+The implemented rules are in
+[`drive.rs`](../crates/ezal-core/src/drive.rs) and
+[`control.rs`](../crates/ezal-core/src/control.rs):
 
-1. **Minimum on-time per pulse: ≥ 300 ms.** Below this the relay
-   actuates without moving the antenna; pulse is pure wear, no work.
-2. **Minimum off-time between consecutive commands: ≥ 2 s.** Hard
-   guardrail on relay life. Caps switching at 0.5 Hz regardless of
-   what the deadband logic decides.
-3. **Deadband sized for the slew rate.** The G-5500 slews at ~6 °/s
-   on both axes; a typical LEO satellite tracks at ≤ 1 °/s across the
-   sky. A **3–5 ° deadband per axis** lands typical correction rates
-   at ~0.1 Hz, well inside the budget, and is fine for any sensible
-   antenna beam-width.
+1. **Ordinary minimum on-time: 500 ms per axis.** Routine target release
+   respects this hold. Feedback faults, endpoint inhibition, browser stops,
+   releasing or reversing a held browser control, ownership changes, and
+   movement-lease expiry clear the relevant output immediately when serviced,
+   even inside the hold. Releasing one of two held buttons therefore stops
+   that axis at once and leaves the other one running.
+2. **Minimum off-time: 2 s per axis.** Reversal and reactivation wait for
+   the inactive interval, including after a safety inhibition. At the ordinary
+   500 ms minimum on-time, a complete on/off cycle is at least 2.5 s.
+3. **Controller thresholds: engage at 4°, release at 1.5°.** Both modes
+   sample feedback approximately every 100 ms and reject a pair that took
+   longer than 150 ms to read, while relay transitions are governed
+   independently. These thresholds require validation with the installed
+   antenna and load.
 
-The min-off-time is the load-bearing rule. Deadband alone *should*
-keep us slow, but noisy feedback could otherwise oscillate the rotator
-at whatever rate the control loop ticks (which we'll want at 10+ Hz
-for responsiveness). Decoupling the *decision* rate from the
-*actuation* rate is the standard pattern and what we'll implement.
+Every active command has a **750 ms movement lease**, and an output starts
+only when its lease covers the 500 ms minimum on-time — a stalled command
+stream leaves the relay alone instead of producing a click too short to move
+the rotator. The actuator also checks that the oldest feedback channel is at
+most **500 ms** old and that movement does not continue into a calibrated
+endpoint: outward motion stops one ADC code before it, widened by the travel
+the rotator could have made since that sample began, and an energised axis is
+cut at that computed instant rather than at the next sample. Its next wake-up
+is the earliest of those deadlines or a fixed 100 ms service pass. These are
+software deadlines; motor coasting and physical relay release add mechanical
+stopping time beyond them.
+
+A **500 ms hardware watchdog** covers executor stalls, disabled interrupts,
+and panics after the actuator task has started. Only that task feeds it,
+after processing safety policy and applying GPIOs. The RP2350 watchdog reset
+includes SIO and both CPUs, taking the pins out of the stalled executor's
+control, and the board's 10 K base pull-downs then keep the switches off.
+That hand-off may not be instantaneous: RP2350 pads have isolation latches
+that can hold a pin's last output state through a reset until boot
+reinitialises the pad, so measure the pin *during* the reset window rather
+than only after the reboot (see [DEVELOPMENT.md](DEVELOPMENT.md)). Startup
+checks for a watchdog timeout this firmware armed and leaves outputs low
+without restarting a pass; a UF2 or `picotool` reboot, which also restarts the
+chip through the watchdog, is not mistaken for one. A board reset, power
+cycle, or debugger warm reset clears that reason. The watchdog relies on the
+chip's clock and reset hardware; this board has no separate external
+motor-enable interlock. See the
+[RP2350 reset and watchdog registers](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf).
 
 ### To verify on the bench
 
@@ -337,9 +370,16 @@ for responsiveness). Decoupling the *decision* rate from the
   300 ms ranges above are typicals, not measured).
 - Whether the Yaesu relay has any extra contact protection beyond the
   snubber we see, which might extend the electrical-life rating.
-- Whether 3–5 ° deadband is acceptable for the antenna beam-widths
-  we'll use, or if it needs to come down (and the switching budget
-  needs to widen accordingly).
+- Whether the 4° engage / 1.5° release thresholds suit the antenna beam-widths
+  and measured slew rates. The G-5500 manual gives approximately 58 s per
+  360° azimuth and 67 s per 180° elevation at 60 Hz; measure the installed
+  system before changing the controller settings.
+- Whether an energised direction pin stays high through a watchdog reset.
+  Capture the pin across the reset itself, not just after the reboot: the pad
+  isolation latch can hold the last output state until boot claims the pin.
+- Fault-injection checks: invalid feedback, interrupted command refresh,
+  executor stall, watchdog reset, and confirmation that no pass restarts
+  until an explicit reset.
 
 ## Debug probe
 
@@ -349,13 +389,15 @@ J-Link, Black Magic Probe, ST-Link with CMSIS-DAP firmware, or "Picoprobe"
 (another Pico flashed with the debug firmware) also works.
 
 Wiring is three lines: SWCLK, SWDIO, GND. The Pico 2 exposes them on
-dedicated through-holes near the USB connector. Connect the probe's
-target-power line too if you want the probe to power the Pico 2; otherwise
-power the Pico over its USB port.
+dedicated debug pads. Power the Pico separately through its micro-USB port;
+the Raspberry Pi Debug Probe's three-wire SWD connector provides signals and
+ground, not target power. Other probes have their own voltage-reference and
+power requirements; follow their wiring documentation. See the
+[Debug Probe documentation](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html).
 
 ## Power
 
-For development the Pico 2's USB-C port provides plenty. The G-5500
+For development, power the Pico 2 W through its micro-USB port. The G-5500
 rotator and its control box have their own mains supply; the only
 electrical connections between ezal and the rotator are the four
 switch lines (pins 2–5) and the two feedback lines (pins 1, 6), all

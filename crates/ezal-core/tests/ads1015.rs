@@ -13,21 +13,21 @@ use ezal_core::ads1015::*;
 /// place. Worked bit-by-bit against the datasheet:
 ///   OS 1        → 0x8000
 ///   MUX 100     → 0x4000   (AIN0 vs GND)
-///   PGA 010     → 0x0400   (±2.048 V)
+///   PGA 001     → 0x0200   (±4.096 V)
 ///   MODE 1      → 0x0100   (single-shot)
 ///   DR 100      → 0x0080   (1600 SPS)
 ///   COMP_QUE 11 → 0x0003   (comparator disabled)
-/// OR'd together: 0xC583.
+/// OR'd together: 0xC383.
 #[test]
 fn config_single_shot_packs_expected_bits() {
     assert_eq!(
-        config_single_shot(Mux::Ain0, FullScale::V2_048, DataRate::Sps1600),
-        0xC583
+        config_single_shot(Mux::Ain0, FEEDBACK_FULL_SCALE, DataRate::Sps1600),
+        0xC383
     );
     // Switching to AIN1 flips MUX 100 → 101, i.e. +0x1000.
     assert_eq!(
-        config_single_shot(Mux::Ain1, FullScale::V2_048, DataRate::Sps1600),
-        0xD583
+        config_single_shot(Mux::Ain1, FEEDBACK_FULL_SCALE, DataRate::Sps1600),
+        0xD383
     );
 }
 
@@ -88,4 +88,23 @@ fn count_to_mv_scales_by_full_scale() {
 #[test]
 fn scratch_patterns_are_complementary() {
     assert_eq!(SCRATCH_LO, !SCRATCH_HI);
+    // Reserved bits retain the documented per-register reset values on write.
+    assert_eq!(SCRATCH_LO & 0xF, 0);
+    assert_eq!(SCRATCH_HI & 0xF, 0xF);
+}
+
+/// Reserved low bits must not make a healthy ADS1015 fail POST, while a stuck
+/// writable threshold bit must still be detected.
+#[test]
+fn threshold_roundtrip_checks_only_writable_bits() {
+    for pattern in [SCRATCH_LO, SCRATCH_HI] {
+        for reserved in 0..=0xF {
+            assert!(threshold_matches(pattern, (pattern & 0xFFF0) | reserved));
+        }
+        for bit in 4..16 {
+            assert!(!threshold_matches(pattern, pattern ^ (1 << bit)));
+        }
+        assert!(!threshold_matches(pattern, 0x0000));
+        assert!(!threshold_matches(pattern, 0xFFFF));
+    }
 }

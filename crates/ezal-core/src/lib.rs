@@ -4,10 +4,9 @@
 //!
 //! This crate is `no_std` by default so it can be compiled into the
 //! [`ezal-firmware`](../ezal_firmware/index.html) binary that runs on the
-//! Raspberry Pi Pico 2, but it also builds cleanly for the host so its
-//! contents can be unit-tested with a plain `cargo test`. The only escape
-//! hatch is `cfg(test)`, which enables `std` *only* when the test harness
-//! is being built.
+//! Raspberry Pi Pico 2 W, but it also builds for the host. Run
+//! `./scripts/test-host.sh` to select the host target; the workspace's default
+//! target is embedded. `cfg(test)` enables `std` only for the test harness.
 //!
 //! ## Modules
 //!
@@ -21,14 +20,27 @@
 //!   two-axis fail-safe controller.
 //! * [`simulation`] — the repeating METOP-C pass profile and its
 //!   acquire → track → pause sequencer.
+//! * [`supervisor`] — shared ADC validation, read-timeout latching, autonomous
+//!   sequencing, and telemetry assembly for autonomous and manual modes.
+//! * [`interlock`] — feedback freshness and travel-aware directional endpoint
+//!   checks at the final actuator boundary.
+//! * [`actuator`] — the safety-ordered sequence that enforces the interlock
+//!   before relay timing and admits every command through it.
+//! * [`motion`] — latched motion-progress and plausibility supervision using
+//!   applied outputs, feedback resolution, and accumulated energised time.
+//! * [`authority`] — exclusive browser or autonomous command ownership;
+//!   browser movement becomes operator-held jogs.
+//! * [`mailbox`] — a pending command slot where safety inhibition takes
+//!   precedence over movement refreshes.
 //! * [`wifi`] — validation of the station-mode WiFi credentials that
 //!   `build.rs` bakes in from `.env`. Pure predicates the firmware's WiFi
-//!   POST checks before it powers the radio.
+//!   POST checks after radio initialization and before association.
 //! * [`drive`] — the rotator's transport-independent motion vocabulary
 //!   (azimuth/elevation directions, the combined [`drive::DriveCommand`], the
-//!   [`drive::Command`] surface) and [`drive::Debouncer`], the pure state
-//!   machine that keeps the direction outputs from chattering. The GPIO layer
-//!   that applies it lives in the firmware crate's `drive` module.
+//!   [`drive::Command`] surface), relay timing, and [`drive::ActuatorGuard`].
+//!   Ordinary controller stops obey relay timing; safety inhibition, operator
+//!   release, and lease expiry immediately clear applicable outputs. The GPIO
+//!   adapter lives in firmware.
 //! * [`protocol`] — the dashboard's WebSocket wire protocol: parsing browser
 //!   messages ([`protocol::ClientMessage`]) and framing telemetry and control
 //!   state ([`protocol::PositionTelemetry`], [`protocol::ControlStatus`]) as
@@ -63,11 +75,18 @@
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 
+pub mod actuator;
 pub mod ads1015;
+pub mod authority;
 pub mod control;
 pub mod dashboard;
 pub mod drive;
+pub mod interlock;
+pub mod mailbox;
+pub mod motion;
+pub mod network;
 pub mod position;
 pub mod protocol;
 pub mod simulation;
+pub mod supervisor;
 pub mod wifi;

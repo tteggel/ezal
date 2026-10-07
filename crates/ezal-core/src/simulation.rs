@@ -140,7 +140,7 @@ impl MetopPassScheduler {
         let progress = clamped_elapsed_ms as f32 / METOP_PASS_DURATION_MS as f32;
         let rising = progress * 2.0;
         let elevation_fraction = if rising <= 1.0 { rising } else { 2.0 - rising };
-        let (azimuth_start, azimuth_end) = if pass_index % 2 == 0 {
+        let (azimuth_start, azimuth_end) = if pass_index.is_multiple_of(2) {
             (self.azimuth_start_deg, self.azimuth_end_deg)
         } else {
             (self.azimuth_end_deg, self.azimuth_start_deg)
@@ -179,6 +179,17 @@ impl TrackingSequence {
             phase: PassPhase::Acquiring,
             phase_started_ms: now_ms,
             within_tolerance_since_ms: None,
+        }
+    }
+
+    /// Reacquire this pass after an external motion inhibition. Acquisition
+    /// and settling start afresh, so time spent offline never consumes the
+    /// motion budget. A previously latched acquisition fault remains latched.
+    pub fn reacquire(&mut self, now_ms: u64) {
+        if self.phase != PassPhase::Fault {
+            self.phase = PassPhase::Acquiring;
+            self.phase_started_ms = now_ms;
+            self.within_tolerance_since_ms = None;
         }
     }
 

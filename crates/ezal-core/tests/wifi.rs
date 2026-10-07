@@ -144,3 +144,17 @@ fn validate_works_in_const_context() {
     const RESULT: Result<Security, CredentialError> = CREDS.validate();
     assert_eq!(RESULT, Ok(Security::Protected));
 }
+
+/// Debugging startup configuration must never disclose its baked-in secret.
+#[test]
+fn debug_redacts_the_password() {
+    let creds = Credentials {
+        ssid: "ground-station",
+        password: "secret-test-passphrase",
+    };
+    for rendered in [format!("{creds:?}"), format!("{creds:#?}")] {
+        assert!(rendered.contains(creds.ssid));
+        assert!(rendered.contains("[REDACTED]"));
+        assert!(!rendered.contains(creds.password));
+    }
+}

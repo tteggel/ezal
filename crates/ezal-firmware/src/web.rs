@@ -17,9 +17,12 @@ use picoserve::routing::{get, PathRouter};
 
 use ezal_core::dashboard::INDEX_HTML;
 use ezal_core::drive::Command;
-use ezal_core::protocol::{ClientMessage, TELEMETRY_PERIOD_MS, WS_PATH};
+use ezal_core::protocol::{ClientMessage, CommandFreshness, TELEMETRY_PERIOD_MS, WS_PATH};
 
 use crate::state::{SharedState, STATE};
+
+#[path = "ws_receive.rs"]
+mod ws_receive;
 
 /// picoserve server configuration.
 ///
@@ -64,7 +67,7 @@ pub fn app(state: &'static SharedState) -> picoserve::Router<impl PathRouter> {
 /// Run the HTTP/WebSocket server forever.
 pub async fn serve(spawner: Spawner, stack: Stack<'static>) -> ! {
     for task_id in 0..WEB_SERVER_TASKS {
-        spawner.must_spawn(web_task(task_id as u8, stack));
+        spawner.spawn(web_task(task_id as u8, stack).expect("web task pool exhausted"));
     }
 
     defmt::info!("ezal web: started {=usize} acceptors", WEB_SERVER_TASKS);
@@ -91,7 +94,7 @@ async fn send_control_status<W: PicoserveWrite>(
     state: &'static SharedState,
     client_id: u32,
 ) -> Result<(), W::Error> {
-    let mut payload: String<128> = String::new();
+    let mut payload: String<256> = String::new();
     if state
         .control_status(client_id)
         .write_json(&mut payload)
@@ -124,8 +127,58 @@ async fn send_tracking<W: PicoserveWrite>(
     Ok(())
 }
 
+/// Complete one application telemetry batch before issuing its freshness
+/// proof. Movement acknowledgements deliberately do not issue tokens. A
+/// control transfer receives a complete fresh batch, as do periodic ticks.
+async fn send_telemetry<W: PicoserveWrite>(
+    tx: &mut SocketTx<W>,
+    state: &'static SharedState,
+    client_id: u32,
+    freshness: &mut CommandFreshness,
+) -> Result<(), W::Error> {
+    // Timestamp before observing or writing the batch. A slow TCP write must
+    // not make already delayed telemetry eligible for a brand-new lease.
+    let now_ms = Instant::now().as_millis();
+    let network = state.network();
+    freshness.observe_network(network.generation(), network.ready(now_ms));
+    let token = freshness.issue(now_ms);
+    send_position(tx, state).await?;
+    send_control_status(tx, state, client_id).await?;
+    send_tracking(tx, state).await?;
+    if let Some(token) = token {
+        let mut payload: String<64> = String::new();
+        if token.write_json(&mut payload).is_ok() {
+            tx.send_text(&payload).await?;
+        }
+    }
+    Ok(())
+}
+
 struct DashboardSocket {
     state: &'static SharedState,
+}
+
+/// A registered dashboard connection. Dropping it releases manual control,
+/// however the callback ends: a returned error, a close, a receive timeout, or
+/// the server cancelling the whole future.
+struct ClientSession {
+    state: &'static SharedState,
+    id: u32,
+}
+
+impl ClientSession {
+    fn register(state: &'static SharedState) -> Self {
+        Self {
+            state,
+            id: state.register_client(),
+        }
+    }
+}
+
+impl Drop for ClientSession {
+    fn drop(&mut self) {
+        self.state.release_client(self.id);
+    }
 }
 
 impl WebSocketCallback for DashboardSocket {
@@ -135,82 +188,113 @@ impl WebSocketCallback for DashboardSocket {
         mut tx: SocketTx<W>,
     ) -> Result<(), W::Error> {
         let state = self.state;
-        let client_id = state.register_client();
-        let mut read_buffer = [0; 64];
+        let session = ClientSession::register(state);
+        let client_id = session.id;
+        let mut freshness = CommandFreshness::new(client_id);
+        let mut read_buffer = [0; ws_receive::MESSAGE_BUFFER_SIZE];
         let telemetry_period = Duration::from_millis(TELEMETRY_PERIOD_MS);
         let mut next_telemetry = Instant::now() + telemetry_period;
 
-        if let Err(error) = send_control_status(&mut tx, state, client_id).await {
-            state.release_client(client_id);
-            return Err(error);
-        }
+        send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
 
         loop {
-            let event = match rx
-                .next_message(&mut read_buffer, Timer::at(next_telemetry))
-                .await
+            let event = match ws_receive::next_message(
+                &mut rx,
+                &mut tx,
+                &mut read_buffer,
+                &picoserve::time::EmbassyTimer,
+                Timer::at(next_telemetry),
+            )
+            .await
             {
-                Ok(event) => event,
-                Err(error) => {
-                    state.release_client(client_id);
-                    return Err(error);
-                }
+                Ok(Ok(event)) => event,
+                Ok(Err(error)) => return Err(error),
+                // A partial frame cannot be retried after cancellation. End the
+                // connection before picoserve's bounded TCP shutdown; do not
+                // wait for a WebSocket close handshake from this peer.
+                Err(_) => return Ok(()),
             };
+
+            // Link recovery invalidates even commands already buffered on an
+            // established TCP connection. Checking before token issuance too
+            // lets only post-recovery observations authorize a new press.
+            let network = state.network();
+            freshness.observe_network(
+                network.generation(),
+                network.ready(Instant::now().as_millis()),
+            );
 
             match event {
                 Either::First(Ok(Message::Text(message))) => {
-                    let drive_signaled = match ClientMessage::parse(message) {
+                    let parsed = ClientMessage::parse(message);
+                    let drive_signaled = match parsed {
                         Some(ClientMessage::TakeControl) => {
+                            freshness.reject();
                             state.take_control(client_id);
+                            tx.send_text("{\"type\":\"input_required\"}").await?;
                             true
                         }
                         Some(ClientMessage::Command(command)) => {
+                            freshness.disarm();
                             state.accept_command(client_id, command)
                         }
-                        None if message.starts_with("drive:") && state.is_controller(client_id) => {
-                            state.apply_command(Command::Stop);
-                            true
+                        Some(ClientMessage::Movement(request)) => {
+                            let now_ms = Instant::now().as_millis();
+                            if let Some(deadline) = freshness.admit(request, now_ms) {
+                                state.accept_command_until(
+                                    client_id,
+                                    Command::Drive(request.drive),
+                                    deadline,
+                                )
+                            } else {
+                                let signaled = state.accept_command(client_id, Command::Inhibit);
+                                // Clear the browser hold too; a newly issued
+                                // token must not turn a timer refresh into a
+                                // new operator press after this rejection.
+                                tx.send_text("{\"type\":\"input_required\"}").await?;
+                                signaled
+                            }
                         }
-                        None => false,
+                        None => {
+                            freshness.reject();
+                            let signaled = state.accept_command(client_id, Command::Inhibit);
+                            tx.send_text("{\"type\":\"input_required\"}").await?;
+                            signaled
+                        }
                     };
 
                     if drive_signaled {
                         yield_now().await;
                     }
 
-                    if let Err(error) = send_control_status(&mut tx, state, client_id).await {
-                        state.release_client(client_id);
-                        return Err(error);
+                    if parsed == Some(ClientMessage::TakeControl) {
+                        send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
+                    } else {
+                        send_control_status(&mut tx, state, client_id).await?;
                     }
                 }
-                Either::First(Ok(Message::Binary(_))) | Either::First(Ok(Message::Pong(_))) => {}
-                Either::First(Ok(Message::Ping(data))) => {
-                    if let Err(error) = tx.send_pong(data).await {
-                        state.release_client(client_id);
-                        return Err(error);
+                Either::First(Ok(Message::Binary(_))) => {
+                    freshness.reject();
+                    if state.accept_command(client_id, Command::Inhibit) {
+                        yield_now().await;
                     }
                 }
+                Either::First(Ok(Message::Pong(_))) => {}
+                Either::First(Ok(Message::Ping(data))) => tx.send_pong(data).await?,
                 Either::First(Ok(Message::Close(reason))) => {
-                    state.release_client(client_id);
+                    // Revoke motion before awaiting the close response: a peer
+                    // that stopped reading must not keep ownership or motion
+                    // alive for the socket's write timeout.
+                    drop(session);
                     return tx.close(reason).await;
                 }
                 Either::First(Err(error)) => {
-                    state.release_client(client_id);
+                    // Framing errors end this command source immediately too.
+                    drop(session);
                     return tx.close(Some((error.code(), "invalid message"))).await;
                 }
                 Either::Second(()) => {
-                    if let Err(error) = send_position(&mut tx, state).await {
-                        state.release_client(client_id);
-                        return Err(error);
-                    }
-                    if let Err(error) = send_control_status(&mut tx, state, client_id).await {
-                        state.release_client(client_id);
-                        return Err(error);
-                    }
-                    if let Err(error) = send_tracking(&mut tx, state).await {
-                        state.release_client(client_id);
-                        return Err(error);
-                    }
+                    send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
 
                     while next_telemetry <= Instant::now() {
                         next_telemetry += telemetry_period;

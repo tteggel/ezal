@@ -13,6 +13,7 @@
 #   * probe-rs       — flashes the Pico 2 and streams defmt logs
 #   * flip-link      — optional linker wrapper for stack-overflow trapping
 #   * picotool       — optional, for UF2 / BOOTSEL flashing
+#   * Node.js        — executes the dashboard behavior tests without npm
 #   * Python 3 + schemdraw + matplotlib — for re-rendering design/circuit.py
 #   * libusb / udev (Linux) / IOKit (macOS) — backend libs probe-rs uses
 #
@@ -27,6 +28,10 @@
     # current versions of probe-rs / embassy-rs tooling, which lag in
     # the stable channels. Pinned exactly by flake.lock once generated.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    # Unstable dropped Intel macOS in 26.11. Keep that existing host supported
+    # on its newest maintained branch while Linux/Apple Silicon track unstable.
+    nixpkgs-intel-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
 
     # Cross-platform helper: builds the same outputs for each system
     # we care about (x86_64-linux, aarch64-linux, *-darwin) without
@@ -44,10 +49,11 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
+  outputs = { self, nixpkgs, nixpkgs-intel-darwin, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs {
+        hostNixpkgs = if system == "x86_64-darwin" then nixpkgs-intel-darwin else nixpkgs;
+        pkgs = import hostNixpkgs {
           inherit system;
           overlays = [ (import rust-overlay) ];
         };
@@ -70,6 +76,8 @@
           packages = with pkgs; [
             # ── Rust ────────────────────────────────────────────────
             rustToolchain
+            nodejs
+            jq             # read Cargo's actual ELF path for UF2 packaging
 
             # ── Embedded toolchain ──────────────────────────────────
             # probe-rs-tools provides `probe-rs` (the binary used by
@@ -93,18 +101,16 @@
             # ── General build helpers ───────────────────────────────
             pkg-config
           ]
-          ++ lib.optionals stdenv.isLinux [
+          ++ lib.optionals stdenv.hostPlatform.isLinux [
             # probe-rs talks to debug probes via libusb, and reads
             # device permissions via libudev (Linux only).
             udev
             libusb1
           ]
-          ++ lib.optionals stdenv.isDarwin [
-            # macOS USB backend.
+          ++ lib.optionals stdenv.hostPlatform.isDarwin [
+            # macOS USB backend. The Darwin stdenv supplies the Apple SDK;
+            # individual darwin.apple_sdk.frameworks packages were removed.
             libusb1
-            darwin.apple_sdk.frameworks.IOKit
-            darwin.apple_sdk.frameworks.CoreFoundation
-            darwin.apple_sdk.frameworks.AppKit
           ];
 
           # A small banner so it's obvious the shell is active and
@@ -121,31 +127,42 @@
             echo "  Build & flash : cargo run   -p ezal-firmware --release"
             echo "  Build UF2     : ./scripts/build-uf2.sh   (BOOTSEL flashing)"
             echo "  Host tests    : ./scripts/test-host.sh"
+            echo "  Dashboard     : ./scripts/test-dashboard.sh"
             echo "  Re-render SVG : python3 design/circuit.py"
             echo "─────────────────────────────────────────────────────"
             echo
           '';
         };
 
-        # ── Lean shell for CI ───────────────────────────────────────
-        # Everything the GitHub Actions workflow needs and nothing it
-        # doesn't: the pinned Rust toolchain (cargo/clippy/rustfmt plus
-        # the cross-compile target, all read from rust-toolchain.toml)
-        # and picotool for the UF2 packaging step. mkShell pulls in a
-        # host C toolchain automatically, which is all the host-side
-        # ezal-core tests need to link.
+        # ── Lean shell for CI's Rust jobs ───────────────────────────
+        # Everything those jobs need and nothing they don't: the pinned
+        # Rust toolchain (cargo/clippy/rustfmt plus the cross-compile
+        # target, all read from rust-toolchain.toml) and picotool for UF2
+        # packaging. mkShell pulls in a host C toolchain automatically,
+        # which is all the host-side ezal-core tests need to link.
         #
-        # Deliberately omits probe-rs, flip-link, and the
-        # python/matplotlib stack from the default shell: CI never
-        # flashes hardware or re-renders the schematic, and that closure
-        # would slow every run. `ci.yml` loads this with
-        # `nix develop .#ci`, so flake.lock is the single source of
-        # truth for CI's toolchain too.
+        # Deliberately omits probe-rs, flip-link, Node.js, and the
+        # python/matplotlib stack from the default shell: CI's Rust jobs
+        # never flash hardware, run the dashboard tests, or re-render the
+        # schematic, and those closures would slow every run. `ci.yml`
+        # loads this with `nix develop .#ci`, so flake.lock is the single
+        # source of truth for CI's toolchain too.
         devShells.ci = pkgs.mkShell {
           packages = [
             rustToolchain
             pkgs.picotool
+            pkgs.jq
           ];
+        };
+
+        # ── Dashboard tests ─────────────────────────────────────────
+        # `scripts/test-dashboard.sh` runs the served JavaScript under
+        # Node's built-in test runner and needs no Rust. Its own CI job
+        # loads this with `nix develop .#dashboard`, so the Node closure
+        # stays out of the jobs that never run it, while flake.lock stays
+        # the pin for both.
+        devShells.dashboard = pkgs.mkShell {
+          packages = [ pkgs.nodejs ];
         };
       });
 }

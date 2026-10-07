@@ -21,6 +21,20 @@
 /// instead give 0x49 / 0x4A / 0x4B; we only ever use 0x48.)
 pub const I2C_ADDR: u8 = 0x48;
 
+/// Feedback ADC range used by both the hardware driver and calibration checks.
+/// Endpoints near 2 V need room for their 25 mV noise margin and an observable
+/// overrange fault, which ±2.048 V cannot give. This range has a 2 mV code size.
+pub const FEEDBACK_FULL_SCALE: FullScale = FullScale::V4_096;
+
+/// Lowest single-ended feedback reading treated as stuck at the supply rail.
+/// The ADS1015 cannot measure above its 3.3 V supply, so an input pinned to
+/// that rail reads far below the ±4.096 V saturation code. Readings within
+/// 100 mV of the nominal rail are not trusted as feedback.
+pub const FEEDBACK_SUPPLY_RAIL_MV: i32 = 3_200;
+
+/// Conversion codes between zero and positive full scale.
+pub const CODES_PER_FULL_SCALE: i32 = 2048;
+
 /// The four ADS1015 registers, selected by the *pointer* byte that opens
 /// every I²C transaction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -52,10 +66,9 @@ impl Register {
 pub enum FullScale {
     /// ±6.144 V
     V6_144,
-    /// ±4.096 V
+    /// ±4.096 V — ezal feedback setting, with 2 mV per code.
     V4_096,
-    /// ±2.048 V — the ezal setting: the divided feedback tops out at ≈2.02 V,
-    /// ≈99 % of this range, keeping the LSB near 1 mV.
+    /// ±2.048 V, with 1 mV per code.
     V2_048,
     /// ±1.024 V
     V1_024,
@@ -88,6 +101,27 @@ impl FullScale {
             FullScale::V1_024 => 1024,
             FullScale::V0_512 => 512,
             FullScale::V0_256 => 256,
+        }
+    }
+
+    /// Millivolts reported by the positive saturation code, 0x7ff.
+    pub const fn positive_saturation_mv(self) -> i32 {
+        count_to_mv((CODES_PER_FULL_SCALE - 1) as i16, self)
+    }
+
+    /// Size of one conversion code in millivolts.
+    pub fn code_mv(self) -> f32 {
+        self.full_scale_mv() as f32 / CODES_PER_FULL_SCALE as f32
+    }
+
+    /// Lowest single-ended reading treated as saturated: the positive
+    /// saturation code or [`FEEDBACK_SUPPLY_RAIL_MV`], whichever is lower.
+    pub const fn saturation_limit_mv(self) -> i32 {
+        let code_limit_mv = self.positive_saturation_mv();
+        if code_limit_mv < FEEDBACK_SUPPLY_RAIL_MV {
+            code_limit_mv
+        } else {
+            FEEDBACK_SUPPLY_RAIL_MV
         }
     }
 }
@@ -200,21 +234,27 @@ pub const fn config_matches(written: u16, read_back: u16) -> bool {
 
 /// POST scratch pattern for [`Register::LoThresh`]. The two scratch patterns
 /// are bitwise complements, so a stuck-high or stuck-low data line corrupts
-/// at least one of them — a stronger link check than a bare address ACK.
+/// at least one writable threshold bit — a stronger check than an address ACK.
 ///
-/// The low nibble is load-bearing: these patterns exercise all 16 bits and the
-/// POST requires an *exact* read-back, which works only because the ADS1015's
-/// threshold registers store all 16 bits — the comparator ignores the bottom 4
-/// when comparing against a conversion, but the register still holds them.
-/// Their reset values (0x8000 / 0x7FFF) have a live low nibble, which is what
-/// confirms the register is full-width and not 12-bit-left-justified like
-/// [`Register::Conversion`]. A part that masked the low 4 bits would instead
-/// need top-nibble-only patterns (e.g. 0x5AA0 / 0xA550).
-pub const SCRATCH_LO: u16 = 0x5AA5;
+/// Bits 15:4 hold the writable 12-bit threshold. Bits 3:0 are reserved,
+/// read-only, and have different reset values in the low and high registers:
+/// 0x0 and 0xF respectively. Preserve those values on write and compare only
+/// writable bits with [`threshold_matches`]. A nonzero reset value does not
+/// imply a writable bit. See TI's ADS101x datasheet SBAS473F, section 8,
+/// figures 8-6 / table 8-5 and table 8-6.
+pub const SCRATCH_LO: u16 = 0x5AA0;
 
 /// POST scratch pattern for [`Register::HiThresh`]; the complement of
 /// [`SCRATCH_LO`].
-pub const SCRATCH_HI: u16 = 0xA55A;
+pub const SCRATCH_HI: u16 = 0xA55F;
+
+/// Compare the writable threshold field without relying on reserved readback
+/// bits. The register layout, rather than its 16-bit bus transfer width,
+/// determines which bits a scratch-register self-test can exercise.
+pub const fn threshold_matches(written: u16, read_back: u16) -> bool {
+    const WRITABLE_BITS: u16 = 0xFFF0;
+    (written & WRITABLE_BITS) == (read_back & WRITABLE_BITS)
+}
 
 /// Decode a raw 16-bit Conversion-register word into a signed 12-bit count.
 ///
@@ -231,5 +271,5 @@ pub const fn decode_count(raw: u16) -> i16 {
 /// range. +2048 codes corresponds to +full-scale, so this is
 /// `count * full_scale_mv / 2048`.
 pub const fn count_to_mv(count: i16, fs: FullScale) -> i32 {
-    (count as i32 * fs.full_scale_mv()) / 2048
+    (count as i32 * fs.full_scale_mv()) / CODES_PER_FULL_SCALE
 }

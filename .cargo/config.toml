@@ -27,6 +27,9 @@ target = "thumbv8m.main-none-eabihf"
 # ── Embedded target settings ─────────────────────────────────────────────
 [target.thumbv8m.main-none-eabihf]
 
+# Optional stack-overflow trap; flip-link is supplied by the default Nix shell.
+# linker = "flip-link"
+
 # probe-rs is the modern Swiss-army knife for flashing, debugging, and
 # log streaming from Rust embedded targets. Setting it as the cargo "runner"
 # means `cargo run` will:

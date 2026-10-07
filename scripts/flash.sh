@@ -9,6 +9,9 @@
 
 set -euo pipefail
 
+REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "${REPO_ROOT}"
+
 PROFILE="--release"
 if [[ "${1:-}" == "--debug" ]]; then
     PROFILE=""

@@ -15,8 +15,8 @@
 //!     configuration, not merely that *something* answers at 0x48.
 //!  2. **Scratch round-trip** — write complementary bit patterns to the
 //!     (comparator-disabled, hence inert) threshold registers and read them
-//!     straight back. Proves the link carries every data bit in both
-//!     directions to real, RAM-backed registers.
+//!     back, comparing their writable bits. Exercises the threshold data
+//!     bits in both directions without depending on reserved-bit behavior.
 //!
 //! It then takes one reading on each feedback channel and returns them for
 //! logging. Those voltages are *informational*, not a pass/fail gate: on the
@@ -28,12 +28,7 @@ use embassy_rp::peripherals::I2C0;
 use embassy_time::{Duration, Timer};
 
 use ezal_core::ads1015 as ads;
-use ezal_core::ads1015::{DataRate, FullScale, Mux, Register};
-
-/// PGA range for every ezal reading: ±2.048 V, chosen so the divided G-5500
-/// feedback (≈0.90–2.02 V) sits near the top of the span. See
-/// `docs/HARDWARE.md`.
-const FS: FullScale = FullScale::V2_048;
+use ezal_core::ads1015::{DataRate, Mux, Register, FEEDBACK_FULL_SCALE as FS};
 
 /// Data rate for the single-shot reads: 1600 SPS ⇒ ≈625 µs per conversion.
 const DR: DataRate = DataRate::Sps1600;
@@ -95,6 +90,10 @@ impl<'d> Ads1015<'d> {
     /// Run the power-on self-test. On success the device is left configured
     /// for single-shot reads and the returned [`PostReport`] carries one
     /// sample from each feedback channel.
+    ///
+    /// The caller must supply a deadline. If cancelled during an I²C transfer,
+    /// do not use this bus again until hardware reset; the HAL does not promise
+    /// that dropping its transaction future restores an idle controller.
     pub async fn post(&mut self) -> Result<PostReport, PostError> {
         // 1. Presence: a NACK here means nothing is answering at `addr`.
         self.read_reg(Register::Config)
@@ -151,13 +150,13 @@ impl<'d> Ads1015<'d> {
         Ok(ads::count_to_mv(ads::decode_count(raw), FS))
     }
 
-    /// Write `pattern` to `reg` and require it to read straight back.
+    /// Write `pattern` to a threshold register and check its writable bits.
     async fn scratch_roundtrip(&mut self, reg: Register, pattern: u16) -> Result<(), PostError> {
         self.write_reg(reg, pattern)
             .await
             .map_err(|_| PostError::Bus)?;
         let read = self.read_reg(reg).await.map_err(|_| PostError::Bus)?;
-        if read != pattern {
+        if !ads::threshold_matches(pattern, read) {
             return Err(PostError::ScratchRoundtrip {
                 wrote: pattern,
                 read,

@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "${REPO_ROOT}"
+
 HOST_TRIPLE=$(rustc -vV | sed -n 's/host: //p')
 if [[ -z "${HOST_TRIPLE}" ]]; then
     echo "✗ could not determine host triple from rustc -vV" >&2
@@ -19,4 +22,4 @@ if [[ -z "${HOST_TRIPLE}" ]]; then
 fi
 
 echo "→ running ezal-core tests for ${HOST_TRIPLE}"
-exec cargo test -p ezal-core --target "${HOST_TRIPLE}" --all-features "$@"
+exec cargo test --locked -p ezal-core --target "${HOST_TRIPLE}" --all-features "$@"

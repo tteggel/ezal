@@ -5,27 +5,33 @@
 # real hardware; it only runs anything that can be executed on the CI
 # runner's host.
 #
-# Every job runs inside the project's Nix dev shell, so the toolchain is the
-# exact one pinned by `flake.lock` — the same `cargo`, `clippy`, and
-# `picotool` a contributor gets locally. We load the *lean* `.#ci` shell
-# (Rust toolchain + picotool, no probe-rs/python) via `nicknovitski/nix-
-# develop`, which exports the shell's environment to every later step, so
-# plain `cargo`/`picotool` commands and `Swatinem/rust-cache` all see it.
+# Every job runs inside a Nix dev shell from this repo, so the toolchain is
+# the exact one pinned by `flake.lock` — the same `cargo`, `clippy`,
+# `picotool`, and `node` a contributor gets locally. The Rust jobs load the
+# *lean* `.#ci` shell (Rust toolchain + picotool, no probe-rs/node/python) and
+# the dashboard job loads `.#dashboard` (Node only), both via
+# `nicknovitski/nix-develop`, which exports the shell's environment to every
+# later step, so plain commands and `Swatinem/rust-cache` all see it.
 #
-# The four jobs run in parallel:
+# The five jobs run in parallel:
 #
 #   fmt            — `cargo fmt --check` (style)
 #   test-host      — `cargo test` for ezal-core, on the host
+#   test-dashboard — Node's test runner against the served dashboard JS
 #   clippy-host    — clippy lints for the host build of ezal-core
-#   build-firmware — cross-compiles ezal-firmware for the Pico 2, runs
-#                    clippy on it, then packages a UF2 for BOOTSEL flashing
-#                    and uploads both the elf and the UF2 as artefacts
+#   build-firmware — cross-compiles ezal-firmware for the Pico 2 in both
+#                    feature modes, lints each, packages their UF2 images,
+#                    and uploads the elf and UF2 per mode
 #
-# All four are required to pass before a PR can be merged (configure that
+# All five are required to pass before a PR can be merged (configure that
 # in GitHub's branch-protection settings).
 # ────────────────────────────────────────────────────────────────────────
 
 name: CI
+
+# Builds need repository contents, but never write access to this repository.
+permissions:
+  contents: read
 
 on:
   push:
@@ -47,86 +53,107 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Load the .#ci dev shell
         # Puts the flake-pinned toolchain on PATH for the steps below.
-        uses: nicknovitski/nix-develop@v1
+        uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
         with:
           arguments: ".#ci"
       - run: cargo fmt --all -- --check
+      - run: ./scripts/test-build-tools.sh
 
   # ── Host unit tests ──────────────────────────────────────────────────
   test-host:
     name: Test (host)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: nicknovitski/nix-develop@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
         with:
           arguments: ".#ci"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Run ezal-core tests
         run: |
-          HOST=$(rustc -vV | sed -n 's/host: //p')
-          cargo test -p ezal-core --target "$HOST" --all-features
+          ./scripts/test-host.sh
+
+  # ── Dashboard behaviour tests ────────────────────────────────────────
+  test-dashboard:
+    name: Test (dashboard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - name: Load the .#dashboard dev shell
+        # Node only: this job builds no Rust, so it does not pay for the
+        # toolchain closure and the Rust jobs do not pay for Node's.
+        uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+        with:
+          arguments: ".#dashboard"
+      - run: ./scripts/test-dashboard.sh
 
   # ── Lints on the host crate ──────────────────────────────────────────
   clippy-host:
     name: Clippy (host)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: nicknovitski/nix-develop@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
         with:
           arguments: ".#ci"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Clippy
         run: |
-          HOST=$(rustc -vV | sed -n 's/host: //p')
-          cargo clippy -p ezal-core --target "$HOST" --all-features --all-targets -- -D warnings
+          HOST_TRIPLE=$(rustc -vV | sed -n 's/host: //p')
+          cargo clippy --locked -p ezal-core --target "$HOST_TRIPLE" --all-features --all-targets -- -D warnings
 
   # ── Cross-compile firmware + package UF2 ─────────────────────────────
   build-firmware:
-    name: Build firmware
+    name: Build firmware (both modes)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: nicknovitski/nix-develop@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
         with:
           arguments: ".#ci"
-      - uses: Swatinem/rust-cache@v2
-      - name: Build release firmware
-        # Default target (from .cargo/config.toml) is thumbv8m.main-none-eabihf.
-        run: cargo build -p ezal-firmware --release
-      - name: Clippy on firmware
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build, lint, and package both modes
+        # One job, so the dependency graph — fat-LTO and all — is compiled
+        # once for two feature sets that enable no dependency features
+        # between them. Default target (from .cargo/config.toml) is
+        # thumbv8m.main-none-eabihf, and both modes write the same elf path,
+        # so each mode's images are copied out before the next build starts.
+        #
+        # build-uf2.sh is the same script contributors run locally, so the
+        # picotool convert flags live in exactly one place; its `cargo build`
+        # is a cached no-op after the release build above it.
+        #
         # Firmware is `no_std`/`no_main`; the test/bench targets can't be
-        # built for the embedded triple (they need libtest), so we limit
-        # clippy to the bin target.
-        run: cargo clippy -p ezal-firmware --bins -- -D warnings
-      - name: Package UF2 for BOOTSEL flashing
-        # Reuses the same script contributors run locally, so the picotool
-        # convert flags live in exactly one place. Its `cargo build` is a
-        # cached no-op here — the release build above already produced the elf.
-        run: ./scripts/build-uf2.sh
-      - name: Upload elf as artefact
-        # Lets reviewers download the firmware from a PR run without having
-        # to build it themselves — handy with a debug probe (probe-rs / SWD).
-        uses: actions/upload-artifact@v4
+        # built for the embedded triple (they need libtest), so clippy takes
+        # the bin target only.
+        run: |
+          set -euo pipefail
+          for mode in autonomous manual; do
+            args=""
+            [ "$mode" = manual ] && args="--no-default-features"
+            cargo build --locked -p ezal-firmware --release $args
+            cargo clippy --locked -p ezal-firmware --bins $args -- -D warnings
+            ./scripts/build-uf2.sh $args
+            mkdir -p "dist/$mode"
+            cp target/thumbv8m.main-none-eabihf/release/ezal-firmware \
+               target/thumbv8m.main-none-eabihf/release/ezal-firmware.uf2 \
+               "dist/$mode/"
+          done
+      - name: Upload firmware artefacts
+        # Lets reviewers download either mode from a PR run without building
+        # it: the elf for a debug probe (probe-rs / SWD), and the UF2 for
+        # drag-and-drop BOOTSEL flashing with no extra tooling.
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ezal-firmware-${{ github.sha }}
-          path: target/thumbv8m.main-none-eabihf/release/ezal-firmware
-          if-no-files-found: error
-          retention-days: 14
-      - name: Upload UF2 as artefact
-        # The drag-and-drop image: hold BOOTSEL, plug the Pico 2 in, copy
-        # this onto the "RP2350" drive. No probe or extra tooling needed.
-        uses: actions/upload-artifact@v4
-        with:
-          name: ezal-firmware-uf2-${{ github.sha }}
-          path: target/thumbv8m.main-none-eabihf/release/ezal-firmware.uf2
+          path: dist/
           if-no-files-found: error
           retention-days: 14

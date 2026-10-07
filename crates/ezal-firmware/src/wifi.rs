@@ -13,8 +13,8 @@
 //! All of that — plus the chip's event pump and the control-message plumbing —
 //! is driven by a long-lived [`cyw43::Runner`] future, which we hand to the
 //! Embassy executor as its own task ([`cyw43_task`]). Everything else (join,
-//! GPIO, later an IP stack) talks to the chip through the returned
-//! [`cyw43::Control`] handle, which we wrap in [`Wifi`].
+//! GPIO) talks to the chip through the returned [`cyw43::Control`] handle,
+//! which we wrap in [`Wifi`]. The IP stack uses the separate [`NetDriver`].
 //!
 //! ## STA mode
 //!
@@ -29,13 +29,13 @@
 //! [`Wifi::post`] is a genuine self-test, mirroring the ADS1015 one:
 //!
 //!  1. **Credentials** — [`ezal_core::wifi::Credentials::validate`] rejects an
-//!     empty/oversized SSID or a bad-length passphrase *before* the radio is
-//!     asked to do anything, turning a mistyped `.env` into a clear message.
+//!     empty/oversized SSID or a bad-length passphrase after radio initialization
+//!     and before association, turning a mistyped `.env` into a clear message.
 //!  2. **Association** — a successful [`Control::join`] proves the whole chain
 //!     end to end: the PIO/DMA bus to the chip, the firmware upload, the
 //!     antenna, and that the AP actually accepted our credentials. A failure
-//!     here is fatal to the bring-up (the caller reports it and idles) rather
-//!     than being papered over.
+//!     here ends that bounded attempt. The long-lived supervisor retries with
+//!     backoff while keeping all motion inhibited.
 //!
 //! Getting an IP address (DHCP over `embassy-net`) is the natural next layer
 //! and deliberately out of scope here: this POST confirms we can *associate*,
@@ -46,6 +46,8 @@ use cyw43::{Control, JoinAuth, JoinError, JoinOptions, NetDriver, PowerManagemen
 use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
 use defmt::{info, warn, Format};
 use embassy_executor::Spawner;
+use embassy_futures::select::{select3, Either3};
+use embassy_net::{ConfigV4, Stack};
 use embassy_rp::dma::Channel;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::peripherals::{PIN_23, PIN_24, PIN_25, PIN_29, PIO0};
@@ -54,7 +56,10 @@ use embassy_rp::Peri;
 use embassy_time::{with_timeout, Duration, Timer};
 use static_cell::StaticCell;
 
+use ezal_core::network::NETWORK_POLL_MS;
 use ezal_core::wifi::{Credentials, Security};
+
+use crate::state::SharedState;
 
 /// The power-management profile we run the radio in. This is a mains-powered
 /// controller and the dashboard sends direction leases over a WebSocket, so
@@ -90,8 +95,17 @@ const INITIAL_JOIN_TIMEOUT: Duration = Duration::from_millis(2750);
 /// missed event can otherwise pin boot forever.
 const JOIN_TIMEOUT: Duration = Duration::from_millis(3500);
 
+/// Bound disassociation too: a timed-out join may indicate an unresponsive
+/// driver, so waiting forever for its cleanup would defeat the join deadline.
+const LEAVE_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Number of association attempts before POST fails.
 const JOIN_ATTEMPTS: usize = 3;
+
+/// A DHCP outage must release the join attempt for another bounded retry.
+const DHCP_TIMEOUT: Duration = Duration::from_secs(30);
+const RETRY_INITIAL_SECS: u64 = 1;
+const RETRY_MAX_SECS: u64 = 30;
 
 /// The CYW43439's long-lived driver task: it owns the PIO/DMA gSPI bus and
 /// pumps the chip's events for the life of the program. Spawned once by
@@ -112,7 +126,6 @@ async fn cyw43_task(
 /// Built by [`Wifi::init`]; [`Wifi::post`] then joins the configured AP.
 pub struct Wifi<'d> {
     control: Control<'d>,
-    net_device: NetDriver<'d>,
 }
 
 /// What a successful [`Wifi::post`] established, for logging.
@@ -127,9 +140,9 @@ pub struct PostReport {
 #[derive(Format)]
 pub enum PostError {
     /// The baked-in credentials didn't pass [`Credentials::validate`] — the
-    /// radio was never powered to join. The string is a static description
-    /// from [`ezal_core::wifi::CredentialError::message`]; the usual cause is
-    /// a missing or mis-filled `.env`.
+    /// radio was initialized but no association was attempted. The string
+    /// comes from [`ezal_core::wifi::CredentialError::message`]; the usual
+    /// cause is a missing or mis-filled `.env`.
     InvalidCredentials(&'static str),
     /// The credentials were well-formed but the join failed — wrong password,
     /// AP out of range, or no AP with that SSID. Carries the driver's reason.
@@ -138,6 +151,10 @@ pub enum PostError {
     /// timeout. Usually means the chip/AP state got wedged across a debugger
     /// reset, or the expected join event was missed.
     JoinTimeout,
+    /// The radio did not acknowledge disassociation. Its link state is
+    /// unknown. Supervision keeps outputs inhibited and retries cleanup after
+    /// backoff before attempting another association.
+    LeaveTimeout,
 }
 
 impl Wifi<'static> {
@@ -148,6 +165,12 @@ impl Wifi<'static> {
     /// [`cyw43_task`] driver task on `spawner`, loads the regulatory table,
     /// and applies [`POWER_MODE`]. Returns once the radio is idle in STA mode,
     /// ready for [`Wifi::post`].
+    ///
+    /// Hardware/firmware-upload failure can keep this initialization pending.
+    /// The network permit remains offline, so motion stays inhibited. Such a
+    /// failure needs hardware reset: after handing the PIO/DMA bus to the
+    /// driver task, its static state and owned peripherals cannot be recreated
+    /// safely by the association/DHCP retry loop.
     ///
     /// The caller (`main`) owns the interrupt bindings, so it constructs the
     /// two peripherals that consume them — the `pio` block and the `dma`
@@ -171,7 +194,7 @@ impl Wifi<'static> {
         cs: Peri<'static, PIN_25>,
         dio: Peri<'static, PIN_24>,
         clk: Peri<'static, PIN_29>,
-    ) -> Self {
+    ) -> (NetDriver<'static>, Self) {
         // The three images the CYW43439 needs uploaded at every boot. They're
         // vendored in-tree and baked into our image, so there's no separate
         // flashing step. See that directory's README for provenance/licence.
@@ -205,10 +228,11 @@ impl Wifi<'static> {
         static STATE: StaticCell<cyw43::State> = StaticCell::new();
         let state = STATE.init(cyw43::State::new());
 
-        // `net_device` is the CYW43439 data-plane handle consumed by
-        // `embassy-net` after the association POST below has proved the link.
+        // Give the data-plane handle to `embassy-net` before association. That
+        // lets both DHCP and HTTP tasks survive repeated association attempts;
+        // the separate Control handle remains owned by our supervisor.
         let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
-        spawner.must_spawn(cyw43_task(runner));
+        spawner.spawn(cyw43_task(runner).expect("static task pool exhausted"));
 
         // Load the Country Locale Matrix (regulatory channel/power limits),
         // then pick a power-management profile. Both talk to the chip via the
@@ -216,28 +240,27 @@ impl Wifi<'static> {
         control.init(clm).await;
         control.set_power_management(POWER_MODE).await;
 
-        Wifi {
-            control,
-            net_device,
-        }
+        (net_device, Wifi { control })
     }
 
     /// Run the WiFi power-on self-test: validate the baked-in credentials,
     /// then join the access point in station mode.
     ///
     /// On success the radio is associated with `creds.ssid` and the returned
-    /// [`PostReport`] notes whether the link is secured. On failure nothing is
-    /// left half-joined — the caller reports the [`PostError`] and idles.
+    /// [`PostReport`] notes whether the link is secured. Failure attempts a
+    /// bounded disassociation; if the radio cannot acknowledge it, its state
+    /// remains unknown. Supervision logs the error and retries cleanup after
+    /// backoff; every unsuccessful attempt leaves motion inhibited.
     pub async fn post(&mut self, creds: &Credentials<'_>) -> Result<PostReport, PostError> {
-        // 1. Pre-flight the credentials before touching the air. A bad `.env`
-        //    fails here with a clear reason instead of as an opaque JoinError.
+        // 1. Validate before association; init() has already powered the radio
+        //    and uploaded firmware. Report a clear error for a bad `.env`.
         let security = creds
             .validate()
             .map_err(|e| PostError::InvalidCredentials(e.message()))?;
 
         // 2. Join. An empty password means an open network; otherwise use the
         //    configured WPA3/SAE handshake with the passphrase.
-        self.control.leave().await;
+        self.leave().await?;
         Timer::after(JOIN_LEAVE_SETTLE).await;
 
         for attempt in 1..=JOIN_ATTEMPTS {
@@ -262,7 +285,7 @@ impl Wifi<'static> {
                     });
                 }
                 Ok(Err(error)) => {
-                    self.control.leave().await;
+                    self.leave().await?;
                     return Err(PostError::Join(error));
                 }
                 Err(_) if attempt < JOIN_ATTEMPTS => {
@@ -276,11 +299,11 @@ impl Wifi<'static> {
                             attempt, JOIN_ATTEMPTS
                         );
                     }
-                    self.control.leave().await;
+                    self.leave().await?;
                     Timer::after(JOIN_LEAVE_SETTLE).await;
                 }
                 Err(_) => {
-                    self.control.leave().await;
+                    self.leave().await?;
                     return Err(PostError::JoinTimeout);
                 }
             }
@@ -289,9 +312,98 @@ impl Wifi<'static> {
         unreachable!()
     }
 
-    /// Consume the WiFi wrapper and return the data-plane device for
-    /// `embassy-net`.
-    pub fn into_net_device(self) -> NetDriver<'static> {
-        self.net_device
+    /// Clear chip association state before another join or after a failed one.
+    /// The pinned CYW43 driver cancels its host-side IOCTL on future drop;
+    /// timeout still does not prove the radio processed the request. End this
+    /// attempt; the supervisor backs off before retrying cleanup. Every later
+    /// attempt must receive a successful disassociation before joining again.
+    /// Readiness additionally requires that join and a new DHCP lease succeed.
+    async fn leave(&mut self) -> Result<(), PostError> {
+        with_timeout(LEAVE_TIMEOUT, self.control.leave())
+            .await
+            .map_err(|_| PostError::LeaveTimeout)
     }
+}
+
+/// Maintain station association, DHCP, and the actuator's expiring network
+/// permit for the lifetime of the firmware. HTTP acceptors are already running
+/// when this task starts; late AP/DHCP recovery needs no reboot.
+#[embassy_executor::task]
+pub async fn supervise(
+    mut wifi: Wifi<'static>,
+    stack: Stack<'static>,
+    creds: Credentials<'static>,
+    state: &'static SharedState,
+) -> ! {
+    let mut retry_secs = RETRY_INITIAL_SECS;
+    loop {
+        state.publish_network(false);
+        // Clear any cached address BEFORE retrying association. A lease from
+        // the previous link must not count as successful DHCP on the new one.
+        stack.set_config_v4(ConfigV4::None);
+        match wifi.post(&creds).await {
+            Ok(report) => {
+                info!(
+                    "WiFi associated ({=str}); waiting for DHCP",
+                    if report.protected { "secured" } else { "open" }
+                );
+                stack.set_config_v4(ConfigV4::Dhcp(Default::default()));
+                let configured = with_timeout(DHCP_TIMEOUT, async {
+                    stack.wait_link_up().await;
+                    stack.wait_config_up().await;
+                })
+                .await
+                .is_ok();
+                if configured && network_ready(stack) {
+                    retry_secs = RETRY_INITIAL_SECS;
+                    let address = stack.config_v4().map(|config| config.address);
+                    info!("network ready; motion permission available");
+                    loop {
+                        if !network_ready(stack)
+                            || stack.config_v4().map(|config| config.address) != address
+                        {
+                            break;
+                        }
+                        state.publish_network(true);
+                        // Event waits cut permission as soon as the stack
+                        // reports a loss. Polling also notices address changes
+                        // and renews the independently enforced 300 ms permit.
+                        match select3(
+                            stack.wait_link_down(),
+                            stack.wait_config_down(),
+                            Timer::after(Duration::from_millis(NETWORK_POLL_MS)),
+                        )
+                        .await
+                        {
+                            Either3::First(()) | Either3::Second(()) => break,
+                            Either3::Third(()) => {}
+                        }
+                    }
+                    state.publish_network(false);
+                    warn!("network lost or address changed; motion inhibited");
+                } else {
+                    warn!("DHCP unavailable after bounded wait; motion inhibited");
+                }
+            }
+            Err(error) => warn!("WiFi attempt failed: {}; motion inhibited", error),
+        }
+
+        state.publish_network(false);
+        info!("network retry in {=u64}s", retry_secs);
+        Timer::after(Duration::from_secs(retry_secs)).await;
+        retry_secs = (retry_secs * 2).min(RETRY_MAX_SECS);
+    }
+}
+
+/// Readiness means a current station link and a usable local IPv4 address.
+/// It deliberately does not depend on internet access or a connected viewer.
+fn network_ready(stack: Stack<'_>) -> bool {
+    stack.is_link_up()
+        && stack.config_v4().is_some_and(|config| {
+            let address = config.address.address();
+            !address.is_unspecified()
+                && !address.is_multicast()
+                && !address.is_broadcast()
+                && !address.is_loopback()
+        })
 }

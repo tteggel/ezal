@@ -62,8 +62,9 @@ Notes
                         manual) before the external DIN, so the effective
                         ratio seen at the ADS1015 is 82 / (33 + 68 + 82)
                         ≈ 0.448. That puts 4.5 V at the rotator's full
-                        scale into 2.02 V at the ADC — 99% of the ±2.048 V
-                        FSR PGA setting, ~1 mV LSB.
+                        scale into 2.02 V at the ADC, inside the ±4.096 V
+                        PGA range at 2 mV/code, with headroom for the
+                        calibration fault margin.
     I²C pull-ups        — 4.7 K to 3.3 V on SDA and SCL
 * The ADS1015's ADDR pin is tied to GND for the default address 0x48.
 * These values assume the G-5500's direction inputs sink a few mA at

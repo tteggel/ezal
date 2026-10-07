@@ -3,12 +3,12 @@
 # ────────────────────────────────────────────────────────────────────────────
 #
 # This crate is deliberately hardware-independent. It holds calibration,
-# pointing units, pass simulation, fail-safe control, actuator timing, wire
+# pointing units, pass simulation, feedback supervision, actuator interlocks, wire
 # protocol, ADC register logic, and the embedded dashboard asset.
 #
 # Because it has no hardware dependencies, it can be:
 #   * compiled for the embedded target (no_std, no allocator),
-#   * compiled for the host and run under `cargo test`,
+#   * tested on the host with `./scripts/test-host.sh`,
 #   * compiled for fuzzing, miri, or other host-only verification tools.
 #
 # Anything that needs `embassy-rp`, `embedded-hal`, or talks to actual
@@ -31,3 +31,10 @@ rust-version.workspace = true
 
 [dependencies]
 # None: all logic remains allocator-free and `no_std`.
+
+[dev-dependencies]
+# Exercise the firmware receive adapter against the same WebSocket parser,
+# using an in-memory socket and clock without an embedded runtime. The version
+# comes from the workspace, so these tests can never drift onto a different
+# picoserve than the firmware ships; only the feature set differs.
+picoserve = { workspace = true, features = ["ws"] }

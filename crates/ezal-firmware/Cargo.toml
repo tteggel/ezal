@@ -3,7 +3,7 @@
 # ────────────────────────────────────────────────────────────────────────────
 #
 # This crate produces the binary that actually runs on the Raspberry Pi
-# Pico 2 (RP2350). It is `no_std`, `no_main`, and depends on:
+# Pico 2 W (RP2350). It is `no_std`, `no_main`, and depends on:
 #
 #   * `embassy-rp`        — the chip-specific HAL and async runtime glue
 #   * `embassy-executor`  — the cooperative async executor
@@ -31,10 +31,7 @@ rust-version.workspace = true
 # linker can find it. See build.rs for the full story.
 build = "build.rs"
 
-# Two binary targets: a default `ezal-firmware` (whose `src/main.rs` is the
-# real application) and any future binaries (e.g. a `bench` binary) live
-# under `src/bin/`. With Cargo's default discovery this Just Works; nothing
-# more is needed in this manifest.
+# Cargo discovers the single `ezal-firmware` binary from `src/main.rs`.
 
 [features]
 default = ["simulator"]
@@ -63,7 +60,7 @@ embassy-rp       = { workspace = true }
 embassy-sync     = { workspace = true }
 embassy-time     = { workspace = true }
 heapless         = { workspace = true }
-picoserve        = { workspace = true }
+picoserve        = { workspace = true, features = ["embassy", "ws", "defmt"] }
 
 # WiFi (Pico 2 W CYW43439). See the workspace manifest for why each is here
 # and why cyw43-pio's version is kept in lock-step with embassy-rp.

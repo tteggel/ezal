@@ -15,7 +15,7 @@
 #
 # Defaults to a *release* build — smaller, and what you'd actually deploy.
 # Pass `--debug` for a debug build instead. Any further arguments are
-# forwarded to `cargo build` (e.g. `--features ...`).
+# forwarded to `cargo build` (e.g. `--features ...` or `--target-dir ...`).
 #
 # Output: target/thumbv8m.main-none-eabihf/<profile>/ezal-firmware.uf2
 
@@ -30,13 +30,11 @@ cd "${ROOT}"
 # lock-step with that file (and the paths quoted throughout the docs).
 TARGET="thumbv8m.main-none-eabihf"
 
-# Release unless --debug is passed. PROFILE_DIR is the matching cargo
-# output subdirectory — the dev profile lands in target/.../debug/.
+# Release unless --debug is passed. Cargo reports the actual output path,
+# so profiles and target-directory overrides cannot select an older ELF.
 PROFILE_FLAG="--release"
-PROFILE_DIR="release"
 if [[ "${1:-}" == "--debug" ]]; then
     PROFILE_FLAG=""
-    PROFILE_DIR="debug"
     shift
 fi
 
@@ -50,12 +48,26 @@ if ! command -v picotool >/dev/null 2>&1; then
     exit 1
 fi
 
-# 1. Build the firmware ELF (forwarding any extra cargo args).
-cargo build -p ezal-firmware ${PROFILE_FLAG} "$@"
+if ! command -v jq >/dev/null 2>&1; then
+    echo "✗ jq not found on PATH (provided by the Nix dev shell)." >&2
+    exit 1
+fi
 
-# Honour CARGO_TARGET_DIR if the caller set one; default to ./target.
-TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT}/target}"
-ELF="${TARGET_DIR}/${TARGET}/${PROFILE_DIR}/ezal-firmware"
+# 1. Build the firmware ELF (forwarding any extra cargo args). Never guess
+# its location: Cargo configuration, environment, and CLI flags can all change
+# that path. A guessed path can silently package a previous firmware build.
+# Diagnostics stay on stderr while compiler-artifact messages go to this file.
+BUILD_MESSAGES=$(mktemp)
+trap 'rm -f -- "$BUILD_MESSAGES"' EXIT
+cargo build --locked -p ezal-firmware --bin ezal-firmware --target "${TARGET}" \
+    ${PROFILE_FLAG} "$@" --message-format=json-render-diagnostics > "${BUILD_MESSAGES}"
+ELF=$(jq -ers '
+    [.[] | select(.reason == "compiler-artifact")
+         | select(.target.name == "ezal-firmware")
+         | select(.target.kind | index("bin"))
+         | .executable | select(. != null)] | unique
+    | if length == 1 then .[0] else error("expected one firmware executable") end
+' "${BUILD_MESSAGES}")
 UF2="${ELF}.uf2"
 
 if [[ ! -f "${ELF}" ]]; then

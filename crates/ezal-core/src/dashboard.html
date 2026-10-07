@@ -316,6 +316,9 @@ header {
 (() => {
   // Must stay below COMMAND_TIMEOUT_MS so a held control keeps its firmware lease alive.
   const refreshMs = 150;
+  // Matches COMMAND_MAX_AGE_MS. An OPEN TCP socket does not establish a live
+  // application return path: only complete firmware telemetry renews this.
+  const telemetryTimeoutMs = 1000;
   const status = document.getElementById("status");
   const take = document.getElementById("take");
   const a0 = document.getElementById("a0");
@@ -342,6 +345,13 @@ header {
   let ws;
   let retry = 400;
   let controller = false;
+  let networkReady = false;
+  let motionFault = null;
+  let freshnessToken = null;
+  let lastTelemetryAt = -Infinity;
+  let inputSequence = 0;
+  let pendingPosition = null;
+  let pendingTracking = null;
   let desired = { azimuth: null, elevation: null };
   let drive = { azimuth: null, elevation: null };
   const pointers = new Map();
@@ -368,6 +378,10 @@ header {
   };
 
   const hasDesired = () => desired.azimuth || desired.elevation;
+  const telemetryFresh = () => freshnessToken !== null
+    && performance.now() - lastTelemetryAt < telemetryTimeoutMs;
+  const canControl = () => controller && networkReady && !motionFault
+    && telemetryFresh() && !document.hidden;
 
   const command = () => {
     const parts = [];
@@ -380,13 +394,14 @@ header {
     buttons.forEach((button) => {
       const cmd = button.dataset.cmd;
       const meta = commands[cmd];
-      button.disabled = !controller;
-      button.classList.toggle("active", Boolean(meta && drive[meta.axis] === cmd));
+      button.disabled = !canControl();
+      button.classList.toggle("active", Boolean(telemetryFresh() && meta && drive[meta.axis] === cmd));
     });
   };
 
   const syncControl = () => {
-    take.disabled = !ws || ws.readyState !== WebSocket.OPEN || controller;
+    take.disabled = !ws || ws.readyState !== WebSocket.OPEN || controller
+      || !networkReady || motionFault !== null || !telemetryFresh();
     take.textContent = controller ? "controller" : "take control";
     syncButtons();
   };
@@ -399,17 +414,33 @@ header {
   };
 
   const syncRepeat = () => {
-    if (controller && hasDesired() && !repeat) {
-      repeat = setInterval(() => send(command()), refreshMs);
-    } else if ((!controller || !hasDesired()) && repeat) {
+    if (canControl() && hasDesired() && !repeat) {
+      repeat = setInterval(() => sendMovement(false), refreshMs);
+    } else if ((!canControl() || !hasDesired()) && repeat) {
       clearInterval(repeat);
       repeat = 0;
     }
   };
 
-  const publish = () => {
+  const sendMovement = (pressed) => {
+    // Check on the send path as well as the watchdog timer. Browsers may
+    // suspend timers; a resumed interval must not renew an abandoned hold.
+    if (!telemetryFresh()) {
+      expireTelemetry();
+      return;
+    }
+    if (!canControl()) return;
+    if (!hasDesired()) {
+      send("stop");
+      return;
+    }
+    inputSequence += 1;
+    send(`${pressed ? "press" : "hold"}:${freshnessToken}:${inputSequence}:${command()}`);
+  };
+
+  const publish = (pressed = false) => {
     syncRepeat();
-    if (controller) send(command());
+    sendMovement(pressed);
   };
 
   const stopAll = () => {
@@ -423,31 +454,42 @@ header {
     if (controller && wasActive) send("stop");
   };
 
+  const expireTelemetry = () => {
+    stopAll();
+    freshnessToken = null;
+    drive.azimuth = null;
+    drive.elevation = null;
+    [a0, a1, azimuth, elevation, targetAzimuth, targetElevation, run, phase]
+      .forEach((element) => { element.textContent = "--"; });
+    health.textContent = "unknown";
+    syncDriveIndicators(false);
+    syncControl();
+    setStatus("telemetry lost", false);
+  };
+
   const applyControl = (message) => {
     controller = Boolean(message.controller);
+    networkReady = message.network_ready === true;
+    motionFault = message.motion_fault || null;
     drive.azimuth = message.azimuth || null;
     drive.elevation = message.elevation || null;
-    syncDriveIndicators(true);
-    if (!controller) {
-      desired.azimuth = null;
-      desired.elevation = null;
-      pointers.clear();
-      axisPointers.azimuth = null;
-      axisPointers.elevation = null;
-    }
+    syncDriveIndicators(telemetryFresh());
+    if (!controller || !networkReady || motionFault) stopAll();
+    if (motionFault) health.textContent = motionFault.replaceAll("_", " ");
     syncRepeat();
     syncControl();
   };
 
   const start = (button, pointerId) => {
-    if (!controller) return false;
+    if (!telemetryFresh()) expireTelemetry();
+    if (!canControl()) return false;
     const cmd = button.dataset.cmd;
     const meta = commands[cmd];
     if (!meta || axisPointers[meta.axis] !== null) return false;
     axisPointers[meta.axis] = pointerId;
     pointers.set(pointerId, { axis: meta.axis, cmd });
     desired[meta.axis] = cmd;
-    publish();
+    publish(true);
     return true;
   };
 
@@ -461,41 +503,69 @@ header {
     publish();
   };
 
+  const applyPosition = (message) => {
+    a0.textContent = message.a0_mv;
+    a1.textContent = message.a1_mv;
+  };
+
+  const applyTracking = (message) => {
+    const autonomous = message.mode !== "manual";
+    document.body.classList.toggle("autonomous", autonomous);
+    source.textContent = `${message.satellite || "manual"} · ${message.mode}`;
+    run.textContent = autonomous ? `pass ${message.pass}` : "manual";
+    phase.textContent = autonomous
+      ? `${message.phase} · ${duration(message.remaining_ms)}`
+      : "calibration";
+    health.textContent = motionFault ? motionFault.replaceAll("_", " ") : message.control_state;
+    azimuth.textContent = degrees(message.azimuth_tenths);
+    elevation.textContent = degrees(message.elevation_tenths);
+    targetAzimuth.textContent = degrees(message.target_azimuth_tenths);
+    targetElevation.textContent = degrees(message.target_elevation_tenths);
+  };
+
   const connect = () => {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.addEventListener("open", () => {
       retry = 400;
-      setStatus("online", true);
+      setStatus("waiting for telemetry", false);
       syncControl();
     });
     ws.addEventListener("message", (event) => {
       try {
         const message = JSON.parse(event.data);
         if (message.type === "position") {
-          a0.textContent = message.a0_mv;
-          a1.textContent = message.a1_mv;
+          pendingPosition = message;
+          if (telemetryFresh()) applyPosition(message);
         } else if (message.type === "control") {
           applyControl(message);
         } else if (message.type === "tracking") {
-          const autonomous = message.mode !== "manual";
-          document.body.classList.toggle("autonomous", autonomous);
-          source.textContent = `${message.satellite || "manual"} · ${message.mode}`;
-          run.textContent = autonomous ? `pass ${message.pass}` : "manual";
-          phase.textContent = autonomous
-            ? `${message.phase} · ${duration(message.remaining_ms)}`
-            : "calibration";
-          health.textContent = message.control_state;
-          azimuth.textContent = degrees(message.azimuth_tenths);
-          elevation.textContent = degrees(message.elevation_tenths);
-          targetAzimuth.textContent = degrees(message.target_azimuth_tenths);
-          targetElevation.textContent = degrees(message.target_elevation_tenths);
+          pendingTracking = message;
+          if (telemetryFresh()) applyTracking(message);
+        } else if (message.type === "freshness" && typeof message.token === "string"
+          && /^\d+$/.test(message.token)) {
+          // Detect a gap even when suspension prevented the watchdog timer
+          // from running before this message callback. Never restore intent.
+          if (freshnessToken !== null && !telemetryFresh()) expireTelemetry();
+          freshnessToken = message.token;
+          lastTelemetryAt = performance.now();
+          if (pendingPosition) applyPosition(pendingPosition);
+          if (pendingTracking) applyTracking(pendingTracking);
+          setStatus(networkReady ? "online" : "network unavailable", networkReady);
+          syncDriveIndicators(true);
+          syncControl();
+        } else if (message.type === "input_required") {
+          expireTelemetry();
         }
       } catch (_) {}
     });
     ws.addEventListener("close", () => {
-      stopAll();
+      expireTelemetry();
+      freshnessToken = null;
+      pendingPosition = null;
+      pendingTracking = null;
       controller = false;
+      networkReady = false;
       drive.azimuth = null;
       drive.elevation = null;
       syncDriveIndicators(false);
@@ -507,9 +577,14 @@ header {
     });
   };
 
-  take.addEventListener("click", () => send("control:take"));
+  take.addEventListener("click", () => {
+    if (!take.disabled) send("control:take");
+  });
   buttons.forEach((button) => {
     button.addEventListener("pointerdown", (event) => {
+      // Right/middle clicks and a pen's barrel button are browser actions,
+      // not operator holds. Touch contact also uses the primary button (0).
+      if (event.button !== 0) return;
       event.preventDefault();
       if (!start(button, event.pointerId)) return;
       button.setPointerCapture(event.pointerId);
@@ -520,9 +595,27 @@ header {
     button.addEventListener("pointerup", end);
     button.addEventListener("pointercancel", end);
     button.addEventListener("lostpointercapture", end);
+    button.addEventListener("pointermove", (event) => {
+      // With multiple mouse buttons held, releasing the primary button fires
+      // pointermove; pointerup waits for the last button. Stop at the release
+      // that actually ends the operator hold, even if another button remains.
+      if ((event.buttons & 1) === 0) release(event.pointerId);
+    });
   });
   window.addEventListener("blur", stopAll);
   window.addEventListener("beforeunload", stopAll);
+  window.addEventListener("pagehide", stopAll);
+  document.addEventListener("visibilitychange", () => {
+    // Mobile app switches and page suspension need not deliver beforeunload.
+    // Clear the intent as well as sending stop: a resumed interval must never
+    // revive a hold whose pointer release happened while the page was hidden.
+    // Firmware lease expiry remains the fallback if this stop cannot be sent.
+    if (document.hidden) stopAll();
+  });
+  setInterval(() => {
+    if (freshnessToken !== null && !telemetryFresh()) expireTelemetry();
+  }, 100);
+  syncControl();
   connect();
 })();
 </script>

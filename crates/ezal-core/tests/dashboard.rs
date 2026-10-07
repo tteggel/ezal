@@ -10,15 +10,13 @@ fn dashboard_uses_the_firmware_websocket_path() {
     assert!(INDEX_HTML.contains("`${proto}://${location.host}/ws`"));
     assert!(INDEX_HTML.contains(TAKE_CONTROL_MESSAGE));
     assert!(INDEX_HTML.contains(r#"id="take""#));
-    assert!(INDEX_HTML.contains(r#"message.type === "control""#));
-    assert!(INDEX_HTML.contains(r#"message.type === "tracking""#));
-    assert!(INDEX_HTML.contains("message.remaining_ms"));
-    assert!(INDEX_HTML.contains("message.target_azimuth_tenths"));
-    assert!(INDEX_HTML.contains("message.target_elevation_tenths"));
-    assert!(INDEX_HTML.contains(r#"message.mode !== "manual""#));
-    assert!(INDEX_HTML.contains("drive[meta.axis] === cmd"));
-    assert!(INDEX_HTML.contains("axisPointers[meta.axis] !== null"));
-    assert!(INDEX_HTML.contains("axisPointers[claim.axis] = null"));
+}
+
+#[test]
+fn pressed_direction_buttons_only_look_active_when_the_firmware_agrees() {
+    // The behavioural tests drive a DOM without CSS, so assert the rule that
+    // keeps a held button looking idle until telemetry reports that axis
+    // driving. Without it the operator could believe a refused command ran.
     assert!(INDEX_HTML.contains(".dir:active:not(.active)"));
 }
 

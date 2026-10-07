@@ -8,6 +8,30 @@
 use crate::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection};
 use crate::position::{Pointing, PositionCalibration};
 
+/// Maximum age of feedback used by the controller and final output interlock.
+/// A feedback read still unfinished after this long is cancelled, and the
+/// cancelled bus is not reused until reset.
+pub const FEEDBACK_TIMEOUT_MS: u64 = 500;
+
+/// Delay between publishing one feedback sample and starting the next read.
+pub const FEEDBACK_PERIOD_MS: u64 = 100;
+
+/// Longest accepted time from starting a feedback read to validating it. A
+/// slower sample is rejected as stale rather than published with too little
+/// remaining life for its replacement to arrive.
+pub const FEEDBACK_MAX_LATENCY_MS: u64 = 150;
+
+/// Executor delay allowed between publishing a sample and starting the next.
+const FEEDBACK_SCHEDULING_MARGIN_MS: u64 = 100;
+
+// An accepted sample must be replaced before the output interlock expires it:
+// its own latency, the period, scheduling delay, and the replacement's latency
+// all fit inside the feedback lifetime.
+const _: () = assert!(
+    2 * FEEDBACK_MAX_LATENCY_MS + FEEDBACK_PERIOD_MS + FEEDBACK_SCHEDULING_MARGIN_MS
+        <= FEEDBACK_TIMEOUT_MS
+);
+
 /// Timestamped position supplied to the control loop.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TimedPointing {
@@ -60,6 +84,24 @@ impl ControlConfig {
         }
     }
 
+    /// Whether the thresholds define hysteresis and both mechanical ranges
+    /// support finite position errors. A zero release threshold is valid, but
+    /// engagement must require a strictly larger error.
+    pub fn is_valid(self) -> bool {
+        self.release_error_deg.is_finite()
+            && self.engage_error_deg.is_finite()
+            && self.release_error_deg >= 0.0
+            && self.engage_error_deg > self.release_error_deg
+            && [
+                (self.azimuth_min_deg, self.azimuth_max_deg),
+                (self.elevation_min_deg, self.elevation_max_deg),
+            ]
+            .into_iter()
+            .all(|(min, max)| {
+                min.is_finite() && max.is_finite() && max > min && (max - min).is_finite()
+            })
+    }
+
     fn contains(self, position: Pointing) -> bool {
         position.azimuth_deg.is_finite()
             && position.elevation_deg.is_finite()
@@ -76,7 +118,7 @@ impl Default for ControlConfig {
             engage_error_deg: 4.0,
             release_error_deg: 1.5,
             target_timeout_ms: 500,
-            feedback_timeout_ms: 500,
+            feedback_timeout_ms: FEEDBACK_TIMEOUT_MS,
             azimuth_min_deg: 0.0,
             azimuth_max_deg: 450.0,
             elevation_min_deg: 0.0,
@@ -106,6 +148,10 @@ pub enum ControlState {
     TimestampInvalid,
     /// Dish did not reach and settle at the pass start before the deadline.
     AcquisitionTimeout,
+    /// The installed calibration cannot be supervised with the feedback ADC.
+    CalibrationInvalid,
+    /// Controller thresholds or mechanical limits violate their invariants.
+    ConfigurationInvalid,
 }
 
 impl ControlState {
@@ -121,6 +167,8 @@ impl ControlState {
             Self::FeedbackInvalid => "feedback-invalid",
             Self::TimestampInvalid => "timestamp-invalid",
             Self::AcquisitionTimeout => "acquire-timeout",
+            Self::CalibrationInvalid => "calibration-invalid",
+            Self::ConfigurationInvalid => "configuration-invalid",
         }
     }
 
@@ -148,7 +196,9 @@ pub struct TrackingController {
 }
 
 impl TrackingController {
-    /// Create an idle controller.
+    /// Create an idle controller. An invalid configuration is retained for
+    /// diagnosis, and every update inhibits motion with
+    /// [`ControlState::ConfigurationInvalid`].
     pub const fn new(config: ControlConfig) -> Self {
         Self {
             config,
@@ -165,6 +215,11 @@ impl TrackingController {
         target: Option<TimedPointing>,
         feedback: Option<TimedPointing>,
     ) -> ControlDecision {
+        // Configuration is an input too: NaN or negative thresholds can
+        // otherwise turn a zero position error into a latched drive request.
+        if !self.config.is_valid() {
+            return self.stop(ControlState::ConfigurationInvalid);
+        }
         let target = match target {
             Some(target) => target,
             None => return self.stop(ControlState::Idle),
@@ -225,7 +280,11 @@ impl TrackingController {
         self.azimuth = None;
         self.elevation = None;
         ControlDecision {
-            command: Command::Stop,
+            command: if state == ControlState::Idle {
+                Command::Stop
+            } else {
+                Command::Inhibit
+            },
             state,
         }
     }
@@ -250,13 +309,14 @@ fn update_azimuth(
     } else {
         AzimuthDirection::CounterClockwise
     };
-    let next = hysteretic_direction(current, desired, error_deg.abs(), config);
-
-    match next {
-        Some(AzimuthDirection::CounterClockwise) if position_deg <= position_min_deg => None,
-        Some(AzimuthDirection::Clockwise) if position_deg >= position_max_deg => None,
-        other => other,
-    }
+    hysteretic_direction(current, desired, error_deg.abs(), config).filter(|direction| {
+        before_endpoint(
+            direction.increases_angle(),
+            position_deg,
+            position_min_deg,
+            position_max_deg,
+        )
+    })
 }
 
 fn update_elevation(
@@ -272,12 +332,23 @@ fn update_elevation(
     } else {
         ElevationDirection::Down
     };
-    let next = hysteretic_direction(current, desired, error_deg.abs(), config);
+    hysteretic_direction(current, desired, error_deg.abs(), config).filter(|direction| {
+        before_endpoint(
+            direction.increases_angle(),
+            position_deg,
+            position_min_deg,
+            position_max_deg,
+        )
+    })
+}
 
-    match next {
-        Some(ElevationDirection::Down) if position_deg <= position_min_deg => None,
-        Some(ElevationDirection::Up) if position_deg >= position_max_deg => None,
-        other => other,
+/// Whether a position still has travel left toward the endpoint a direction
+/// approaches. The output interlock separately allows for sampling and travel.
+fn before_endpoint(increases_angle: bool, position_deg: f32, min_deg: f32, max_deg: f32) -> bool {
+    if increases_angle {
+        position_deg < max_deg
+    } else {
+        position_deg > min_deg
     }
 }
 

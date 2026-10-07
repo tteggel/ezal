@@ -1,17 +1,26 @@
 //! Direction-output GPIOs and the leased drive-control loop.
 //!
-//! The bus-facing half of [`ezal_core::drive`]: it owns the four transistor
-//! switch GPIOs, feeds every requested command through the shared
-//! [`ActuatorGuard`] so relays never chatter, and enforces the movement lease.
-//! Whether commands come from autonomous tracking or held dashboard buttons,
-//! this task drops the outputs back to all-low if their refresh stream stops.
+//! The bus-facing half of [`ezal_core::actuator`]: it owns the four transistor
+//! switch GPIOs and applies whatever the shared [`Actuator`] permits. That type
+//! holds the ordering rules — feedback interlock before relay timing, every
+//! command admitted through the interlock — so this task only supplies time,
+//! shared state, and pins. It feeds the hardware watchdog after each service
+//! pass, and drops the outputs back to all-low if a command stream stops,
+//! whether the commands come from tracking or from held dashboard buttons.
 
 use embassy_rp::gpio::Output;
-use embassy_time::{with_deadline, Instant};
+use embassy_rp::watchdog::Watchdog;
+use embassy_time::{with_deadline, Duration, Instant};
 
-use ezal_core::drive::{ActuatorGuard, AzimuthDirection, DriveCommand, ElevationDirection};
+use ezal_core::actuator::Actuator;
+use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection};
 
 use crate::state::SharedState;
+
+/// Longest wait between service passes when nothing else is pending. Each pass
+/// re-checks feedback and feeds the watchdog, so it must stay well inside
+/// [`crate::watchdog::WATCHDOG_TIMEOUT`].
+const SERVICE_PERIOD: Duration = Duration::from_millis(100);
 
 /// The four GPIO outputs that drive the G-5500 direction switch transistors.
 pub struct DirectionOutputs {
@@ -85,42 +94,73 @@ impl DirectionOutputs {
 /// source must repeat an active state, and this task drops back to all-low if
 /// that refresh stream stops.
 #[embassy_executor::task]
-pub async fn direction_task(mut outputs: DirectionOutputs, state: &'static SharedState) -> ! {
+pub async fn direction_task(
+    mut outputs: DirectionOutputs,
+    state: &'static SharedState,
+    mut watchdog: Watchdog,
+) -> ! {
     outputs.stop();
-    let mut guard = ActuatorGuard::new();
-    state.record_applied_drive(guard.actual());
+    let mut actuator = Actuator::new();
+    state.record_actuator(actuator.actual(), actuator.fault());
+    crate::watchdog::start(&mut watchdog);
+    let mut next_service = Instant::now();
+    let mut network_generation = 0;
 
     loop {
         let now = Instant::now();
-        apply_guarded_drive(&mut outputs, state, &mut guard, now.as_millis());
+        let interlock = state.interlock();
+        let network = state.network();
+        if !network.ready(now.as_millis()) || network_generation != network.generation() {
+            // Clear active AND pending requests before advancing relay timing.
+            // Keep the real feedback available to the motion monitor; network
+            // inhibition must not hide a latched position plausibility fault.
+            actuator.command(Command::Inhibit, &interlock, now.as_millis());
+            network_generation = network.generation();
+        }
+        actuator.service(&interlock, now.as_millis());
+        apply(&mut outputs, state, &actuator);
 
-        let next_deadline = guard
-            .next_transition_ms(now.as_millis())
-            .map(Instant::from_millis);
-        let command = match next_deadline {
-            Some(deadline) => with_deadline(deadline, state.wait_command()).await.ok(),
-            None => Some(state.wait_command().await),
-        };
+        // Feeding from this loop proves the actuator task ran and serviced the
+        // output boundary; a separate heartbeat task could hide a stall here.
+        watchdog.feed(crate::watchdog::WATCHDOG_TIMEOUT);
 
-        let now = Instant::now();
-        if let Some(command) = command {
-            if guard.command(command, now.as_millis()) {
-                outputs.apply_drive(guard.actual());
-                state.record_applied_drive(guard.actual());
+        // A fixed service schedule, rather than one re-armed from every wake,
+        // keeps an idle board at a known small number of passes per second.
+        while next_service <= now {
+            next_service += SERVICE_PERIOD;
+        }
+        let mut deadline = actuator
+            .next_deadline_ms(&interlock, now.as_millis())
+            .map(Instant::from_millis)
+            .map_or(next_service, |deadline| deadline.min(next_service));
+        if let Some(network_deadline) = network.deadline_ms() {
+            deadline = deadline.min(Instant::from_millis(network_deadline));
+        }
+
+        if let Ok(Some(queued)) = with_deadline(deadline, state.wait_command()).await {
+            let now = Instant::now();
+            let network = state.network();
+            let interlock = state.interlock();
+            if network_generation != network.generation() {
+                // A complete outage/recovery may happen between service
+                // passes. Cancel the previous generation's pending relay
+                // transition before admitting anything in the new one.
+                actuator.command(Command::Inhibit, &interlock, now.as_millis());
+                network_generation = network.generation();
             }
-            continue;
+            let command = network.guard_command(queued.command, now.as_millis());
+            actuator.command_until(
+                command,
+                &interlock,
+                now.as_millis(),
+                queued.valid_until_ms.unwrap_or(now.as_millis()),
+            );
+            apply(&mut outputs, state, &actuator);
         }
     }
 }
 
-fn apply_guarded_drive(
-    outputs: &mut DirectionOutputs,
-    state: &'static SharedState,
-    guard: &mut ActuatorGuard,
-    now_ms: u64,
-) {
-    if guard.update(now_ms) {
-        outputs.apply_drive(guard.actual());
-        state.record_applied_drive(guard.actual());
-    }
+fn apply(outputs: &mut DirectionOutputs, state: &'static SharedState, actuator: &Actuator) {
+    outputs.apply_drive(actuator.actual());
+    state.record_actuator(actuator.actual(), actuator.fault());
 }

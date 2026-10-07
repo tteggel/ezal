@@ -21,9 +21,9 @@
 //!     credentials and fails loudly at boot if they're unset. We do emit a
 //!     build warning so it's not silent.
 //!
-//!     Note: the credentials end up in the flashed image in the clear. That's
-//!     inherent to a device with no secure element; keep `.env` out of git
-//!     (it is `.gitignore`d) and treat built artefacts as secrets.
+//!     Note: this build-time provisioning scheme stores credentials in the
+//!     flashed image in the clear. Keep `.env` out of git (it is `.gitignore`d)
+//!     and treat built artefacts and Cargo's build-script output as secrets.
 //!
 //!  3. Tell Cargo when to re-run this script. Without these hints Cargo
 //!     would re-run `build.rs` on every build (slow) or never (wrong);
@@ -96,15 +96,17 @@ fn bake_wifi_credentials() {
 
     let dotenv = parse_dotenv(&env_path);
     let lookup = |name: &str| -> String {
-        // A process env var wins, but only if non-empty — an empty inherited
-        // value shouldn't mask a real one in `.env`.
+        // Presence, not non-emptiness, determines precedence. An explicit
+        // empty password selects an open network; an empty SSID lets an
+        // artifact build opt out of embedding a developer's local credentials.
         match env::var(name) {
-            Ok(v) if !v.is_empty() => v,
-            _ => dotenv
+            Ok(v) => v,
+            Err(env::VarError::NotPresent) => dotenv
                 .iter()
                 .find(|(k, _)| k == name)
                 .map(|(_, v)| v.clone())
                 .unwrap_or_default(),
+            Err(env::VarError::NotUnicode(_)) => panic!("{name} must be valid UTF-8"),
         }
     };
 
@@ -117,7 +119,7 @@ fn bake_wifi_credentials() {
     // open network, so it never warns.
     if ssid.is_empty() {
         println!(
-            "cargo:warning=EZAL_WIFI_SSID is unset (no .env at {} and not in the environment); \
+            "cargo:warning=EZAL_WIFI_SSID is empty after environment/.env resolution ({}); \
              the WiFi POST will fail at boot until you copy .env.example to .env and fill it in.",
             env_path.display()
         );
@@ -125,6 +127,15 @@ fn bake_wifi_credentials() {
 
     // These reach `src/wifi.rs` as `env!(\"EZAL_WIFI_SSID\")` etc. We always
     // set them (possibly to \"\") so `env!` never fails the compile.
+    // Cargo reads stdout one line at a time. Reject line breaks before printing
+    // either value, or a credential could be truncated or interpreted as a new
+    // build instruction. Diagnostics name the field without exposing its value.
+    for (name, value) in [(WIFI_VARS[0], &ssid), (WIFI_VARS[1], &password)] {
+        assert!(
+            !value.contains(['\r', '\n']),
+            "{name} must not contain line breaks"
+        );
+    }
     println!("cargo:rustc-env=EZAL_WIFI_SSID={ssid}");
     println!("cargo:rustc-env=EZAL_WIFI_PASSWORD={password}");
 }
@@ -136,8 +147,10 @@ fn bake_wifi_credentials() {
 /// it is not a general dotenv implementation. Returns `[]` if the file is
 /// absent (the not-yet-configured case), so callers fall back to defaults.
 fn parse_dotenv(path: &Path) -> Vec<(String, String)> {
-    let Ok(contents) = fs::read_to_string(path) else {
-        return Vec::new();
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("failed to read {}: {error}", path.display()),
     };
 
     let mut out = Vec::new();
@@ -151,8 +164,22 @@ fn parse_dotenv(path: &Path) -> Vec<(String, String)> {
             continue;
         };
         let key = key.trim().to_string();
+        if !WIFI_VARS.contains(&key.as_str()) {
+            continue;
+        }
         let value = value.trim();
-        let value = strip_matching_quotes(value).unwrap_or_else(|| value.trim().to_string());
+        let value = match strip_matching_quotes(value) {
+            Some(value) => value,
+            None => {
+                // This deliberately single-line format must reject multiline
+                // quoted values, rather than baking only their first line.
+                assert!(
+                    !value.starts_with(['\'', '"']),
+                    "unterminated quoted value for {key}"
+                );
+                value.to_string()
+            }
+        };
         out.push((key, value));
     }
     out

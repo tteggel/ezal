@@ -1,356 +1,272 @@
-//! Shared inter-task state — the coordination point between the web transport,
-//! the feedback sensor, and the drive actuator.
+//! Typed state shared by the feedback, dashboard, and actuator tasks.
 //!
-//! [`SharedState`] is the one place three otherwise-independent tasks meet:
-//! the simulator/controller and dashboard sockets publish [`Command`]s; web
-//! clients read control ownership and telemetry; feedback tasks store the
-//! latest sample; and the drive loop waits on commands and records what it
-//! actually applied. Housing it here keeps those modules independent.
+//! Snapshots and command ownership changes use a short critical section. No
+//! lock crosses an await or performs I/O; the GPIO task alone applies commands.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
+use core::cell::RefCell;
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_sync::signal::Signal;
+use embassy_time::Instant;
 
-use ezal_core::control::ControlState;
-use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection};
-use ezal_core::protocol::{ControlStatus, PositionTelemetry, TrackingMode, TrackingTelemetry};
-use ezal_core::simulation::PassPhase;
+use ezal_core::authority::ControlAuthority;
+use ezal_core::drive::{Command, DriveCommand, MOVEMENT_LEASE_MS};
+use ezal_core::interlock::FeedbackInterlock;
+use ezal_core::mailbox::CommandMailbox;
+use ezal_core::motion::MotionFault;
+use ezal_core::network::NetworkGate;
+use ezal_core::protocol::{ControlStatus, PositionTelemetry, TrackingTelemetry};
 
 /// The one shared-state instance, wired to every task from `main`.
 pub static STATE: SharedState = SharedState::new();
 
+/// Values read or changed together while the critical section is held.
+struct Snapshot {
+    position: PositionTelemetry,
+    tracking: TrackingTelemetry,
+    authority: ControlAuthority,
+    applied_drive: DriveCommand,
+    interlock: FeedbackInterlock,
+    commands: CommandMailbox,
+    command_valid_until_ms: Option<u64>,
+    network: NetworkGate,
+    motion_fault: Option<MotionFault>,
+}
+
+/// One command plus its original expiry. Queueing or consuming a command must
+/// never restart the time budget assigned when its source was validated.
+pub struct QueuedCommand {
+    pub command: Command,
+    pub valid_until_ms: Option<u64>,
+}
+
 /// Coordination state shared safely between Embassy tasks.
 pub struct SharedState {
-    positions: SharedPositions,
-    tracking: SharedTracking,
-    commands: Signal<CriticalSectionRawMutex, Command>,
-    next_client_id: AtomicU32,
-    controller_id: AtomicU32,
-    drive: AtomicU8,
-    autonomous: AtomicBool,
+    snapshot: Mutex<CriticalSectionRawMutex, RefCell<Snapshot>>,
+    changed: Signal<CriticalSectionRawMutex, ()>,
 }
 
 impl SharedState {
-    /// Create empty shared state.
+    /// Create empty shared state. Motion stays inhibited until a supervisor
+    /// publishes an interlock built from the installed calibration.
     pub const fn new() -> Self {
         Self {
-            positions: SharedPositions::new(),
-            tracking: SharedTracking::new(),
-            commands: Signal::new(),
-            next_client_id: AtomicU32::new(1),
-            controller_id: AtomicU32::new(0),
-            drive: AtomicU8::new(encode_drive(DriveCommand::IDLE)),
-            autonomous: AtomicBool::new(false),
+            snapshot: Mutex::new(RefCell::new(Snapshot {
+                position: PositionTelemetry::ZERO,
+                tracking: TrackingTelemetry::ZERO,
+                authority: ControlAuthority::new(),
+                applied_drive: DriveCommand::IDLE,
+                interlock: FeedbackInterlock::INHIBITED,
+                commands: CommandMailbox::new(),
+                command_valid_until_ms: None,
+                network: NetworkGate::new(),
+                motion_fault: None,
+            })),
+            changed: Signal::new(),
         }
+    }
+
+    /// Run `change` inside the shared state's critical section.
+    fn with<R>(&self, change: impl FnOnce(&mut Snapshot) -> R) -> R {
+        self.snapshot.lock(|snapshot| {
+            let mut snapshot = snapshot.borrow_mut();
+            // Expiration is independent of the network task that renews the
+            // permit. In particular, the GPIO task reaches this path even if
+            // join, DHCP, or supervision stops making progress.
+            if snapshot.network.expire(Instant::now().as_millis()) {
+                self.revoke_network_motion(&mut snapshot);
+            }
+            change(&mut snapshot)
+        })
+    }
+
+    fn revoke_network_motion(&self, snapshot: &mut Snapshot) {
+        snapshot.authority.revoke_manual();
+        snapshot.commands.submit(Command::Inhibit);
+        snapshot.command_valid_until_ms = None;
+        self.changed.signal(());
+    }
+
+    /// Queue a command and wake the actuator in the same critical section, so
+    /// no wake-up can be lost between submitting and signalling.
+    fn submit(&self, snapshot: &mut Snapshot, command: Command) {
+        let now_ms = Instant::now().as_millis();
+        self.submit_until(snapshot, command, now_ms.saturating_add(MOVEMENT_LEASE_MS));
+    }
+
+    fn submit_until(&self, snapshot: &mut Snapshot, command: Command, valid_until_ms: u64) {
+        let command = snapshot
+            .network
+            .guard_command(command, Instant::now().as_millis());
+        snapshot.commands.submit(command);
+        // An unconsumed inhibition wins in CommandMailbox. Its expiry is
+        // ignored, so carrying this later movement deadline cannot weaken it.
+        snapshot.command_valid_until_ms = Some(valid_until_ms);
+        self.changed.signal(());
+    }
+
+    /// Publish the latest link and IPv4-address check. Any loss immediately
+    /// revokes manual ownership and overrides pending movement with inhibition.
+    pub fn publish_network(&self, ready: bool) {
+        self.with(|snapshot| {
+            if snapshot.network.observe(Instant::now().as_millis(), ready) {
+                self.revoke_network_motion(snapshot);
+            }
+        });
+    }
+
+    /// Expiring readiness snapshot for command admission and output servicing.
+    pub fn network(&self) -> NetworkGate {
+        self.with(|snapshot| snapshot.network)
     }
 
     /// Store the latest raw ADC millivolt readings.
     pub fn store_position(&self, position: PositionTelemetry) {
-        self.positions.store(position);
+        self.with(|snapshot| snapshot.position = position);
     }
 
-    /// Read the latest raw ADC millivolt readings.
+    /// Read the latest coherent pair of ADC readings.
     pub fn position(&self) -> PositionTelemetry {
-        self.positions.load()
+        self.with(|snapshot| snapshot.position)
     }
 
-    /// Store an internally coherent autonomous-tracking snapshot.
-    pub fn store_tracking(&self, tracking: TrackingTelemetry) {
-        self.tracking.store(tracking);
+    /// Publish one supervision tick: raw readings, tracking status, and the
+    /// output interlock built from the supervisor's own calibration.
+    pub fn publish_feedback(
+        &self,
+        position: Option<PositionTelemetry>,
+        tracking: TrackingTelemetry,
+        interlock: FeedbackInterlock,
+    ) {
+        self.with(|snapshot| {
+            if let Some(position) = position {
+                snapshot.position = position;
+            }
+            snapshot.tracking = tracking;
+            snapshot.interlock = interlock;
+            // Only an energised output can travel toward an endpoint or
+            // outlive its sample, so only then must the actuator re-evaluate
+            // at once. It checks a pending activation when that falls due.
+            if snapshot.applied_drive.is_active() {
+                self.changed.signal(());
+            }
+        });
     }
 
-    /// Read the latest autonomous-tracking snapshot.
+    /// Read the latest internally coherent tracking snapshot.
     pub fn tracking(&self) -> TrackingTelemetry {
-        self.tracking.load()
+        self.with(|snapshot| snapshot.tracking)
     }
 
     /// Enable or disable autonomous ownership of the actuator command stream.
     #[cfg(feature = "simulator")]
     pub fn set_autonomous(&self, autonomous: bool) {
-        self.autonomous.store(autonomous, Ordering::Release);
-        self.controller_id.store(0, Ordering::Release);
-        self.apply_command(Command::Stop);
+        self.with(|snapshot| {
+            let command = snapshot.authority.set_autonomous(autonomous);
+            self.submit(snapshot, command);
+        });
     }
 
-    /// Allocate a WebSocket connection id and assign initial control when no
-    /// controller is active.
+    /// Allocate a WebSocket id and assign unclaimed manual control.
     pub fn register_client(&self) -> u32 {
-        let id = self.next_client_id.fetch_add(1, Ordering::Relaxed);
-        let id = if id == 0 {
-            self.next_client_id.fetch_add(1, Ordering::Relaxed)
-        } else {
+        self.with(|snapshot| {
+            let id = snapshot.authority.register_client();
+            if !snapshot.network.ready(Instant::now().as_millis()) {
+                snapshot.authority.revoke_manual();
+            }
             id
-        };
-        if !self.autonomous.load(Ordering::Acquire) {
-            let _ = self
-                .controller_id
-                .compare_exchange(0, id, Ordering::AcqRel, Ordering::Acquire);
-        }
-        id
+        })
     }
 
-    /// Whether a WebSocket connection currently owns drive control.
-    pub fn is_controller(&self, client_id: u32) -> bool {
-        self.controller_id.load(Ordering::Acquire) == client_id
-    }
-
-    /// Return the control status as seen by one connection.
+    /// Return ownership and applied output from the same snapshot.
     pub fn control_status(&self, client_id: u32) -> ControlStatus {
-        ControlStatus {
-            controller: self.is_controller(client_id),
-            drive: decode_drive(self.drive.load(Ordering::Acquire)),
-        }
+        self.with(|snapshot| ControlStatus {
+            controller: snapshot.authority.is_controller(client_id),
+            drive: snapshot.applied_drive,
+            network_ready: snapshot.network.ready(Instant::now().as_millis()),
+            motion_fault: snapshot.motion_fault,
+        })
     }
 
     /// Make a connection the controller and stop any stale drive lease.
     pub fn take_control(&self, client_id: u32) {
-        if self.autonomous.load(Ordering::Acquire) {
-            return;
-        }
-        self.controller_id.store(client_id, Ordering::Release);
-        self.apply_command(Command::Stop);
+        self.with(|snapshot| {
+            if !snapshot.network.ready(Instant::now().as_millis()) {
+                return;
+            }
+            if let Some(command) = snapshot.authority.take_control(client_id) {
+                self.submit(snapshot, command);
+            }
+        });
     }
 
     /// Release control if the disconnecting connection still owns it.
     pub fn release_client(&self, client_id: u32) {
-        if self
-            .controller_id
-            .compare_exchange(client_id, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            self.apply_command(Command::Stop);
-        }
+        self.with(|snapshot| {
+            if let Some(command) = snapshot.authority.release_client(client_id) {
+                self.submit(snapshot, command);
+            }
+        });
     }
 
-    /// Accept a client command only from the current controller.
+    /// Queue the current controller's command. The actuator applies the
+    /// feedback interlock when it consumes it, so there is one such gate.
     pub fn accept_command(&self, client_id: u32, command: Command) -> bool {
-        if self.autonomous.load(Ordering::Acquire) || !self.is_controller(client_id) {
-            return false;
-        }
-
-        self.apply_command(command);
-        true
+        self.accept_command_until(
+            client_id,
+            command,
+            Instant::now().as_millis().saturating_add(MOVEMENT_LEASE_MS),
+        )
     }
 
-    /// Signal a requested drive-state command to the task that owns the GPIOs.
-    pub fn apply_command(&self, command: Command) {
-        self.commands.signal(command);
+    /// Admit a validated browser command with its source's absolute expiry.
+    /// The GPIO task enforces this same deadline after mailbox consumption.
+    pub fn accept_command_until(
+        &self,
+        client_id: u32,
+        command: Command,
+        valid_until_ms: u64,
+    ) -> bool {
+        self.with(|snapshot| {
+            if !snapshot.network.ready(Instant::now().as_millis()) {
+                return false;
+            }
+            match snapshot.authority.accept_command(client_id, command) {
+                Some(command) => {
+                    self.submit_until(snapshot, command, valid_until_ms);
+                    true
+                }
+                None => false,
+            }
+        })
+    }
+
+    /// Queue a command from the firmware's own supervision.
+    pub fn submit_command(&self, command: Command) {
+        self.with(|snapshot| self.submit(snapshot, command));
     }
 
     /// Record the drive state currently applied to the output GPIOs.
-    pub fn record_applied_drive(&self, drive: DriveCommand) {
-        self.drive.store(encode_drive(drive), Ordering::Release);
+    pub fn record_actuator(&self, drive: DriveCommand, fault: Option<MotionFault>) {
+        self.with(|snapshot| {
+            snapshot.applied_drive = drive;
+            snapshot.motion_fault = fault;
+        });
     }
 
-    /// Wait for the next drive-state command.
-    pub async fn wait_command(&self) -> Command {
-        self.commands.wait().await
-    }
-}
-
-/// Sequence-locked autonomous telemetry. The writer is one tracking task;
-/// readers retry if they overlap a write, avoiding mixed-pass snapshots.
-struct SharedTracking {
-    sequence: AtomicU32,
-    mode: AtomicU8,
-    pass_index: AtomicU32,
-    phase: AtomicU8,
-    phase_remaining_ms: AtomicU32,
-    azimuth_tenths: AtomicI32,
-    elevation_tenths: AtomicI32,
-    target_azimuth_tenths: AtomicI32,
-    target_elevation_tenths: AtomicI32,
-    control_state: AtomicU8,
-}
-
-const NO_TARGET: i32 = i32::MIN;
-
-impl SharedTracking {
-    const fn new() -> Self {
-        Self {
-            sequence: AtomicU32::new(0),
-            mode: AtomicU8::new(encode_tracking_mode(TrackingMode::Manual)),
-            pass_index: AtomicU32::new(0),
-            phase: AtomicU8::new(encode_phase(PassPhase::Pause)),
-            phase_remaining_ms: AtomicU32::new(0),
-            azimuth_tenths: AtomicI32::new(0),
-            elevation_tenths: AtomicI32::new(0),
-            target_azimuth_tenths: AtomicI32::new(NO_TARGET),
-            target_elevation_tenths: AtomicI32::new(NO_TARGET),
-            control_state: AtomicU8::new(encode_control_state(ControlState::Idle)),
-        }
+    /// The interlock the actuator must satisfy, as last published.
+    pub fn interlock(&self) -> FeedbackInterlock {
+        self.with(|snapshot| snapshot.interlock)
     }
 
-    fn store(&self, value: TrackingTelemetry) {
-        self.sequence.fetch_add(1, Ordering::AcqRel);
-        self.mode
-            .store(encode_tracking_mode(value.mode), Ordering::Relaxed);
-        self.pass_index.store(value.pass_index, Ordering::Relaxed);
-        self.phase
-            .store(encode_phase(value.phase), Ordering::Relaxed);
-        self.phase_remaining_ms.store(
-            value.phase_remaining_ms.min(u32::MAX as u64) as u32,
-            Ordering::Relaxed,
-        );
-        self.azimuth_tenths
-            .store(value.azimuth_tenths, Ordering::Relaxed);
-        self.elevation_tenths
-            .store(value.elevation_tenths, Ordering::Relaxed);
-        self.target_azimuth_tenths.store(
-            value.target_azimuth_tenths.unwrap_or(NO_TARGET),
-            Ordering::Relaxed,
-        );
-        self.target_elevation_tenths.store(
-            value.target_elevation_tenths.unwrap_or(NO_TARGET),
-            Ordering::Relaxed,
-        );
-        self.control_state
-            .store(encode_control_state(value.control_state), Ordering::Relaxed);
-        self.sequence.fetch_add(1, Ordering::Release);
-    }
-
-    fn load(&self) -> TrackingTelemetry {
-        loop {
-            let before = self.sequence.load(Ordering::Acquire);
-            if before & 1 != 0 {
-                core::hint::spin_loop();
-                continue;
-            }
-            let target_azimuth = self.target_azimuth_tenths.load(Ordering::Relaxed);
-            let target_elevation = self.target_elevation_tenths.load(Ordering::Relaxed);
-            let value = TrackingTelemetry {
-                mode: decode_tracking_mode(self.mode.load(Ordering::Relaxed)),
-                pass_index: self.pass_index.load(Ordering::Relaxed),
-                phase: decode_phase(self.phase.load(Ordering::Relaxed)),
-                phase_remaining_ms: self.phase_remaining_ms.load(Ordering::Relaxed) as u64,
-                azimuth_tenths: self.azimuth_tenths.load(Ordering::Relaxed),
-                elevation_tenths: self.elevation_tenths.load(Ordering::Relaxed),
-                target_azimuth_tenths: (target_azimuth != NO_TARGET).then_some(target_azimuth),
-                target_elevation_tenths: (target_elevation != NO_TARGET)
-                    .then_some(target_elevation),
-                control_state: decode_control_state(self.control_state.load(Ordering::Relaxed)),
-            };
-            if before == self.sequence.load(Ordering::Acquire) {
-                return value;
-            }
-        }
-    }
-}
-
-const fn encode_tracking_mode(mode: TrackingMode) -> u8 {
-    match mode {
-        TrackingMode::Manual => 0,
-        TrackingMode::HardwareWalkingSkeleton => 1,
-    }
-}
-
-const fn decode_tracking_mode(value: u8) -> TrackingMode {
-    match value {
-        1 => TrackingMode::HardwareWalkingSkeleton,
-        _ => TrackingMode::Manual,
-    }
-}
-
-const fn encode_phase(phase: PassPhase) -> u8 {
-    match phase {
-        PassPhase::Pause => 0,
-        PassPhase::Tracking => 1,
-        PassPhase::Acquiring => 2,
-        PassPhase::Fault => 3,
-    }
-}
-
-const fn decode_phase(value: u8) -> PassPhase {
-    match value {
-        1 => PassPhase::Tracking,
-        2 => PassPhase::Acquiring,
-        3 => PassPhase::Fault,
-        _ => PassPhase::Pause,
-    }
-}
-
-const fn encode_control_state(state: ControlState) -> u8 {
-    match state {
-        ControlState::Tracking => 0,
-        ControlState::Idle => 1,
-        ControlState::FeedbackUnavailable => 2,
-        ControlState::TargetStale => 3,
-        ControlState::FeedbackStale => 4,
-        ControlState::TargetInvalid => 5,
-        ControlState::FeedbackInvalid => 6,
-        ControlState::TimestampInvalid => 7,
-        ControlState::AcquisitionTimeout => 8,
-    }
-}
-
-const fn decode_control_state(value: u8) -> ControlState {
-    match value {
-        0 => ControlState::Tracking,
-        1 => ControlState::Idle,
-        2 => ControlState::FeedbackUnavailable,
-        3 => ControlState::TargetStale,
-        4 => ControlState::FeedbackStale,
-        5 => ControlState::TargetInvalid,
-        6 => ControlState::FeedbackInvalid,
-        7 => ControlState::TimestampInvalid,
-        _ => ControlState::AcquisitionTimeout,
-    }
-}
-
-const fn encode_drive(drive: DriveCommand) -> u8 {
-    let azimuth = match drive.azimuth {
-        Some(AzimuthDirection::Clockwise) => 1,
-        Some(AzimuthDirection::CounterClockwise) => 2,
-        None => 0,
-    };
-    let elevation = match drive.elevation {
-        Some(ElevationDirection::Up) => 1,
-        Some(ElevationDirection::Down) => 2,
-        None => 0,
-    };
-
-    azimuth | (elevation << 2)
-}
-
-const fn decode_drive(bits: u8) -> DriveCommand {
-    DriveCommand {
-        azimuth: match bits & 0b11 {
-            1 => Some(AzimuthDirection::Clockwise),
-            2 => Some(AzimuthDirection::CounterClockwise),
-            _ => None,
-        },
-        elevation: match (bits >> 2) & 0b11 {
-            1 => Some(ElevationDirection::Up),
-            2 => Some(ElevationDirection::Down),
-            _ => None,
-        },
-    }
-}
-
-/// Atomic position snapshot shared between the ADC task and WebSocket clients.
-struct SharedPositions {
-    a0_mv: AtomicI32,
-    a1_mv: AtomicI32,
-}
-
-impl SharedPositions {
-    const fn new() -> Self {
-        Self {
-            a0_mv: AtomicI32::new(PositionTelemetry::ZERO.a0_mv),
-            a1_mv: AtomicI32::new(PositionTelemetry::ZERO.a1_mv),
-        }
-    }
-
-    fn store(&self, position: PositionTelemetry) {
-        self.a0_mv.store(position.a0_mv, Ordering::Relaxed);
-        self.a1_mv.store(position.a1_mv, Ordering::Relaxed);
-    }
-
-    fn load(&self) -> PositionTelemetry {
-        PositionTelemetry {
-            a0_mv: self.a0_mv.load(Ordering::Relaxed),
-            a1_mv: self.a1_mv.load(Ordering::Relaxed),
-        }
+    /// Wait for a command or feedback change that needs actuator reevaluation.
+    pub async fn wait_command(&self) -> Option<QueuedCommand> {
+        self.changed.wait().await;
+        self.with(|snapshot| {
+            snapshot.commands.take().map(|command| QueuedCommand {
+                command,
+                valid_until_ms: snapshot.command_valid_until_ms.take(),
+            })
+        })
     }
 }

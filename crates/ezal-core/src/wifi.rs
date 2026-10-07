@@ -10,30 +10,32 @@
 //! crate's `wifi` module, which calls [`Credentials::validate`] as the first
 //! step of its power-on self-test.
 //!
-//! Keeping the rules here means they are checked with a plain `cargo test` on
-//! the host, and — more importantly — that a mistyped `.env` (an empty SSID,
-//! a five-character password) is caught with a clear message at boot rather
+//! Keeping the rules here means they are checked by `./scripts/test-host.sh`,
+//! and a mistyped `.env` (an empty SSID or five-character password) is caught
+//! with a clear message at boot rather
 //! than as an opaque `JoinError` from deep inside the driver.
 //!
-//! The constraints are the 802.11 / WPA ones:
+//! ezal accepts these credential lengths:
 //!
 //! * an SSID is 1–32 octets ([`SSID_MAX_LEN`]);
-//! * a WPA/WPA2/WPA3 passphrase is 8–63 octets
+//! * a protected-network passphrase is 8–63 octets
 //!   ([`PSK_MIN_LEN`]–[`PSK_MAX_LEN`]);
 //! * an empty password selects an **open** (unencrypted) network.
 //!
 //! (The 64-hex-character "raw PSK" form that some stacks accept in place of a
 //! passphrase is deliberately not modelled — ezal takes a passphrase.)
+//! The firmware currently requests WPA3/SAE for protected networks; this
+//! module validates strings and does not negotiate a security protocol.
 //!
 //! [`build.rs`]: https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/build.rs
 
 /// Maximum length of an SSID, in octets (802.11). An SSID must be non-empty.
 pub const SSID_MAX_LEN: usize = 32;
 
-/// Minimum length of a WPA/WPA2/WPA3 passphrase, in octets.
+/// Minimum protected-network passphrase length accepted by ezal, in octets.
 pub const PSK_MIN_LEN: usize = 8;
 
-/// Maximum length of a WPA/WPA2/WPA3 passphrase, in octets.
+/// Maximum protected-network passphrase length accepted by ezal, in octets.
 pub const PSK_MAX_LEN: usize = 63;
 
 /// The kind of network a valid set of [`Credentials`] describes — i.e. what
@@ -42,8 +44,8 @@ pub const PSK_MAX_LEN: usize = 63;
 pub enum Security {
     /// No password: an open, unencrypted network (join with no passphrase).
     Open,
-    /// A WPA/WPA2/WPA3 network protected by the [`Credentials::password`]
-    /// passphrase.
+    /// A network protected by the [`Credentials::password`] passphrase.
+    /// The hardware adapter chooses the authentication protocol.
     Protected,
 }
 
@@ -99,7 +101,7 @@ impl CredentialError {
 /// let creds = Credentials { ssid: "my-network", password: "hunter2!!" };
 /// assert_eq!(creds.validate(), Ok(Security::Protected));
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Credentials<'a> {
     /// The network name (1–[`SSID_MAX_LEN`] octets).
     pub ssid: &'a str,
@@ -107,14 +109,26 @@ pub struct Credentials<'a> {
     pub password: &'a str,
 }
 
+// Credentials are configuration, but their password must not become a log
+// field when a caller prints that configuration while diagnosing startup.
+impl core::fmt::Debug for Credentials<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("ssid", &self.ssid)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
 impl Credentials<'_> {
-    /// Check the credentials against the 802.11 / WPA length rules.
+    /// Check the credentials against ezal's accepted SSID/passphrase lengths.
     ///
     /// On success, returns the [`Security`] the firmware should join with:
     /// [`Security::Open`] when [`password`](Credentials::password) is empty,
     /// [`Security::Protected`] otherwise. On failure, returns the specific
     /// [`CredentialError`] — the firmware's WiFi POST turns this into a loud
-    /// boot-time log line instead of powering the radio to no purpose.
+    /// boot-time log line before attempting association. Radio initialization
+    /// has already completed when the firmware runs this check.
     ///
     /// Lengths are measured in octets (bytes), matching how the SSID and
     /// passphrase go out on the air.

@@ -1,6 +1,6 @@
 //! Tests for the fail-safe position controller.
 
-use ezal_core::control::{ControlState, TimedPointing, TrackingController};
+use ezal_core::control::{ControlConfig, ControlState, TimedPointing, TrackingController};
 use ezal_core::drive::{AzimuthDirection, Command, ElevationDirection};
 use ezal_core::position::Pointing;
 
@@ -110,7 +110,14 @@ fn every_missing_stale_or_invalid_input_fails_safe() {
 
     for (target, feedback, now_ms, expected) in cases {
         let decision = controller.update(now_ms, target, feedback);
-        assert_eq!(decision.command, Command::Stop);
+        assert_eq!(
+            decision.command,
+            if expected == ControlState::Idle {
+                Command::Stop
+            } else {
+                Command::Inhibit
+            }
+        );
         assert_eq!(decision.state, expected);
         assert!(!decision.state.permits_motion());
     }
@@ -132,4 +139,44 @@ fn controller_never_drives_farther_into_a_mechanical_stop() {
     };
     assert_eq!(drive.azimuth, Some(AzimuthDirection::Clockwise));
     assert_eq!(drive.elevation, Some(ElevationDirection::Down));
+}
+
+#[test]
+fn invalid_controller_configuration_cannot_start_or_latch_motion() {
+    let invalid_configs = [
+        ControlConfig {
+            engage_error_deg: -1.0,
+            release_error_deg: -1.0,
+            ..ControlConfig::default()
+        },
+        ControlConfig {
+            release_error_deg: f32::NAN,
+            ..ControlConfig::default()
+        },
+        ControlConfig {
+            engage_error_deg: f32::INFINITY,
+            ..ControlConfig::default()
+        },
+        ControlConfig {
+            release_error_deg: 4.0,
+            ..ControlConfig::default()
+        },
+        ControlConfig {
+            azimuth_min_deg: 450.0,
+            ..ControlConfig::default()
+        },
+        ControlConfig {
+            elevation_max_deg: f32::INFINITY,
+            ..ControlConfig::default()
+        },
+    ];
+    for config in invalid_configs {
+        let mut controller = TrackingController::new(config);
+        // Exercise both a nonzero error and arrival at the exact target.
+        for feedback in [timed(110.0, 60.0, 0), timed(100.0, 50.0, 0)] {
+            let decision = controller.update(0, Some(timed(100.0, 50.0, 0)), Some(feedback));
+            assert_eq!(decision.command, Command::Inhibit, "{config:?}");
+            assert_eq!(decision.state, ControlState::ConfigurationInvalid);
+        }
+    }
 }
