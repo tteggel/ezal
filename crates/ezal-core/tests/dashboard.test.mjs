@@ -10,6 +10,11 @@ import { runInNewContext } from "node:vm";
 const html = readFileSync(new URL("../src/dashboard.html", import.meta.url), "utf8");
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
 assert.equal(scripts.length, 1, "load the dashboard's single embedded script");
+assert.ok(process.env.EZAL_DASHBOARD_CONFIG, "run scripts/test-dashboard.sh to export firmware configuration");
+const configScript = readFileSync(process.env.EZAL_DASHBOARD_CONFIG, "utf8");
+const configContext = { window: {} };
+runInNewContext(configScript, configContext);
+const config = configContext.window.EZAL_CONFIG;
 
 class EventTarget {
   listeners = new Map();
@@ -332,7 +337,7 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
       this.dispatch("close");
     }
   }
-  runInNewContext(scripts[0][1], {
+  runInNewContext(`${configScript}\n${scripts[0][1]}`, {
     document,
     location: { protocol, host: "ezal.local" },
     window,
@@ -355,7 +360,7 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
   };
   if (autoTelemetry) clock.schedule(() => {
     if (sockets.at(-1).readyState === WebSocket.OPEN) freshness();
-  }, 500, true);
+  }, config.telemetryTimeoutMs / 2, true);
   return {
     ids, buttons, body, window, document, clock, sockets, freshness, requests,
     async forecast(data, ok = true) {
@@ -363,6 +368,7 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
       await new Promise((resolve) => setImmediate(resolve));
     },
     get socket() { return sockets.at(-1); },
+    get telemetry() { return telemetry; },
     control(controller = true, azimuth = null, elevation = null) {
       this.socket.receive({ type: "control", controller, azimuth, elevation,
         network_ready: true, motion_fault: null });
@@ -457,16 +463,16 @@ for (const ending of ["pointerup", "pointercancel", "lostpointercapture"]) {
   });
 }
 
-test("held commands refresh at 150 ms and stop refreshing when released", () => {
+test("held commands use the served refresh interval and stop when released", () => {
   const page = controller();
   page.press("up", 1);
-  page.clock.advance(149);
+  page.clock.advance(config.refreshMs - 1);
   assert.deepEqual(page.socket.messages, ["drive:up"]);
   page.clock.advance(1);
   page.press("cw", 2);
-  page.clock.advance(300);
+  page.clock.advance(config.refreshMs * 2);
   page.release("up", 1);
-  page.clock.advance(150);
+  page.clock.advance(config.refreshMs);
   page.release("cw", 2);
   page.clock.advance(1000);
   assert.deepEqual(page.socket.messages, [
@@ -621,7 +627,7 @@ test("an open socket with a silent telemetry return path loses control and held 
   page.press("cw", 1);
   page.control(true, "cw");
   page.freshness({ position: { type: "position", a0_mv: 900, a1_mv: 1200 } });
-  page.clock.advance(1000);
+  page.clock.advance(config.telemetryTimeoutMs);
   assert.equal(page.socket.readyState, 1);
   assert.equal(page.socket.messages.at(-1), "stop");
   assert.equal(page.ids.get("status").textContent, "telemetry lost");
@@ -641,7 +647,7 @@ test("an open socket with a silent telemetry return path loses control and held 
   assert.match(page.socket.wireMessages.at(-1), /^press:\d+:\d+:drive:up$/);
 });
 
-test("ordinary responses and malformed freshness messages cannot renew telemetry", () => {
+test("acknowledgements and incomplete or malformed telemetry cannot renew lifetime", () => {
   const page = controller(false);
   page.press("cw", 1);
   page.clock.advance(900);
@@ -650,11 +656,61 @@ test("ordinary responses and malformed freshness messages cannot renew telemetry
   page.socket.receive({ type: "position", a0_mv: 2, a1_mv: 3 });
   page.socket.receive({ type: "freshness", token: 12 });
   page.socket.receive({ type: "freshness", token: "invalid" });
+  for (const invalid of [
+    { ...page.telemetry, feedback: null, freshness: { token: "12" } },
+    { ...page.telemetry, freshness: { token: 12 } },
+    { ...page.telemetry, freshness: { token: "invalid" } },
+  ]) page.socket.receive({ type: "telemetry", ...invalid });
   page.clock.advance(100);
   assert.equal(page.ids.get("status").textContent, "telemetry lost");
   assert.equal(page.socket.messages.at(-1), "stop");
   page.socket.receive({ type: "position", a0_mv: 4, a1_mv: 5 });
   assert.equal(page.ids.get("a1").textContent, "--");
+});
+
+test("one telemetry snapshot commits position, health and ownership together", () => {
+  const page = controller(false);
+  page.freshness({
+    position: { type: "position", a0_mv: 901, a1_mv: 1200 },
+    feedback: { type: "feedback", azimuth_tenths: 1234, elevation_tenths: 456, control_state: "idle" },
+    control: { type: "control", controller: false, azimuth: "ccw", elevation: null, network_ready: true, motion_fault: null },
+  });
+  assert.equal(page.ids.get("a0").textContent, "901");
+  assert.equal(page.ids.get("azimuth").textContent, "123.4");
+  assert.equal(page.ids.get("azimuth-drive").textContent, "CCW");
+  assert.equal(page.ids.get("take").disabled, false);
+  assert.equal(page.buttons.get("cw").disabled, true);
+  page.socket.receive({ type: "position", a0_mv: 999, a1_mv: 888 });
+  assert.equal(page.ids.get("a0").textContent, "901", "obsolete partial frames are not assembled");
+});
+
+test("a snapshot without a freshness proof clears a hold and cannot admit movement", () => {
+  const page = controller(false);
+  page.press("cw", 1);
+  page.socket.receive({ type: "telemetry", ...page.telemetry, freshness: null });
+  assert.equal(page.socket.messages.at(-1), "stop");
+  assert.equal(page.buttons.get("up").disabled, true);
+  page.freshness();
+  page.release("cw", 1);
+  page.clock.advance(config.refreshMs);
+  assert.deepEqual(page.socket.messages, ["drive:cw", "stop"]);
+});
+
+test("callbacks from a replaced socket cannot change the new session", () => {
+  const page = controller(false);
+  const old = page.socket;
+  old.close();
+  page.clock.advance(400);
+  page.socket.open();
+  page.control(false);
+  old.receive({ type: "control", controller: true, network_ready: true, azimuth: "cw" });
+  old.close();
+  page.press("up", 2);
+  assert.equal(page.buttons.get("cw").disabled, true);
+  assert.equal(page.ids.get("azimuth-drive").textContent, "IDLE");
+  assert.deepEqual(page.socket.messages, []);
+  page.clock.advance(400);
+  assert.equal(page.sockets.length, 2, "a stale close does not schedule another connection");
 });
 
 test("suspended timers and server rejection both require a new physical press", () => {

@@ -336,13 +336,148 @@ header {
     <p>Times mark the elevation cutoff. Reception also depends on terrain, antenna, receiver and the satellite’s broadcast. These predictions do not start tracking.</p>
   </section>
 </main>
+<script src="/dashboard-config.js"></script>
 <script>
 (() => {
-  // Must stay below COMMAND_TIMEOUT_MS so a held control keeps its firmware lease alive.
-  const refreshMs = 150;
-  // Matches COMMAND_MAX_AGE_MS. An OPEN TCP socket does not establish a live
-  // application return path: only complete firmware telemetry renews this.
-  const telemetryTimeoutMs = 1000;
+  const config = window.EZAL_CONFIG;
+  const axes = { cw: "azimuth", ccw: "azimuth", up: "elevation", down: "elevation" };
+  const idle = () => ({ azimuth: null, elevation: null });
+  const hasDesired = (state) => Boolean(state.held.azimuth || state.held.elevation);
+  const telemetryFresh = (state, now) => state.token !== null && now < state.telemetryUntil;
+  const canControl = (state, now) => state.connected && state.controller && state.networkReady
+    && !state.motionFault && !state.hidden && telemetryFresh(state, now);
+  const canTake = (state, now) => state.connected && !state.controller && state.networkReady
+    && !state.motionFault && telemetryFresh(state, now);
+  const initialControl = () => ({
+    connected: false, controller: false, networkReady: false, motionFault: null,
+    hidden: false, token: null, telemetryUntil: -Infinity, sequence: 0,
+    held: idle(), drive: idle(), telemetry: null, status: "offline", retryMs: 400,
+  });
+
+  const validTelemetry = (message) => {
+    const optionalNumber = (value) => value === null || Number.isFinite(value);
+    return message.position && message.feedback && message.control
+      && Number.isFinite(message.position.a0_mv) && Number.isFinite(message.position.a1_mv)
+      && optionalNumber(message.feedback.azimuth_tenths)
+      && optionalNumber(message.feedback.elevation_tenths)
+      && typeof message.feedback.control_state === "string"
+      && typeof message.control.controller === "boolean"
+      && typeof message.control.network_ready === "boolean"
+      && (message.freshness === null || (message.freshness
+        && typeof message.freshness.token === "string" && /^\d+$/.test(message.freshness.token)));
+  };
+
+  // This transition has no browser I/O. Each axis owns at most one pointer;
+  // held input and the firmware's applied drive remain distinct state.
+  const transition = (previous, event, now, settings) => {
+    const state = { ...previous, held: { ...previous.held }, drive: { ...previous.drive } };
+    const effects = [];
+    const send = (text) => effects.push({ type: "send", text });
+    const clearHeld = () => {
+      if (state.controller && hasDesired(state)) send("stop");
+      state.held = idle();
+    };
+    const expire = () => {
+      clearHeld();
+      state.token = null;
+      state.telemetry = null;
+      state.drive = idle();
+      state.status = "telemetry lost";
+    };
+    const movement = (pressed) => {
+      if (!canControl(state, now)) return;
+      const directions = Object.values(state.held).filter(Boolean).map((claim) => claim.direction);
+      if (!directions.length) return send("stop");
+      state.sequence += 1;
+      send(`${pressed ? "press" : "hold"}:${state.token}:${state.sequence}:drive:${directions.join("+")}`);
+    };
+    const control = (message) => {
+      state.controller = message.controller === true;
+      state.networkReady = message.network_ready === true;
+      state.motionFault = typeof message.motion_fault === "string" ? message.motion_fault : null;
+      state.drive = {
+        azimuth: ["cw", "ccw"].includes(message.azimuth) ? message.azimuth : null,
+        elevation: ["up", "down"].includes(message.elevation) ? message.elevation : null,
+      };
+      if (!state.controller || !state.networkReady || state.motionFault) clearHeld();
+    };
+
+    // Also check when input or telemetry arrives: suspended browser timers
+    // must never turn an old hold into new operator input after a gap.
+    if (state.token !== null && !telemetryFresh(state, now)) expire();
+    switch (event.type) {
+      case "open":
+        state.connected = true;
+        state.retryMs = 400;
+        state.status = "waiting for telemetry";
+        break;
+      case "close":
+        state.connected = false;
+        state.controller = false;
+        clearHeld();
+        state.networkReady = false;
+        state.token = null;
+        state.telemetry = null;
+        state.drive = idle();
+        state.status = "offline";
+        effects.push({ type: "reconnect", delay: state.retryMs });
+        state.retryMs = Math.min(state.retryMs * 1.6, 5000);
+        break;
+      case "message": {
+        const message = event.message;
+        if (message.type === "telemetry" && validTelemetry(message)) {
+          state.telemetry = message;
+          state.token = message.freshness?.token ?? null;
+          state.telemetryUntil = now + settings.telemetryTimeoutMs;
+          control(message.control);
+          state.status = state.token === null ? "telemetry lost" : "online";
+          if (state.token === null) clearHeld();
+        } else if (message.type === "control") {
+          // Acknowledgements update applied output, never telemetry lifetime.
+          control(message);
+        } else if (message.type === "input_required") {
+          expire();
+        }
+        break;
+      }
+      case "press": {
+        const axis = axes[event.direction];
+        if (!axis || state.held[axis] || !canControl(state, now)) break;
+        state.held[axis] = { pointerId: event.pointerId, direction: event.direction };
+        movement(true);
+        effects.push({ type: "capture", direction: event.direction, pointerId: event.pointerId });
+        break;
+      }
+      case "release":
+        for (const axis of ["azimuth", "elevation"]) {
+          if (state.held[axis]?.pointerId !== event.pointerId) continue;
+          state.held[axis] = null;
+          movement(false);
+          break;
+        }
+        break;
+      case "repeat":
+        movement(false);
+        break;
+      case "stop":
+        clearHeld();
+        break;
+      case "visibility":
+        state.hidden = event.hidden;
+        if (state.hidden) clearHeld();
+        break;
+      case "take":
+        if (canTake(state, now)) send("control:take");
+        break;
+    }
+    return { state, effects };
+  };
+
+  // Write only changes so live regions do not repeat unchanged announcements.
+  const setText = (element, text) => {
+    text = String(text);
+    if (element.textContent !== text) element.textContent = text;
+  };
   const status = document.getElementById("status");
   const take = document.getElementById("take");
   const a0 = document.getElementById("a0");
@@ -355,263 +490,86 @@ header {
     elevation: document.getElementById("elevation-drive")
   };
   const buttons = Array.from(document.querySelectorAll(".dir"));
-  const commands = {
-    cw: { axis: "azimuth" },
-    ccw: { axis: "azimuth" },
-    up: { axis: "elevation" },
-    down: { axis: "elevation" }
-  };
+  let state = { ...initialControl(), hidden: document.hidden };
   let ws;
-  let retry = 400;
-  let controller = false;
-  let networkReady = false;
-  let motionFault = null;
-  let freshnessToken = null;
-  let lastTelemetryAt = -Infinity;
-  let inputSequence = 0;
-  let desired = { azimuth: null, elevation: null };
-  let drive = { azimuth: null, elevation: null };
-  const pointers = new Map();
-  const axisPointers = { azimuth: null, elevation: null };
   let repeat = 0;
+  const degrees = (tenths) => tenths === null || tenths === undefined ? "--" : (tenths / 10).toFixed(1);
 
-  const degrees = (tenths) => tenths === null || tenths === undefined
-    ? "--"
-    : (tenths / 10).toFixed(1);
-
-  const setStatus = (text, online) => {
-    status.textContent = text;
+  const renderControl = () => {
+    const now = performance.now();
+    const known = telemetryFresh(state, now);
+    const data = known ? state.telemetry : null;
+    const online = known && state.networkReady;
+    setText(status, known && !state.networkReady ? "network unavailable" : state.status);
     status.classList.toggle("online", online);
-  };
-
-  const send = (message) => {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(message);
-  };
-
-  const hasDesired = () => desired.azimuth || desired.elevation;
-  const telemetryFresh = () => freshnessToken !== null
-    && performance.now() - lastTelemetryAt < telemetryTimeoutMs;
-  const canControl = () => controller && networkReady && !motionFault
-    && telemetryFresh() && !document.hidden;
-
-  const command = () => {
-    const parts = [];
-    if (desired.azimuth) parts.push(desired.azimuth);
-    if (desired.elevation) parts.push(desired.elevation);
-    return parts.length ? `drive:${parts.join("+")}` : "stop";
-  };
-
-  const syncButtons = () => {
+    setText(a0, data ? data.position.a0_mv : "--");
+    setText(a1, data ? data.position.a1_mv : "--");
+    setText(azimuth, degrees(data?.feedback.azimuth_tenths));
+    setText(elevation, degrees(data?.feedback.elevation_tenths));
+    setText(health, state.motionFault ? state.motionFault.replaceAll("_", " ") : data?.feedback.control_state ?? "unknown");
+    take.disabled = !canTake(state, now);
+    setText(take, state.controller ? "controller" : "take control");
     buttons.forEach((button) => {
-      const cmd = button.dataset.cmd;
-      const meta = commands[cmd];
-      button.disabled = !canControl();
-      button.classList.toggle("active", Boolean(telemetryFresh() && meta && drive[meta.axis] === cmd));
+      const direction = button.dataset.cmd;
+      button.disabled = !canControl(state, now);
+      button.classList.toggle("active", Boolean(known && state.drive[axes[direction]] === direction));
     });
-  };
-
-  const syncControl = () => {
-    take.disabled = !ws || ws.readyState !== WebSocket.OPEN || controller
-      || !networkReady || motionFault !== null || !telemetryFresh();
-    take.textContent = controller ? "controller" : "take control";
-    syncButtons();
-  };
-
-  const syncDriveIndicators = (known) => {
     Object.entries(driveIndicators).forEach(([axis, indicator]) => {
-      indicator.textContent = known ? (drive[axis] || "idle").toUpperCase() : "unknown";
-      indicator.classList.toggle("active", Boolean(known && drive[axis]));
+      setText(indicator, known ? (state.drive[axis] || "idle").toUpperCase() : "unknown");
+      indicator.classList.toggle("active", Boolean(known && state.drive[axis]));
     });
   };
 
-  const syncRepeat = () => {
-    if (canControl() && hasDesired() && !repeat) {
-      repeat = setInterval(() => sendMovement(false), refreshMs);
-    } else if ((!canControl() || !hasDesired()) && repeat) {
+  // Browser effects are kept here: transitions request sends/capture/reconnect;
+  // the current held state determines whether a refresh timer is needed.
+  const dispatch = (event) => {
+    const next = transition(state, event, performance.now(), config);
+    state = next.state;
+    for (const effect of next.effects) {
+      if (effect.type === "send" && ws?.readyState === WebSocket.OPEN) ws.send(effect.text);
+      if (effect.type === "capture") {
+        buttons.find((button) => button.dataset.cmd === effect.direction).setPointerCapture(effect.pointerId);
+      }
+      if (effect.type === "reconnect") setTimeout(connect, effect.delay);
+    }
+    const repeating = canControl(state, performance.now()) && hasDesired(state);
+    if (repeating && !repeat) repeat = setInterval(() => dispatch({ type: "repeat" }), config.refreshMs);
+    if (!repeating && repeat) {
       clearInterval(repeat);
       repeat = 0;
     }
-  };
-
-  const sendMovement = (pressed) => {
-    // Check on the send path as well as the watchdog timer. Browsers may
-    // suspend timers; a resumed interval must not renew an abandoned hold.
-    if (!telemetryFresh()) {
-      expireTelemetry();
-      return;
-    }
-    if (!canControl()) return;
-    if (!hasDesired()) {
-      send("stop");
-      return;
-    }
-    inputSequence += 1;
-    send(`${pressed ? "press" : "hold"}:${freshnessToken}:${inputSequence}:${command()}`);
-  };
-
-  const publish = (pressed = false) => {
-    syncRepeat();
-    sendMovement(pressed);
-  };
-
-  const stopAll = () => {
-    const wasActive = hasDesired();
-    desired.azimuth = null;
-    desired.elevation = null;
-    pointers.clear();
-    axisPointers.azimuth = null;
-    axisPointers.elevation = null;
-    syncRepeat();
-    if (controller && wasActive) send("stop");
-  };
-
-  const expireTelemetry = () => {
-    stopAll();
-    freshnessToken = null;
-    drive.azimuth = null;
-    drive.elevation = null;
-    [a0, a1, azimuth, elevation]
-      .forEach((element) => { element.textContent = "--"; });
-    health.textContent = "unknown";
-    syncDriveIndicators(false);
-    syncControl();
-    setStatus("telemetry lost", false);
-  };
-
-  const applyControl = (message) => {
-    controller = Boolean(message.controller);
-    networkReady = message.network_ready === true;
-    motionFault = message.motion_fault || null;
-    drive.azimuth = message.azimuth || null;
-    drive.elevation = message.elevation || null;
-    syncDriveIndicators(telemetryFresh());
-    if (!controller || !networkReady || motionFault) stopAll();
-    if (motionFault) health.textContent = motionFault.replaceAll("_", " ");
-    syncRepeat();
-    syncControl();
-  };
-
-  const start = (button, pointerId) => {
-    if (!telemetryFresh()) expireTelemetry();
-    if (!canControl()) return false;
-    const cmd = button.dataset.cmd;
-    const meta = commands[cmd];
-    if (!meta || axisPointers[meta.axis] !== null) return false;
-    axisPointers[meta.axis] = pointerId;
-    pointers.set(pointerId, { axis: meta.axis, cmd });
-    desired[meta.axis] = cmd;
-    publish(true);
-    return true;
-  };
-
-  const release = (pointerId) => {
-    const claim = pointers.get(pointerId);
-    if (!claim) return;
-    pointers.delete(pointerId);
-    if (axisPointers[claim.axis] === pointerId) axisPointers[claim.axis] = null;
-    if (!controller) return;
-    if (desired[claim.axis] === claim.cmd) desired[claim.axis] = null;
-    publish();
-  };
-
-  const applyPosition = (message) => {
-    a0.textContent = message.a0_mv;
-    a1.textContent = message.a1_mv;
-  };
-
-  const applyFeedback = (message) => {
-    health.textContent = motionFault ? motionFault.replaceAll("_", " ") : message.control_state;
-    azimuth.textContent = degrees(message.azimuth_tenths);
-    elevation.textContent = degrees(message.elevation_tenths);
+    renderControl();
   };
 
   const connect = () => {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${proto}://${location.host}/ws`);
-    ws.addEventListener("open", () => {
-      retry = 400;
-      setStatus("waiting for telemetry", false);
-      syncControl();
+    const socket = new WebSocket(`${proto}://${location.host}${config.wsPath}`);
+    ws = socket;
+    socket.addEventListener("open", () => { if (socket === ws) dispatch({ type: "open" }); });
+    socket.addEventListener("message", (event) => {
+      if (socket !== ws) return;
+      let message;
+      try { message = JSON.parse(event.data); } catch (_) { return; }
+      if (message && typeof message === "object") dispatch({ type: "message", message });
     });
-    ws.addEventListener("message", (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        if (message.type === "control") {
-          // A command acknowledgement never renews application telemetry.
-          applyControl(message);
-        } else if (message.type === "telemetry" && message.position && message.feedback && message.control
-          && message.freshness && typeof message.freshness.token === "string"
-          && /^\d+$/.test(message.freshness.token)) {
-          // Detect a gap even when suspension prevented the watchdog timer
-          // from running before this message callback. Never restore intent.
-          if (freshnessToken !== null && !telemetryFresh()) expireTelemetry();
-          freshnessToken = message.freshness.token;
-          lastTelemetryAt = performance.now();
-          applyControl(message.control);
-          applyPosition(message.position);
-          applyFeedback(message.feedback);
-          setStatus(networkReady ? "online" : "network unavailable", networkReady);
-          syncDriveIndicators(true);
-          syncControl();
-        } else if (message.type === "input_required") {
-          expireTelemetry();
-        }
-      } catch (_) {}
-    });
-    ws.addEventListener("close", () => {
-      expireTelemetry();
-      freshnessToken = null;
-      controller = false;
-      networkReady = false;
-      drive.azimuth = null;
-      drive.elevation = null;
-      syncDriveIndicators(false);
-      syncControl();
-      setStatus("offline", false);
-      const wait = retry;
-      retry = Math.min(retry * 1.6, 5000);
-      setTimeout(connect, wait);
-    });
+    socket.addEventListener("close", () => { if (socket === ws) dispatch({ type: "close" }); });
   };
 
-  take.addEventListener("click", () => {
-    if (!take.disabled) send("control:take");
-  });
+  take.addEventListener("click", () => dispatch({ type: "take" }));
   buttons.forEach((button) => {
     button.addEventListener("pointerdown", (event) => {
-      // Right/middle clicks and a pen's barrel button are browser actions,
-      // not operator holds. Touch contact also uses the primary button (0).
       if (event.button !== 0) return;
       event.preventDefault();
-      if (!start(button, event.pointerId)) return;
-      button.setPointerCapture(event.pointerId);
+      dispatch({ type: "press", direction: button.dataset.cmd, pointerId: event.pointerId });
     });
-    const end = (event) => {
-      release(event.pointerId);
-    };
-    button.addEventListener("pointerup", end);
-    button.addEventListener("pointercancel", end);
-    button.addEventListener("lostpointercapture", end);
-    button.addEventListener("pointermove", (event) => {
-      // With multiple mouse buttons held, releasing the primary button fires
-      // pointermove; pointerup waits for the last button. Stop at the release
-      // that actually ends the operator hold, even if another button remains.
-      if ((event.buttons & 1) === 0) release(event.pointerId);
-    });
+    const release = (event) => dispatch({ type: "release", pointerId: event.pointerId });
+    for (const ending of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(ending, release);
+    // Releasing the primary button while another stays down is pointermove.
+    button.addEventListener("pointermove", (event) => { if ((event.buttons & 1) === 0) release(event); });
   });
-  window.addEventListener("blur", stopAll);
-  window.addEventListener("beforeunload", stopAll);
-  window.addEventListener("pagehide", stopAll);
-  document.addEventListener("visibilitychange", () => {
-    // Mobile app switches and page suspension need not deliver beforeunload.
-    // Clear the intent as well as sending stop: a resumed interval must never
-    // revive a hold whose pointer release happened while the page was hidden.
-    // Firmware lease expiry remains the fallback if this stop cannot be sent.
-    if (document.hidden) stopAll();
-  });
-  setInterval(() => {
-    if (freshnessToken !== null && !telemetryFresh()) expireTelemetry();
-  }, 100);
+  for (const ending of ["blur", "beforeunload", "pagehide"]) window.addEventListener(ending, () => dispatch({ type: "stop" }));
+  document.addEventListener("visibilitychange", () => dispatch({ type: "visibility", hidden: document.hidden }));
+  setInterval(() => dispatch({ type: "clock" }), 100);
 
   // Forecast traffic has its own HTTP request and timeout. It cannot delay
   // movement acknowledgements or supply a WebSocket freshness token.
@@ -625,11 +583,6 @@ header {
   let stationKnown = false;
   let renderedRows = "";
   const utc = (seconds) => new Date(seconds * 1000).toISOString().replace("T", " ").slice(5, 19);
-  // Write only changes: #pass-status is a polite live region, and replacing
-  // identical text or rows every second makes assistive technology repeat it.
-  const setText = (element, text) => {
-    if (element.textContent !== text) element.textContent = text;
-  };
   const cell = (row, text, note) => {
     const element = document.createElement("td");
     element.textContent = text;
@@ -730,7 +683,7 @@ header {
   };
   setInterval(renderForecast, 1000);
   pollForecast();
-  syncControl();
+  renderControl();
   connect();
 })();
 </script>

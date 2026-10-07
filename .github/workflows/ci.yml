@@ -85,8 +85,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Load the .#dashboard dev shell
-        # Node only: this job builds no Rust, so it does not pay for the
-        # toolchain closure and the Rust jobs do not pay for Node's.
+        # Export the firmware's client configuration with Rust, then execute
+        # the actual served script and configuration in Node.
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
         with:
           arguments: ".#dashboard"

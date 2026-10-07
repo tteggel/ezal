@@ -1,13 +1,16 @@
 //! Tests for the static dashboard asset.
 
-use ezal_core::dashboard::INDEX_HTML;
-use ezal_core::protocol::{TAKE_CONTROL_MESSAGE, WS_PATH};
+use ezal_core::dashboard::{CONFIG_PATH, INDEX_HTML};
+use ezal_core::protocol::TAKE_CONTROL_MESSAGE;
 
 #[test]
-fn dashboard_uses_the_firmware_websocket_path() {
-    assert_eq!(WS_PATH, "/ws");
+fn dashboard_loads_firmware_configuration_before_the_client() {
+    let config = INDEX_HTML
+        .find(&format!("<script src=\"{CONFIG_PATH}\"></script>"))
+        .unwrap();
+    let client = INDEX_HTML.find("<script>").unwrap();
+    assert!(config < client);
     assert!(INDEX_HTML.contains("new WebSocket"));
-    assert!(INDEX_HTML.contains("`${proto}://${location.host}/ws`"));
     assert!(INDEX_HTML.contains(TAKE_CONTROL_MESSAGE));
     assert!(INDEX_HTML.contains(r#"id="take""#));
 }

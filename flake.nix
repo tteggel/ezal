@@ -157,12 +157,11 @@
 
         # ── Dashboard tests ─────────────────────────────────────────
         # `scripts/test-dashboard.sh` runs the served JavaScript under
-        # Node's built-in test runner and needs no Rust. Its own CI job
-        # loads this with `nix develop .#dashboard`, so the Node closure
-        # stays out of the jobs that never run it, while flake.lock stays
-        # the pin for both.
+        # Node's built-in test runner. Rust exports the exact browser
+        # configuration from the firmware constants. Node stays out of
+        # the other Rust jobs; flake.lock pins both toolchains.
         devShells.dashboard = pkgs.mkShell {
-          packages = [ pkgs.nodejs ];
+          packages = [ rustToolchain pkgs.nodejs ];
         };
       });
 }

@@ -18,7 +18,7 @@ use picoserve::response::ws::{Message, SocketRx, SocketTx, WebSocketCallback, We
 use picoserve::response::{Content, Response};
 use picoserve::routing::{get, PathRouter};
 
-use ezal_core::dashboard::INDEX_HTML;
+use ezal_core::dashboard::{ClientConfig, CONFIG_PATH, INDEX_HTML};
 use ezal_core::drive::Command;
 use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::passes::Report;
@@ -68,6 +68,10 @@ pub fn app<'a>(
             get(async || (("Content-Type", "text/html; charset=utf-8"), INDEX_HTML)),
         )
         .route(
+            CONFIG_PATH,
+            get(async || Response::ok(DashboardConfig).with_header("Cache-Control", "no-store")),
+        )
+        .route(
             "/api/passes",
             get(async move || {
                 report.replace(Some(crate::prediction::report()));
@@ -80,6 +84,22 @@ pub fn app<'a>(
                 upgrade.on_upgrade(DashboardSocket { state })
             }),
         )
+}
+
+struct DashboardConfig;
+
+impl Content for DashboardConfig {
+    fn content_type(&self) -> &'static str {
+        "text/javascript; charset=utf-8"
+    }
+
+    fn content_length(&self) -> usize {
+        format_args!("{}", ClientConfig).content_length()
+    }
+
+    async fn write_content<W: PicoserveWrite>(self, mut writer: W) -> Result<(), W::Error> {
+        writer.write_fmt(format_args!("{}", ClientConfig)).await
+    }
 }
 
 // A request copies the dashboard `Report` (about 1.5 KiB) into its acceptor

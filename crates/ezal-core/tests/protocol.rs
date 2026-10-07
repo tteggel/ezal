@@ -3,13 +3,12 @@
 mod common;
 
 use common::TEST_CALIBRATION;
-use ezal_core::dashboard::INDEX_HTML;
-use ezal_core::drive::{AzimuthDirection, DriveCommand, ElevationDirection, OUTPUT_MIN_ACTIVE_MS};
+use ezal_core::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
 use ezal_core::feedback::{FeedbackHealth, FeedbackMonitor, FeedbackReadError, FeedbackSnapshot};
 use ezal_core::position::Pointing;
 use ezal_core::protocol::{
     ClientMessage, ControlStatus, FeedbackTelemetry, MovementRequest, PositionTelemetry,
-    COMMAND_MAX_AGE_MS, COMMAND_REFRESH_MS, COMMAND_TIMEOUT_MS, TAKE_CONTROL_MESSAGE,
+    TAKE_CONTROL_MESSAGE,
 };
 
 #[test]
@@ -166,17 +165,6 @@ fn formats_calibrated_feedback_without_demo_fields() {
         json,
         r#"{"type":"feedback","azimuth_tenths":4247,"elevation_tenths":3,"control_state":"idle"}"#
     );
-}
-
-#[test]
-fn command_refresh_stays_inside_firmware_lease() {
-    const {
-        assert!(COMMAND_REFRESH_MS < COMMAND_TIMEOUT_MS);
-        assert!(OUTPUT_MIN_ACTIVE_MS <= COMMAND_TIMEOUT_MS);
-    }
-    assert!(INDEX_HTML.contains("const refreshMs = 150;"));
-    assert_eq!(COMMAND_MAX_AGE_MS, 1000);
-    assert!(INDEX_HTML.contains("const telemetryTimeoutMs = 1000;"));
 }
 
 #[test]
