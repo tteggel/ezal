@@ -1,5 +1,8 @@
 # Architecture
 
+The [manual control contract](CONTROL_CONTRACT.md) defines safeguard ownership,
+recovery and ordering requirements for the control-path cleanup.
+
 ezal separates deterministic motion policy from the RP2350 peripherals that
 feed and apply it. The default build is a hardware-driving walking skeleton:
 the METOP-C target source is synthetic; the ADS1015, calibration, controller,
