@@ -323,23 +323,28 @@ maintain useful movement and supervision on the bench, retain the longer
 intervals. A maximum-rate-times-coast-time bound initially reserves 3.5°
 azimuth and 1.5° elevation for post-release travel, in addition to feedback
 age and quantization. It is deliberately conservative and should be replaced
-with measured stopping travel. The present endpoint gate does not yet include
-that coast allowance.
+with measured stopping travel. The endpoint gate now includes that allowance.
 
 The DC time tolerance implies possible rates up to 7.5°/s azimuth and about
 3.46°/s elevation. The current 7/3°/s bounds therefore cannot be assumed to
 cover a G-5500DC; selecting that model requires matching planner, interlock
 and motion-supervision limits.
 
-For the planned duty guard, accumulate each axis's actual energized time
-across manual control, preparation, following and reacquisition. Start with
+The shared actuator duty guard accumulates each axis's actual energized time
+across command sources, ready for preparation, following and reacquisition. Use
 a conservative 300 s allowance for confirmed AC hardware, or 180 s for DC
 or unidentified hardware, replenished only after 900 s continuously idle on
 that axis. Brief pulse gaps do not reset it. This accounting is an engineering
 interpretation of the operating/rest specifications, not a published thermal
 model. Include it in feasibility checks and retain it across mode/owner
 changes; a reboot with unknown prior duty starts with a rest requirement.
-The current firmware has no duty accumulator.
+Firmware defaults to 180 s and an unknown boot history, so jogging initially
+requires 15 minutes of rest. The dashboard displays each axis's remaining
+on-time or rest countdown and clears a blocked hold. A new activation needs
+enough allowance for the full minimum pulse; exhaustion cuts that axis and
+discards its pending request while preserving the other axis. This records
+Pico-controlled output only; front-panel motor use requires a full rest before
+returning to Pico control.
 
 ### Implemented output timing
 
@@ -350,7 +355,8 @@ The implemented rules are in
 1. **Ordinary minimum on-time: 500 ms per axis.** Ordinary release
    respects this hold. Feedback faults, endpoint inhibition, browser stops,
    releasing or reversing a held browser control, ownership changes, and
-   movement-lease expiry clear the relevant output immediately when serviced,
+   movement-lease expiry and duty exhaustion clear the relevant output immediately
+   when serviced,
    even inside the hold. Releasing one of two held buttons therefore stops
    that axis at once and leaves the other one running.
 2. **Minimum off-time: 2 s per axis.** Reversal and reactivation wait for
@@ -360,14 +366,20 @@ The implemented rules are in
    read completes. A pair that took longer than 150 ms is rejected. Relay
    transitions are governed independently from sampling.
 
+`ActuatorConfig` makes same-direction and reversal holds independently
+configurable. The proposed 500/1,000 ms off-times remain simulation and
+commissioning options. Reversal hold must be at least the configured coast
+plus maximum feedback age, preventing a new direction baseline from including
+old-direction motion.
+
 Every active command has a **750 ms movement lease**, and an output starts
 only when its lease covers the 500 ms minimum on-time — a stalled command
 stream leaves the relay alone instead of producing a click too short to move
 the rotator. The actuator also checks that the oldest feedback channel is at
 most **500 ms** old and that movement does not continue into a calibrated
 endpoint: outward motion stops one ADC code before it, widened by the travel
-the rotator could have made since that sample began, and an energised axis is
-cut at that computed instant rather than at the next sample. Its next wake-up
+the rotator could have made since that sample began and the configured release/coast.
+An energised axis is cut at that computed instant rather than at the next sample. Its next wake-up
 is the earliest of those deadlines or a fixed 100 ms service pass. These are
 software deadlines; motor coasting and physical relay release add mechanical
 stopping time beyond them.
@@ -397,10 +409,10 @@ motor-enable interlock. See the
   Use the worksheet in [CALIBRATION.md](CALIBRATION.md#motion-profile-worksheet).
 - Verify the installed relay and load before interpreting component endurance
   figures as a system switching budget.
-- Exercise short pulse trains as well as continuous motion. The current
-  one-second settling window restarts on every activation and can exclude
-  all direction/speed checks during shorter pulses; tracking needs supervision
-  that remains effective across those pulse trains.
+- Exercise short pulse trains as well as continuous motion. Direction and speed
+  checks now retain evidence across pulses, with no per-activation blind window.
+  Verify healthy delayed feedback, coast and reversal as well as frozen,
+  wrong-direction and implausibly fast readings.
 - Whether an energised direction pin stays high through a watchdog reset.
   Capture the pin across the reset itself, not just after the reboot: the pad
   isolation latch can hold the last output state until boot claims the pin.

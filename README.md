@@ -54,6 +54,7 @@ embedded Rust.
 │   │       ├── mailbox.rs         # pending inhibition has priority
 │   │       ├── actuator.rs        # complete output decision in one step
 │   │       ├── motion.rs          # latched progress, direction, and speed checks
+│   │       ├── duty.rs            # per-axis energized allowance and continuous rest
 │   │       ├── network.rs         # expiring network permission for motion
 │   │       ├── ntp.rs             # SNTP validation + expiring UTC anchor
 │   │       ├── http.rs            # streamed HTTP framing for TLE downloads
@@ -138,14 +139,18 @@ ADS1015 POST and feedback sampling start before WiFi bring-up. Outputs remain
 inhibited until the station link and a usable DHCP address are available; an
 outage cuts motion and recovery requires ownership and fresh operator input.
 The dashboard shows calibrated position, raw A0/A1 millivolts, feedback health,
-and applied drive state alongside the advisory pass forecast.
+applied drive state, and per-axis motor allowance/rest countdown alongside the
+advisory pass forecast. Unknown duty history on boot requires 15 minutes of
+continuous rest before jogging. The default allowance is 180 seconds per axis;
+short pulse gaps and ownership changes do not reset it.
 
 Manual movement requires current network permission and fresh, valid calibrated
 ADS1015 feedback. The firmware reads both feedback channels under a
 500 ms deadline, rejects a pair that took longer than 150 ms to read, and waits
 100 ms after each one. The ADC uses ±4.096 V with 2 mV steps; the final output
 gate stops outward motion one ADC code before a calibrated endpoint, widened by
-the travel the rotator could have made since that sample began. Follow
+the travel the rotator could have made since that sample began and an assumed
+500 ms of release/coasting travel. Follow
 [CALIBRATION.md](docs/CALIBRATION.md), including its disconnected-direction-lead
 measurement procedure, before enabling motor commands.
 

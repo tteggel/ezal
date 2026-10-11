@@ -3,7 +3,9 @@
 
 #![allow(dead_code)]
 
+use ezal_core::actuator::{Actuator, ActuatorConfig};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
+use ezal_core::duty::DutyHistory;
 use ezal_core::feedback::FeedbackSample;
 use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
 
@@ -27,6 +29,12 @@ pub const TEST_CALIBRATION: PositionCalibration = PositionCalibration {
 
 pub fn installed() -> InstalledCalibration {
     InstalledCalibration::new(TEST_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap()
+}
+
+/// Policy fixtures begin with explicitly known rested motors. Production boot
+/// uses unknown history and must complete a full rest before movement.
+pub fn rested_actuator() -> Actuator {
+    Actuator::with_config(ActuatorConfig::DEFAULT, DutyHistory::Known([0, 0]))
 }
 
 /// Build test observations through the same checked conversion as hardware.

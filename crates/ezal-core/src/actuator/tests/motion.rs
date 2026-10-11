@@ -51,7 +51,7 @@ fn fresh_identical_feedback_cannot_sustain_either_axis_for_120_seconds() {
             MotionFault::ElevationNoProgress,
         ),
     ] {
-        let mut actuator = Actuator::new();
+        let mut actuator = common::rested_actuator();
         for now_ms in (0..=120_000).step_by(100) {
             refresh(&mut actuator, now_ms, START, drive);
             if now_ms < MotionConfig::DEFAULT.progress_timeout_ms {
@@ -69,7 +69,7 @@ fn fresh_identical_feedback_cannot_sustain_either_axis_for_120_seconds() {
 #[test]
 fn a_stalled_axis_latches_both_outputs_off_even_when_the_other_moves() {
     for stalled_azimuth in [true, false] {
-        let mut actuator = Actuator::new();
+        let mut actuator = common::rested_actuator();
         for now_ms in (0..=5_000).step_by(100) {
             let seconds = now_ms as f32 / 1_000.0;
             let position = if stalled_azimuth {
@@ -93,7 +93,7 @@ fn a_stalled_axis_latches_both_outputs_off_even_when_the_other_moves() {
 
 #[test]
 fn quantized_healthy_motion_and_reversal_continue_without_fault() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     // Realistic quantized samples include repeated codes on the slower axis.
     let mut position = START;
     for now_ms in (0..=10_000).step_by(100) {
@@ -129,7 +129,7 @@ fn quantized_healthy_motion_and_reversal_continue_without_fault() {
 
 #[test]
 fn idle_and_minimum_off_time_do_not_consume_the_progress_budget() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     for now_ms in (0..=1_000).step_by(100) {
         refresh(&mut actuator, now_ms, START, BOTH);
     }
@@ -152,7 +152,7 @@ fn idle_and_minimum_off_time_do_not_consume_the_progress_budget() {
 
 #[test]
 fn short_reversing_jogs_cannot_repeatedly_reset_a_stalled_motor_budget() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     let mut now_ms = 0;
     for run in 0..5 {
         let drive = if run % 2 == 0 { BOTH } else { REVERSE };
@@ -170,7 +170,7 @@ fn short_reversing_jogs_cannot_repeatedly_reset_a_stalled_motor_budget() {
 
 #[test]
 fn harmless_code_jitter_is_not_progress_or_a_direction_fault() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     for now_ms in (0..=5_000).step_by(100) {
         let noise = if now_ms % 200 == 0 { 0.0 } else { 1.0 };
         refresh(
@@ -188,7 +188,7 @@ fn harmless_code_jitter_is_not_progress_or_a_direction_fault() {
 
 #[test]
 fn timestamps_must_advance_before_a_changed_value_can_prove_progress() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     for now_ms in (0..=4_900).step_by(100) {
         refresh(&mut actuator, now_ms, START, BOTH);
     }
@@ -202,7 +202,7 @@ fn timestamps_must_advance_before_a_changed_value_can_prove_progress() {
 
 #[test]
 fn motion_deadline_cuts_without_waiting_for_another_sample_or_refresh() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     for now_ms in (0..=4_900).step_by(100) {
         refresh(&mut actuator, now_ms, START, BOTH);
     }
@@ -216,7 +216,7 @@ fn motion_deadline_cuts_without_waiting_for_another_sample_or_refresh() {
 
 #[test]
 fn actuator_preserves_source_expiry_through_feedback_and_motion_checks() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     actuator.command_until(Command::Jog(BOTH), &gate(START, 100), 100, 700);
     assert_eq!(actuator.actual(), BOTH);
     assert_eq!(actuator.lease_deadline_ms(), Some(700));
@@ -231,7 +231,7 @@ fn actuator_preserves_source_expiry_through_feedback_and_motion_checks() {
 
 #[test]
 fn feedback_recovery_and_new_commands_never_clear_a_motion_fault() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     for now_ms in (0..=5_000).step_by(100) {
         refresh(&mut actuator, now_ms, START, BOTH);
     }
@@ -263,7 +263,7 @@ fn slow_motion_against_either_applied_direction_latches_a_direction_fault() {
         (1, BOTH, MotionFault::ElevationWrongDirection),
         (1, REVERSE, MotionFault::ElevationWrongDirection),
     ] {
-        let mut actuator = Actuator::new();
+        let mut actuator = common::rested_actuator();
         let sign = if drive == BOTH { -1.0 } else { 1.0 };
         for now_ms in (0..=3_000).step_by(100) {
             let offset = now_ms as f32 / 1_000.0 * sign;
@@ -280,7 +280,7 @@ fn slow_motion_against_either_applied_direction_latches_a_direction_fault() {
 }
 
 #[test]
-fn impossible_feedback_jumps_latch_each_axis_after_startup_settles() {
+fn impossible_feedback_jumps_latch_each_axis() {
     for (position, fault) in [
         (
             Pointing::new(200.0, 45.0),
@@ -291,7 +291,7 @@ fn impossible_feedback_jumps_latch_each_axis_after_startup_settles() {
             MotionFault::ElevationImplausibleSpeed,
         ),
     ] {
-        let mut actuator = Actuator::new();
+        let mut actuator = common::rested_actuator();
         for now_ms in (0..=1_500).step_by(100) {
             refresh(&mut actuator, now_ms, START, BOTH);
         }
@@ -302,9 +302,106 @@ fn impossible_feedback_jumps_latch_each_axis_after_startup_settles() {
 }
 
 #[test]
+fn short_same_direction_pulses_cannot_repeatedly_spend_the_direction_noise_allowance() {
+    for azimuth in [true, false] {
+        for increasing in [true, false] {
+            let mut actuator = Actuator::with_config(
+                ezal_core::actuator::ActuatorConfig {
+                    relays: ezal_core::drive::RelayConfig::TRACKING_CANDIDATE,
+                    ..ezal_core::actuator::ActuatorConfig::DEFAULT
+                },
+                ezal_core::duty::DutyHistory::Known([0, 0]),
+            );
+            let mut position = START;
+            let direction = if increasing { BOTH } else { REVERSE };
+            let drive = if azimuth {
+                DriveCommand {
+                    azimuth: direction.azimuth,
+                    elevation: None,
+                }
+            } else {
+                DriveCommand {
+                    azimuth: None,
+                    elevation: direction.elevation,
+                }
+            };
+            for now_ms in (0..10_000).step_by(100) {
+                // Tiny wrong-way steps stay below each sample's noise tolerance.
+                // Each pulse is shorter than the former startup blind window.
+                if actuator.actual().is_active() {
+                    let delta = if increasing { -0.04 } else { 0.04 };
+                    if azimuth {
+                        position.azimuth_deg += delta;
+                    } else {
+                        position.elevation_deg += delta / 2.0;
+                    }
+                }
+                let command = if now_ms % 1_000 < 500 {
+                    Command::Drive(drive)
+                } else {
+                    Command::Stop
+                };
+                actuator.command(command, &gate(position, now_ms), now_ms);
+                if actuator.fault().is_some() {
+                    break;
+                }
+            }
+            assert_eq!(
+                actuator.fault(),
+                Some(if azimuth {
+                    MotionFault::AzimuthWrongDirection
+                } else {
+                    MotionFault::ElevationWrongDirection
+                })
+            );
+            assert_eq!(actuator.actual(), DriveCommand::IDLE);
+        }
+    }
+}
+
+#[test]
+fn speed_checks_apply_to_the_first_short_pulse_and_its_coast() {
+    for azimuth in [true, false] {
+        for during_coast in [false, true] {
+            let mut actuator = common::rested_actuator();
+            let drive = if azimuth {
+                DriveCommand {
+                    azimuth: BOTH.azimuth,
+                    elevation: None,
+                }
+            } else {
+                DriveCommand {
+                    azimuth: None,
+                    elevation: BOTH.elevation,
+                }
+            };
+            refresh(&mut actuator, 0, START, drive);
+            if during_coast {
+                actuator.command(Command::Inhibit, &gate(START, 50), 50);
+            }
+            let position = if azimuth {
+                Pointing::new(182.0, 45.0)
+            } else {
+                Pointing::new(180.0, 46.0)
+            };
+            actuator.service(&gate(position, 100), 100);
+            assert_eq!(
+                actuator.fault(),
+                Some(if azimuth {
+                    MotionFault::AzimuthImplausibleSpeed
+                } else {
+                    MotionFault::ElevationImplausibleSpeed
+                })
+            );
+            assert_eq!(actuator.actual(), DriveCommand::IDLE);
+        }
+    }
+}
+
+#[test]
 fn small_fast_samples_cannot_reuse_the_noise_allowance_indefinitely() {
     for azimuth in [true, false] {
-        let mut actuator = Actuator::new();
+        let mut actuator = common::rested_actuator();
         for now_ms in (0..=2_000).step_by(100) {
             let seconds = now_ms as f32 / 1_000.0;
             // Each individual change fits below the per-sample speed+noise
@@ -330,7 +427,7 @@ fn small_fast_samples_cannot_reuse_the_noise_allowance_indefinitely() {
 
 #[test]
 fn startup_can_be_stationary_before_quantized_movement_begins() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     for now_ms in (0_u64..=4_000).step_by(100) {
         let elapsed = now_ms.saturating_sub(900);
         let position = Pointing::new(
@@ -347,7 +444,7 @@ fn startup_can_be_stationary_before_quantized_movement_begins() {
 fn unusable_thresholds_inhibit_before_activation() {
     for config in [
         MotionConfig {
-            progress_timeout_ms: 1_000,
+            progress_timeout_ms: 0,
             ..MotionConfig::DEFAULT
         },
         MotionConfig {
@@ -359,7 +456,13 @@ fn unusable_thresholds_inhibit_before_activation() {
             ..MotionConfig::DEFAULT
         },
     ] {
-        let mut actuator = Actuator::with_motion_config(config);
+        let mut actuator = Actuator::with_config(
+            ezal_core::actuator::ActuatorConfig {
+                motion: config,
+                ..ezal_core::actuator::ActuatorConfig::DEFAULT
+            },
+            ezal_core::duty::DutyHistory::Known([0, 0]),
+        );
         refresh(&mut actuator, 0, START, BOTH);
         assert_eq!(actuator.actual(), DriveCommand::IDLE);
         assert_eq!(actuator.fault(), Some(MotionFault::InvalidConfiguration));
@@ -368,7 +471,7 @@ fn unusable_thresholds_inhibit_before_activation() {
 
 #[test]
 fn a_backwards_clock_inhibits_instead_of_renewing_the_progress_budget() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     refresh(&mut actuator, 100, START, BOTH);
     refresh(&mut actuator, 99, START, BOTH);
     assert_eq!(actuator.fault(), Some(MotionFault::ClockWentBackwards));

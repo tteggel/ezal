@@ -3,9 +3,10 @@
 mod common;
 
 use common::{installed, sample, TEST_CALIBRATION};
-use ezal_core::actuator::{Actuator, ActuatorInput, ActuatorUpdate};
+use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput, ActuatorUpdate};
 use ezal_core::coordination::CoordinationState;
 use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, MOVEMENT_LEASE_MS};
+use ezal_core::duty::DutyHistory;
 use ezal_core::feedback::FeedbackMonitor;
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::mailbox::CommandEnvelope;
@@ -58,7 +59,7 @@ fn step(
 
 #[test]
 fn boot_and_offline_permission_refuse_movement_without_a_past_wakeup() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     let update = step(&mut actuator, 0, NetworkGate::new(), Some(command(MOVE, 0)));
     assert_eq!(update.output, DriveCommand::IDLE);
     assert_eq!(actuator.target(), DriveCommand::IDLE);
@@ -75,7 +76,7 @@ fn boot_and_offline_permission_refuse_movement_without_a_past_wakeup() {
 
 #[test]
 fn network_permission_does_not_shorten_the_command_activation_lifetime() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     let update = step(&mut actuator, 0, ready(0), Some(command(MOVE, 0)));
     // A 300 ms permission can be renewed or revoked independently; it must
     // not prevent an activation requiring 500 ms of command lifetime.
@@ -86,7 +87,7 @@ fn network_permission_does_not_shorten_the_command_activation_lifetime() {
 
 #[test]
 fn stalled_network_cuts_even_while_feedback_and_commands_keep_arriving() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     let network = ready(0);
     for now_ms in (0..300).step_by(50) {
         assert_eq!(
@@ -103,7 +104,7 @@ fn stalled_network_cuts_even_while_feedback_and_commands_keep_arriving() {
 
 #[test]
 fn recovery_between_steps_clears_active_motion_without_a_new_command() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     let mut network = ready(0);
     step(&mut actuator, 0, network, Some(command(MOVE, 0)));
     network.observe(100, false);
@@ -116,7 +117,7 @@ fn recovery_between_steps_clears_active_motion_without_a_new_command() {
 
 #[test]
 fn recovery_between_steps_cancels_an_activation_due_in_the_new_generation() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     step(&mut actuator, 0, ready(0), Some(command(MOVE, 0)));
     step(
         &mut actuator,
@@ -141,7 +142,7 @@ fn recovery_between_steps_cancels_an_activation_due_in_the_new_generation() {
 #[test]
 fn an_arriving_release_cancels_a_same_instant_pending_activation() {
     for release in [Command::Inhibit, Command::Jog(DriveCommand::IDLE)] {
-        let mut actuator = Actuator::new();
+        let mut actuator = common::rested_actuator();
         step(&mut actuator, 0, ready(0), Some(command(MOVE, 0)));
         step(
             &mut actuator,
@@ -182,7 +183,7 @@ fn an_arriving_release_cancels_a_same_instant_pending_activation() {
 
 #[test]
 fn feedback_expires_independently_of_fresh_network_and_command_refreshes() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     let interlock = feedback(0);
     for now_ms in [0, 150, 300, 450] {
         let update = actuator.step(
@@ -219,7 +220,7 @@ fn feedback_expires_independently_of_fresh_network_and_command_refreshes() {
 
 #[test]
 fn delayed_delivery_never_renews_the_original_command_expiry() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     let envelope = CommandEnvelope {
         command: MOVE,
         valid_until_ms: 700,
@@ -240,7 +241,7 @@ fn delayed_delivery_never_renews_the_original_command_expiry() {
     );
     assert_eq!(actuator.target(), DriveCommand::IDLE);
 
-    let mut too_late = Actuator::new();
+    let mut too_late = common::rested_actuator();
     assert_eq!(
         step(&mut too_late, 201, ready(201), Some(envelope)).output,
         DriveCommand::IDLE
@@ -249,7 +250,7 @@ fn delayed_delivery_never_renews_the_original_command_expiry() {
 
 #[test]
 fn a_late_refresh_expires_the_previous_lease_before_receiving_a_new_one() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     step(&mut actuator, 0, ready(0), Some(command(MOVE, 0)));
     let update = step(&mut actuator, 750, ready(750), Some(command(MOVE, 750)));
     assert_eq!(update.output, DriveCommand::IDLE);
@@ -259,12 +260,17 @@ fn a_late_refresh_expires_the_previous_lease_before_receiving_a_new_one() {
 
 #[test]
 fn network_loss_cannot_erase_elapsed_motion_or_its_latched_fault() {
-    let mut actuator = Actuator::with_motion_config(MotionConfig {
-        progress_timeout_ms: 1_000,
-        startup_settle_ms: 100,
-        progress_codes: 3,
-        noise_codes: 2,
-    });
+    let mut actuator = Actuator::with_config(
+        ActuatorConfig {
+            motion: MotionConfig {
+                progress_timeout_ms: 1_000,
+                progress_codes: 3,
+                noise_codes: 2,
+            },
+            ..ActuatorConfig::DEFAULT
+        },
+        DutyHistory::Known([0, 0]),
+    );
     for now_ms in (0..1_000).step_by(100) {
         let update = step(
             &mut actuator,
@@ -301,13 +307,40 @@ fn coordinated() -> (CoordinationState, Actuator, u32) {
         .unwrap();
     let update = monitor.update(0, 0, Ok(voltages));
     state.publish_feedback(update.snapshot, update.interlock);
-    (state, Actuator::new(), owner)
+    (state, common::rested_actuator(), owner)
 }
 
 fn consume(state: &mut CoordinationState, actuator: &mut Actuator, now_ms: u64) -> ActuatorUpdate {
     let update = actuator.step(state.take_actuator_input(now_ms), now_ms);
-    state.record_actuator(update.output, update.status.motion_fault);
+    state.record_actuator(update.output, update.status);
     update
+}
+
+#[test]
+fn ownership_and_network_changes_preserve_duty_and_publish_it_to_every_viewer() {
+    let (mut state, mut actuator, owner) = coordinated();
+    assert!(state.accept_command(owner, command(MOVE, 0), 0));
+    consume(&mut state, &mut actuator, 0);
+    let viewer = state.register_client(100);
+    assert!(state.take_control(viewer, 100));
+    let stopped = consume(&mut state, &mut actuator, 100);
+    assert_eq!(stopped.output, DriveCommand::IDLE);
+    assert_eq!(stopped.status.duty.azimuth.remaining_ms, 179_900);
+    assert_eq!(
+        state.telemetry(owner, 100).control.duty,
+        stopped.status.duty
+    );
+    assert_eq!(
+        state.telemetry(viewer, 100).control.duty,
+        stopped.status.duty
+    );
+    state.publish_network(false, 150);
+    consume(&mut state, &mut actuator, 150);
+    state.publish_network(true, 200);
+    assert!(state.take_control(owner, 200));
+    let recovered = consume(&mut state, &mut actuator, 200);
+    assert_eq!(recovered.status.duty, stopped.status.duty);
+    assert_eq!(recovered.output, DriveCommand::IDLE);
 }
 
 #[test]

@@ -36,7 +36,9 @@ motor power. Never use software as the only protection against an unverified
 end stop. Start with the Pico disconnected from the four direction inputs and
 confirm that all direction GPIOs are low during reset.
 
-The firmware boots with all direction outputs idle. Build and flash it for
+The firmware boots with all direction outputs idle and unknown prior motor duty.
+It requires 15 minutes of continuous rest before permitting jogging; the
+dashboard shows the remaining rest separately for each axis. Build and flash it for
 manual calibration:
 
 ```bash
@@ -50,6 +52,10 @@ the relay minimum-on timer; the 2-second minimum-off interval still applies
 before reactivation. An output only starts when its lease covers the 500 ms
 minimum on-time, so a stalled network cannot produce a brief relay click.
 Electrical output removal does not stop mechanical coasting instantly.
+The endpoint gate reserves one ADC code, travel since the feedback read began,
+and an assumed 500 ms of release/coast at 7°/s azimuth and 3°/s elevation.
+It therefore stops short of the calibrated endpoint; use the front-panel
+procedure below to measure the full permitted range.
 
 Movement also requires a working station link and DHCP address. Network loss
 cuts motion; reconnecting requires ownership and fresh manual input.
@@ -72,6 +78,10 @@ reports raw ADC readings when calibration rejects them — including when the
 calibration itself is rejected, which the dashboard shows as
 `calibration-invalid` while inhibiting motion. Connect the direction leads for
 dashboard jogging only after installing and verifying the new calibration.
+Firmware duty accounting cannot see motors energized by the front panel.
+After those measurements, allow a full 15-minute motor rest before using Pico
+control; reset the Pico after the final front-panel movement to start its
+rest countdown from that point.
 
 ## 1. Trim the G-5500 controller
 
@@ -265,29 +275,40 @@ duty specification in [HARDWARE.md](HARDWARE.md#published-specifications).
 
 ## Motion-supervision commissioning
 
-`MotionConfig::DEFAULT` in `crates/ezal-core/src/motion.rs` starts with a
+`ActuatorConfig::DEFAULT` in `crates/ezal-core/src/actuator.rs` combines relay,
+travel, motion and duty settings. `MotionConfig::DEFAULT` starts with a
 five-second budget of accumulated energized time without resolvable progress,
-one second of startup/reversal settling, three calibrated ADC codes to prove
-movement, and two codes of measurement tolerance. The speed limits remain
-7°/s azimuth and 3°/s elevation in `drive.rs`. These are explicit engineering
-starting points, not measured limits for every installation. To use different
-settings, pass a `MotionConfig` to `Actuator::with_motion_config` in the
-firmware output task.
+three calibrated ADC codes to prove movement, and two codes of measurement
+tolerance. `TravelProfile::DEFAULT` uses 7°/s azimuth and 3°/s elevation with
+500 ms release/coast on both axes. The same travel profile governs endpoint
+margins and implausible-speed checks.
+
+These are engineering starting points, not measured limits for every
+installation. To install measured settings, pass the complete `ActuatorConfig`
+to `Actuator::with_config` in the firmware output task, retaining
+`DutyHistory::Unknown` at boot. A reversal off-time shorter than coast plus
+the 500 ms maximum feedback age is rejected. `RelayConfig::TRACKING_CANDIDATE`
+offers 500 ms on / 500 ms same-direction off / 1 s reversal off for simulation
+and commissioning; firmware keeps its existing 2 s off-time until verified.
+Select `DutyConfig::CONFIRMED_AC` (300 s) only after identifying the original
+AC hardware. The default is 180 s; both require 900 s continuously idle per axis.
 
 Measure normal startup delay, movement at the slowest expected load, feedback
 noise, and reversal settling. Verify healthy movement clears the progress
 threshold within its budget and normal noise cannot simulate progress. Idle
 time pauses the budget; short jogs and reversals do not reset it. Confirm that
-frozen midrange feedback, wrong-direction feedback after settling, and abrupt
+frozen midrange feedback, wrong-direction feedback across pulses, and abrupt
 implausible movement produce the named dashboard motion fault. Each fault
 latches both outputs off until the board is reset after investigation; a new
 command, feedback recovery, or network reconnection cannot clear it.
 
-Tracking pulse trains need an additional check: `startup_settle_ms` restarts
-on every activation, so pulses shorter than the current 1 s allowance can
-avoid all direction/speed observations. Accumulated no-progress detection
-alone does not detect useful-looking movement in the wrong direction.
-Implement and test supervision across short runs and their stopping intervals
-before enabling the relaxed tracking timings. Include wrong-direction and
-implausible feedback in repeated short-pulse tests, alongside genuine backlash
-and coasting, rather than testing only long continuous runs.
+There is no per-activation direction/speed blind window. Same-direction pulse
+trains retain their direction evidence, including expected coast, and speed
+checks retain consecutive and one-second baselines across output changes.
+An opposite direction establishes its baseline after the required reversal
+hold. Test repeated short pulses with wrong-direction and implausible feedback,
+alongside healthy startup, backlash, coasting and delayed ADC samples.
+Verify that cancellation and stale feedback clear pending pulses, that duty
+exhaustion stops only the affected axis, and that neither a new owner nor
+reboot grants a fresh allowance. The dashboard must show required rest and
+require a new press after recovery.

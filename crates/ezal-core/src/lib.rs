@@ -37,6 +37,7 @@ mod authority;
 pub mod coordination;
 pub mod dashboard;
 pub mod drive;
+pub mod duty;
 pub mod feedback;
 pub mod http;
 pub mod interlock;

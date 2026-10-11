@@ -3,17 +3,18 @@
 //! A fresh in-range ADC value proves neither that a motor moved nor that its
 //! feedback wiring is correct. This monitor counts time for **applied** output
 //! directions, requires displacement larger than feedback quantization, and
-//! checks direction and speed after startup settling. Lease refreshes, normal
-//! stops, inactive relay holds, and feedback recovery cannot erase a fault.
+//! checks direction and speed across pulse trains, including their coast.
+//! Lease refreshes, normal stops, inactive relay holds, and feedback recovery
+//! cannot erase a fault or repeatedly spend a new measurement-noise allowance.
 //!
 //! The default thresholds are conservative engineering starting points, not
-//! installation measurements. Commission the timeout, settling allowance,
-//! code tolerances, and the speed bounds in [`crate::drive`] on the installed
+//! installation measurements. Commission the timeout, code tolerances, and
+//! the travel profile on the installed
 //! mechanism. A fault requires inspection and a firmware reset; there is no
 //! command or automatically recovering sample that clears it.
 
-use crate::drive::{DriveCommand, AZIMUTH_MAX_SPEED_DEG_PER_S, ELEVATION_MAX_SPEED_DEG_PER_S};
-use crate::interlock::FeedbackInterlock;
+use crate::drive::DriveCommand;
+use crate::interlock::{AxisTravel, FeedbackInterlock, TravelProfile};
 use crate::position::Pointing;
 
 /// Keep a longer comparison alongside consecutive samples. Otherwise the
@@ -28,10 +29,6 @@ pub struct MotionConfig {
     /// Includes motor startup; idle time pauses this budget, and even reversal
     /// does not reset it. Repeated short jogs cannot hide frozen feedback.
     pub progress_timeout_ms: u64,
-    /// Time after each actual activation before direction/speed checks start.
-    /// A fresh sample after this allowance establishes the new run's baseline,
-    /// so old-direction coasting and pre-activation ADC reads are not compared.
-    pub startup_settle_ms: u64,
     /// Minimum displacement, in calibrated ADC codes, that proves progress.
     /// Must exceed `noise_codes`; a lone code transition is not sufficient.
     pub progress_codes: u16,
@@ -41,17 +38,16 @@ pub struct MotionConfig {
 }
 
 impl MotionConfig {
-    /// Initial commissioning values: 5 s without movement, 1 s for startup,
-    /// three codes to prove progress, and two codes of measurement tolerance.
+    /// Initial commissioning values: 5 s without movement, three codes to
+    /// prove progress, and two codes of measurement tolerance.
     pub const DEFAULT: Self = Self {
         progress_timeout_ms: 5_000,
-        startup_settle_ms: 1_000,
         progress_codes: 3,
         noise_codes: 2,
     };
 
-    const fn is_valid(self) -> bool {
-        self.progress_timeout_ms > self.startup_settle_ms
+    pub(crate) const fn is_valid(self) -> bool {
+        self.progress_timeout_ms > 0
             && self.noise_codes > 0
             && self.progress_codes > self.noise_codes
     }
@@ -66,7 +62,7 @@ impl Default for MotionConfig {
 /// First motion-supervision failure; latches both physical outputs off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MotionFault {
-    /// Thresholds cannot distinguish movement from measurement tolerance.
+    /// Output configuration or history cannot authorize supervised movement.
     InvalidConfiguration,
     /// The monotonic output-owner clock moved backwards.
     ClockWentBackwards,
@@ -74,9 +70,9 @@ pub enum MotionFault {
     AzimuthNoProgress,
     /// Elevation exhausted its energised-time budget without movement.
     ElevationNoProgress,
-    /// Settled azimuth feedback moved against its applied direction.
+    /// Azimuth feedback moved against its applied direction or expected coast.
     AzimuthWrongDirection,
-    /// Settled elevation feedback moved against its applied direction.
+    /// Elevation feedback moved against its applied direction or expected coast.
     ElevationWrongDirection,
     /// Azimuth feedback changed faster than the configured physical bound.
     AzimuthImplausibleSpeed,
@@ -122,8 +118,10 @@ struct Progress {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct AxisMonitor {
     applied: Option<bool>,
+    last_direction: Option<bool>,
     run_started_ms: u64,
-    /// Most advanced position in the applied direction after settling.
+    stopped_ms: Option<u64>,
+    /// Furthest position in the same direction, retained across pulse gaps.
     direction_extreme_deg: Option<f32>,
     speed_anchor: Option<Sample>,
     sample: Option<Sample>,
@@ -134,7 +132,9 @@ impl AxisMonitor {
     const fn new() -> Self {
         Self {
             applied: None,
+            last_direction: None,
             run_started_ms: 0,
+            stopped_ms: None,
             direction_extreme_deg: None,
             speed_anchor: None,
             sample: None,
@@ -147,7 +147,7 @@ impl AxisMonitor {
         elapsed_ms: u64,
         sample: Option<Sample>,
         code_deg: f32,
-        maximum_speed: f32,
+        travel: AxisTravel,
         config: MotionConfig,
     ) -> Option<AxisFault> {
         if self.applied.is_some() {
@@ -166,32 +166,31 @@ impl AxisMonitor {
             self.sample
                 .is_none_or(|last| sample.timestamp_ms > last.timestamp_ms)
         }) {
-            if let Some(increases_angle) = self.applied {
-                let sign = if increases_angle { 1.0 } else { -1.0 };
-                let settled_ms = self.run_started_ms.saturating_add(config.startup_settle_ms);
-                if sample.timestamp_ms >= settled_ms {
-                    let noise_deg = code_deg * f32::from(config.noise_codes);
-                    // Compare samples entirely inside this settled run; the
-                    // sample timestamp is read-start time, not delivery time.
-                    for baseline in [
-                        self.sample.filter(|s| s.timestamp_ms >= settled_ms),
-                        self.speed_anchor,
-                    ]
-                    .into_iter()
-                    .flatten()
-                    {
-                        let elapsed_s =
-                            (sample.timestamp_ms - baseline.timestamp_ms) as f32 / 1_000.0;
-                        let travelled = (sample.position_deg - baseline.position_deg).abs();
-                        if travelled > maximum_speed * elapsed_s + noise_deg {
-                            return Some(AxisFault::ImplausibleSpeed);
-                        }
+            let noise_deg = code_deg * f32::from(config.noise_codes);
+            if self.last_direction.is_some() {
+                // Physical speed remains bounded during startup, coast and idle.
+                // Preserve the longer baseline across every output transition.
+                for baseline in [self.sample, self.speed_anchor].into_iter().flatten() {
+                    let elapsed_s = (sample.timestamp_ms - baseline.timestamp_ms) as f32 / 1_000.0;
+                    let travelled = (sample.position_deg - baseline.position_deg).abs();
+                    if travelled > travel.max_speed_deg_per_s * elapsed_s + noise_deg {
+                        return Some(AxisFault::ImplausibleSpeed);
                     }
-                    if self.speed_anchor.is_none_or(|anchor| {
-                        sample.timestamp_ms - anchor.timestamp_ms >= SPEED_WINDOW_MS
-                    }) {
-                        self.speed_anchor = Some(sample);
-                    }
+                }
+            }
+            if self
+                .speed_anchor
+                .is_none_or(|anchor| sample.timestamp_ms - anchor.timestamp_ms >= SPEED_WINDOW_MS)
+            {
+                self.speed_anchor = Some(sample);
+            }
+            let expected_motion = self.applied.is_some()
+                || self.stopped_ms.is_some_and(|stopped| {
+                    sample.timestamp_ms <= stopped.saturating_add(travel.coast_ms)
+                });
+            if expected_motion {
+                if let Some(increases_angle) = self.last_direction {
+                    let sign = if increases_angle { 1.0 } else { -1.0 };
                     if let Some(extreme) = self.direction_extreme_deg {
                         if (sample.position_deg - extreme) * sign < -noise_deg {
                             return Some(AxisFault::WrongDirection);
@@ -204,10 +203,11 @@ impl AxisMonitor {
                         self.direction_extreme_deg = Some(sample.position_deg);
                     }
                 }
-
+            }
+            if self.applied.is_some() {
                 // Absolute displacement is intentional: reversal must not
                 // erase accumulated stalled-motor time. Wrong-direction
-                // displacement is checked independently above after startup.
+                // displacement is checked independently above, without a per-pulse blind window.
                 if sample.timestamp_ms >= self.run_started_ms {
                     if let Some(progress) = &mut self.progress {
                         let moved_deg = (sample.position_deg - progress.anchor_deg).abs();
@@ -232,15 +232,25 @@ impl AxisMonitor {
         if self.applied == direction {
             return;
         }
+        if self.applied.is_some() {
+            self.stopped_ms = Some(now_ms);
+        }
         self.applied = direction;
-        self.direction_extreme_deg = None;
-        self.speed_anchor = None;
-        self.run_started_ms = now_ms;
-        if direction.is_some() && self.progress.is_none() {
-            self.progress = self.sample.map(|sample| Progress {
-                anchor_deg: sample.position_deg,
-                energized_ms: 0,
-            });
+        if direction.is_some() {
+            self.run_started_ms = now_ms;
+            if direction != self.last_direction {
+                // Actuator configuration requires reversal hold >= coast plus
+                // maximum feedback age, so this baseline cannot contain motion
+                // in the old direction after its timestamp.
+                self.last_direction = direction;
+                self.direction_extreme_deg = self.sample.map(|sample| sample.position_deg);
+            }
+            if self.progress.is_none() {
+                self.progress = self.sample.map(|sample| Progress {
+                    anchor_deg: sample.position_deg,
+                    energized_ms: 0,
+                });
+            }
         }
     }
 
@@ -258,6 +268,7 @@ impl AxisMonitor {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MotionMonitor {
     config: MotionConfig,
+    travel: TravelProfile,
     azimuth: AxisMonitor,
     elevation: AxisMonitor,
     serviced_ms: Option<u64>,
@@ -265,13 +276,14 @@ pub(crate) struct MotionMonitor {
 }
 
 impl MotionMonitor {
-    pub(crate) const fn new(config: MotionConfig) -> Self {
+    pub(crate) const fn new(config: MotionConfig, travel: TravelProfile) -> Self {
         Self {
             config,
+            travel,
             azimuth: AxisMonitor::new(),
             elevation: AxisMonitor::new(),
             serviced_ms: None,
-            fault: if config.is_valid() {
+            fault: if config.is_valid() && travel.is_valid() {
                 None
             } else {
                 Some(MotionFault::InvalidConfiguration)
@@ -305,14 +317,14 @@ impl MotionMonitor {
             elapsed_ms,
             sample(|p| p.azimuth_deg),
             resolution.azimuth_deg,
-            AZIMUTH_MAX_SPEED_DEG_PER_S,
+            self.travel.azimuth,
             self.config,
         );
         let elevation = self.elevation.observe(
             elapsed_ms,
             sample(|p| p.elevation_deg),
             resolution.elevation_deg,
-            ELEVATION_MAX_SPEED_DEG_PER_S,
+            self.travel.elevation,
             self.config,
         );
         self.fault = match (azimuth, elevation) {

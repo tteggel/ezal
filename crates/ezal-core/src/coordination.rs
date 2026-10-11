@@ -3,9 +3,10 @@
 //! Time is supplied to transitions explicitly. Reading a snapshot never
 //! expires permissions, revokes ownership or drains pending commands.
 
-use crate::actuator::ActuatorInput;
+use crate::actuator::{ActuatorInput, ActuatorStatus};
 use crate::authority::ControlAuthority;
 use crate::drive::DriveCommand;
+use crate::duty::DutyStatus;
 use crate::feedback::FeedbackSnapshot;
 use crate::interlock::FeedbackInterlock;
 use crate::mailbox::{CommandEnvelope, CommandMailbox};
@@ -24,6 +25,8 @@ pub struct ControlStatus {
     pub network_ready: bool,
     /// Latched physical feedback fault, cleared only by restart.
     pub motion_fault: Option<MotionFault>,
+    /// Shared per-axis allowance, including any rest required before movement.
+    pub duty: DutyStatus,
 }
 
 /// One coherent observation for a dashboard connection.
@@ -43,7 +46,7 @@ pub struct CoordinationState {
     interlock: FeedbackInterlock,
     authority: ControlAuthority,
     applied_drive: DriveCommand,
-    motion_fault: Option<MotionFault>,
+    actuator_status: ActuatorStatus,
     commands: CommandMailbox,
     network: NetworkGate,
 }
@@ -62,7 +65,10 @@ impl CoordinationState {
             interlock: FeedbackInterlock::INHIBITED,
             authority: ControlAuthority::new(),
             applied_drive: DriveCommand::IDLE,
-            motion_fault: None,
+            actuator_status: ActuatorStatus {
+                motion_fault: None,
+                duty: DutyStatus::INITIAL,
+            },
             commands: CommandMailbox::new(),
             network: NetworkGate::new(),
         }
@@ -134,7 +140,8 @@ impl CoordinationState {
                 controller: ready && self.authority.is_controller(client_id),
                 drive: self.applied_drive,
                 network_ready: ready,
-                motion_fault: self.motion_fault,
+                motion_fault: self.actuator_status.motion_fault,
+                duty: self.actuator_status.duty,
             },
             network: self.network,
         }
@@ -175,9 +182,9 @@ impl CoordinationState {
     }
 
     /// Record output only after the GPIO adapter has applied it.
-    pub fn record_actuator(&mut self, drive: DriveCommand, fault: Option<MotionFault>) {
+    pub fn record_actuator(&mut self, drive: DriveCommand, status: ActuatorStatus) {
         self.applied_drive = drive;
-        self.motion_fault = fault;
+        self.actuator_status = status;
     }
 
     /// Atomically drain pending work with the feedback and network it will use.

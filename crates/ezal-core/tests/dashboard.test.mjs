@@ -299,7 +299,7 @@ function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = conf
   let telemetry = {
     position: { type: "position", a0_mv: 0, a1_mv: 0 },
     feedback: { type: "feedback", azimuth_tenths: null, elevation_tenths: null, control_state: "idle" },
-    control: { type: "control", controller: false, azimuth: null, elevation: null, network_ready: true, motion_fault: null },
+    control: { type: "control", controller: false, azimuth: null, elevation: null, network_ready: true, motion_fault: null, duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0] },
   };
   class WebSocket extends EventTarget {
     static OPEN = 1;
@@ -853,7 +853,7 @@ test("one telemetry snapshot commits position, health and ownership together", (
   page.freshness({
     position: { type: "position", a0_mv: 901, a1_mv: 1200 },
     feedback: { type: "feedback", azimuth_tenths: 1234, elevation_tenths: 456, control_state: "idle" },
-    control: { type: "control", controller: false, azimuth: "ccw", elevation: null, network_ready: true, motion_fault: null },
+    control: { type: "control", controller: false, azimuth: "ccw", elevation: null, network_ready: true, motion_fault: null, duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0] },
   });
   assert.equal(page.ids.get("a0").textContent, "901");
   assert.equal(page.ids.get("azimuth").textContent, "123.4");
@@ -862,6 +862,64 @@ test("one telemetry snapshot commits position, health and ownership together", (
   assert.equal(page.buttons.get("cw").disabled, true);
   page.socket.receive({ type: "position", a0_mv: 999, a1_mv: 888 });
   assert.equal(page.ids.get("a0").textContent, "901", "obsolete partial frames are not assembled");
+});
+
+test("unknown boot duty displays a rest countdown and permits movement only after fresh readiness", () => {
+  const page = controller(false);
+  page.freshness({ control: { ...page.telemetry.control,
+    duty_remaining_ms: [0, 0], duty_cooldown_ms: [900000, 900000] } });
+  assert.equal(page.ids.get("control-state").textContent, "resting");
+  assert.match(page.ids.get("control-status").textContent, /Azimuth motor needs 15:00/);
+  assert.match(page.ids.get("elevation-duty").textContent, /15:00 remaining/);
+  page.press("cw", 1);
+  assert.deepEqual(page.socket.messages, []);
+  page.freshness({ control: { ...page.telemetry.control, duty_cooldown_ms: [61000, 61000] } });
+  assert.match(page.ids.get("azimuth-duty").textContent, /1:01 remaining/);
+  page.freshness({ control: { ...page.telemetry.control,
+    duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0] } });
+  assert.equal(page.buttons.get("cw").disabled, false);
+  assert.match(page.ids.get("azimuth-duty").textContent, /3:00 on-time/);
+  page.clock.advance(config.refreshMs);
+  assert.deepEqual(page.socket.messages, []);
+  page.press("cw", 2);
+  assert.equal(page.socket.messages.at(-1), "drive:cw");
+});
+
+test("one exhausted axis clears its hold while the other keeps its existing input", () => {
+  const page = controller(false);
+  page.press("cw", 1);
+  page.press("up", 2);
+  page.freshness({ control: { ...page.telemetry.control, elevation: "up",
+    duty_remaining_ms: [100, 120000], duty_cooldown_ms: [900000, 0] } });
+  assert.equal(page.socket.messages.at(-1), "drive:up");
+  assert.equal(page.buttons.get("cw").disabled, true);
+  assert.equal(page.buttons.get("ccw").disabled, true);
+  assert.equal(page.buttons.get("up").disabled, false);
+  assert.equal(page.buttons.get("cw").classList.contains("held"), false);
+  assert.equal(page.buttons.get("up").classList.contains("held"), true);
+  page.freshness({ control: { ...page.telemetry.control,
+    duty_remaining_ms: [180000, 120000], duty_cooldown_ms: [0, 0] } });
+  page.clock.advance(config.refreshMs);
+  assert.equal(page.socket.messages.at(-1), "drive:up", "cooldown recovery never restores the old azimuth hold");
+  page.press("cw", 3);
+  assert.equal(page.socket.messages.at(-1), "drive:cw+up");
+});
+
+test("duty acknowledgements and malformed duty telemetry cannot renew the observation", () => {
+  const page = controller(false);
+  page.press("cw", 1);
+  page.clock.advance(900);
+  page.socket.receive({ ...page.telemetry.control,
+    duty_remaining_ms: [0, 180000], duty_cooldown_ms: [900000, 0] });
+  assert.equal(page.socket.messages.at(-1), "stop");
+  for (const invalid of [undefined, [0], [-1, 0], [null, 0], [0.5, 0], [Number.MAX_SAFE_INTEGER + 1, 0]]) {
+    page.socket.receive({ type: "telemetry", ...page.telemetry,
+      control: { ...page.telemetry.control, duty_cooldown_ms: invalid }, freshness: { token: "20" } });
+  }
+  page.clock.advance(100);
+  assert.equal(page.ids.get("status").textContent, "telemetry lost");
+  assert.equal(page.ids.get("azimuth-duty").textContent, "Motor allowance unknown");
+  assert.equal(page.buttons.get("up").disabled, true);
 });
 
 test("a snapshot without a freshness proof clears a hold and cannot admit movement", () => {

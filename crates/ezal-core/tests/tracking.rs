@@ -1,5 +1,7 @@
+use ezal_core::actuator::ActuatorConfig;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection};
+use ezal_core::duty::DutyConfig;
 use ezal_core::feedback::{FeedbackSample, FEEDBACK_MAX_AGE_MS};
 use ezal_core::motion::MotionFault;
 use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
@@ -57,7 +59,16 @@ fn simulation(initial: Pointing, plant: MotorProfile) -> Simulation {
         initial,
         plant,
         FollowingController::new(MotorProfile::AC_50HZ, 0.5).unwrap(),
-        SimulationSettings::default(),
+        SimulationSettings {
+            actuator: ActuatorConfig {
+                duty: DutyConfig {
+                    energized_ms: plant.duty_limit_ms,
+                    rest_ms: plant.rest_ms,
+                },
+                ..ActuatorConfig::DEFAULT
+            },
+            ..SimulationSettings::default()
+        },
     )
     .unwrap()
 }
@@ -574,5 +585,45 @@ fn recorded_orbit_replays_through_the_real_actuator_until_los() {
     assert!(summary.max_deviation_deg.is_finite() && summary.max_deviation_deg < 10.0);
     for used in summary.energized_ms {
         assert!(used > 0 && used < MotorProfile::AC_50HZ.duty_limit_ms);
+    }
+}
+
+#[test]
+fn candidate_timing_preserves_healthy_coast_and_reversal_with_delayed_feedback() {
+    use ezal_core::drive::RelayConfig;
+    for profile in [
+        MotorProfile::AC_SLOW,
+        MotorProfile::AC_50HZ,
+        MotorProfile::AC_FAST,
+    ] {
+        let mut sim = Simulation::new(
+            CALIBRATION,
+            Pointing::new(180.0, 60.0),
+            profile,
+            FollowingController::new(MotorProfile::AC_50HZ, 0.5).unwrap(),
+            SimulationSettings {
+                feedback_latency_ms: 150,
+                actuator: ActuatorConfig {
+                    relays: RelayConfig::TRACKING_CANDIDATE,
+                    ..SimulationSettings::default().actuator
+                },
+                ..SimulationSettings::default()
+            },
+        )
+        .unwrap();
+        while sim.now_ms() < 12_000 {
+            let target = match sim.now_ms() % 4_000 {
+                0..1_000 => Some(Pointing::new(300.0, 120.0)),
+                2_000..3_000 => Some(Pointing::new(60.0, 20.0)),
+                _ => None,
+            };
+            sim.step(target).unwrap();
+        }
+        while !sim.is_settled() {
+            sim.step(None).unwrap();
+        }
+        let summary = sim.summary();
+        assert!(summary.reversals.iter().all(|n| *n >= 5), "{summary:?}");
+        assert!(summary.energized_ms.iter().all(|ms| *ms <= 6_000));
     }
 }

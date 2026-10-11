@@ -586,10 +586,10 @@ from TLE downloads and incremental planning. Bound planning memory and work
 per step so it cannot delay actuator/feedback servicing. Add an authenticated
 orbital-data path as required by the current advisory-data contract above.
 
-Before enabling shorter pulse timings, extend direction/speed supervision to
-cover pulse trains shorter than its current startup settling window, and add
-measured or explicitly assumed coast margins to travel checks. Keep the
-existing stop ordering, short movement leases and hardware watchdog path.
+The shared output boundary now supervises direction/speed across short pulse
+trains and reserves an explicit coast margin at endpoints. Retain those checks,
+existing stop ordering, short movement leases and the hardware watchdog path
+when evaluating shorter timings. Live timing changes still need commissioning.
 
 Exercise actual controller/actuator behavior with synthetic and recorded
 passes: exact zenith and near misses, azimuth overlap, pre-positioning from
@@ -616,11 +616,12 @@ commissioning supplies that evidence.
   and recorded passes and report deviation, relay activity and explicit
   failures. Keep simulation assumptions visible and separate from a feasibility
   guarantee.
-- [ ] **T2 — Tracking-capable output supervision.** Extend direction/speed
+- [x] **T2 — Tracking-capable output supervision.** Extend direction/speed
   checks across short pulse trains; add coast-aware endpoints, configurable
   same-direction/reversal timing and shared per-axis duty accounting. Preserve
   existing manual stop ordering, leases and watchdog behavior. Test pulses,
-  reversals, stale feedback, interrupted preparation and unknown duty on boot.
+  reversals, stale feedback, cancellation of preparation-style pulses and unknown
+  duty on boot. Publish per-axis allowance/rest in telemetry and the dashboard.
   Depends on T1; relaxed live timing also requires T10 measurements.
 - [ ] **T3 — Bounded trajectory planner.** Generate continuous conventional,
   azimuth-overlap and over-the-top candidates; refine near zenith and limits.
@@ -677,8 +678,8 @@ commissioning supplies that evidence.
 [`tracking`](../crates/ezal-core/src/tracking.rs) now supplies a pure-core
 feedback follower and a bounded simulator. The simulator feeds quantized,
 delayed observations through the production feedback validator and actuator;
-it uses the current 500 ms minimum on-time and 2 s off-time. It records actual
-energized time, relay transitions, reversals, sampled peak sky deviation and
+its default uses the current 500 ms minimum on-time and 2 s off-time. It records
+actual energized time, relay transitions, reversals, sampled peak sky deviation and
 time outside the modeled allowance. Invalid inputs, duty exhaustion, physical
 travel violations and actuator motion faults stop a run with explicit reasons.
 Cancellation inhibits pending as well as active output; further idle steps
@@ -690,12 +691,16 @@ inside the development shell:
 ```bash
 TRACKING_HOST=$(rustc -vV | sed -n 's/host: //p')
 cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim
+# Compare proposed timing offline; this does not configure the device:
+cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim -- --candidate-timing
 ```
 
 The example compares slow/nominal/fast AC profiles on synthetic exact-zenith
 and 88° peak passes, then replays orbital geometry from the recorded TLE
 fixture. It starts at the first target with a synthetic full-travel calibration
-and rested duty allowance. The first motor direction is assumed engaged;
+and a rested, confirmed-AC 300 s duty allowance. Live firmware uses the
+unidentified-hardware 180 s policy and requires full rest at boot. The first
+motor direction is assumed engaged;
 reversals consume explicit backlash, including across short pulses. Motor
 startup is a dead time, and coast is constant-rate travel for the assumed
 release duration. Paired feedback is quantized directly to ADC codes and
@@ -716,15 +721,32 @@ The initial nominal-profile replay produces approximately 0.91° sampled peak
 deviation for the synthetic over-the-top zenith pass, versus 7.12° for the
 conventional zenith route. The recorded 70.75° peak pass reaches 3.11°, exceeding
 the modeled allocation. Faster scenarios show frequent reversals, and the
-fast conventional zenith case detects coast beyond an azimuth endpoint. These
+fast conventional zenith case is now held inside the endpoint by the coast
+guard, reaching 5.83° peak deviation. Some near-zenith scenarios stop with an
+azimuth no-progress fault after repeated reversals. These
 are results from provisional models, not measured antenna performance; they
-provide concrete cases for T2's coast protection and T3's controller/planner
+provide concrete cases for T3's controller/planner
 tuning. A fixed 2° keyhole offset also consumes the entire modeled allocation
 before following error is added, so it is not automatically an acceptable route.
+
+The shorter candidate timings are not an improvement with the baseline
+follower: the nominal over-the-top zenith case rises to 2.28° peak deviation,
+203 elevation reversals and 232 s of elevation on-time, compared with 0.91°,
+zero reversals and 51 s using installed timing. The recorded nominal case
+rises from 3.11° to 4.38°. T3 must account for pulse completion, coast and
+backlash in its hysteresis/lead tuning before adopting shorter timings.
 
 The [tracking tests](../crates/ezal-core/tests/tracking.rs) cover geometry,
 startup/coast, partial backlash take-up, duty/rest, delayed quantized feedback,
 invalid inputs, ordinary relay timing, cancellation racing a pending activation,
 stall/speed faults, full synthetic/recorded passes and intentional sky offsets.
-The simulation code is not wired to firmware GPIOs. Next implementation task:
-**T2 — Tracking-capable output supervision**.
+The shared output safeguards are wired into the firmware's existing manual
+control path. They include pulse-aware motion checks, configured coast bounds,
+validated same-direction/reversal timing, and per-axis duty preserved through
+command/owner changes. Unknown history requires 900 s rest at boot. The
+dashboard displays allowance/rest and requires fresh input after a block;
+an unaffected axis remains usable. [Output-policy tests](../crates/ezal-core/tests/output_policy.rs)
+exercise these rules, with coordination, motion and dashboard regressions.
+
+The tracking follower and simulator remain offline; pass selection/execution
+is not yet available. Next implementation task: **T3 — Bounded trajectory planner**.

@@ -5,6 +5,7 @@ mod common;
 use common::TEST_CALIBRATION;
 use ezal_core::coordination::ControlStatus;
 use ezal_core::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
+use ezal_core::duty::DutyStatus;
 use ezal_core::feedback::{FeedbackHealth, FeedbackMonitor, FeedbackReadError, FeedbackSnapshot};
 use ezal_core::position::Pointing;
 use ezal_core::protocol::{
@@ -127,13 +128,14 @@ fn formats_control_status_as_compact_json() {
         },
         network_ready: true,
         motion_fault: None,
+        duty: DutyStatus::INITIAL,
     }
     .write_json(&mut json)
     .unwrap();
 
     assert_eq!(
         json,
-        r#"{"type":"control","controller":true,"azimuth":"ccw","elevation":"up","network_ready":true,"motion_fault":null}"#
+        r#"{"type":"control","controller":true,"azimuth":"ccw","elevation":"up","network_ready":true,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]}"#
     );
 
     json.clear();
@@ -142,13 +144,14 @@ fn formats_control_status_as_compact_json() {
         drive: DriveCommand::IDLE,
         network_ready: false,
         motion_fault: None,
+        duty: DutyStatus::INITIAL,
     }
     .write_json(&mut json)
     .unwrap();
 
     assert_eq!(
         json,
-        r#"{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null}"#
+        r#"{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]}"#
     );
 }
 
@@ -228,7 +231,7 @@ fn telemetry_encodes_one_observation_with_its_proof() {
     message.write_json(&mut json).unwrap();
     assert_eq!(
         json,
-        r#"{"type":"telemetry","position":{"type":"position","a0_mv":0,"a1_mv":0},"feedback":{"type":"feedback","azimuth_tenths":0,"elevation_tenths":0,"control_state":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null},"freshness":{"token":"42"}}"#
+        r#"{"type":"telemetry","position":{"type":"position","a0_mv":0,"a1_mv":0},"feedback":{"type":"feedback","azimuth_tenths":0,"elevation_tenths":0,"control_state":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]},"freshness":{"token":"42"}}"#
     );
 }
 
@@ -248,10 +251,21 @@ fn telemetry_fits_its_fixed_buffer_and_reports_formatting_failure() {
     snapshot.feedback.health = FeedbackHealth::CalibrationInvalid;
     snapshot.feedback.last_valid = Some(common::sample(Pointing::new(360.0, 90.0), 0));
     snapshot.control.motion_fault = Some(MotionFault::ElevationImplausibleSpeed);
+    let maximum = ezal_core::duty::AxisDutyStatus {
+        remaining_ms: u64::MAX,
+        cooldown_ms: u64::MAX,
+    };
+    snapshot.control.duty = DutyStatus {
+        azimuth: maximum,
+        elevation: maximum,
+    };
     snapshot.control.drive = DriveCommand {
         azimuth: Some(AzimuthDirection::CounterClockwise),
         elevation: Some(ElevationDirection::Down),
     };
+    let mut control: heapless::String<{ ezal_core::protocol::CONTROL_STATUS_CAPACITY }> =
+        heapless::String::new();
+    snapshot.control.write_json(&mut control).unwrap();
     let mut message = TelemetryMessage {
         snapshot,
         token: Some(CommandToken {

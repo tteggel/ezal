@@ -2,9 +2,10 @@ use super::{
     pointing_deviation_deg, Axis, FollowingController, MotorModel, MotorProfile, SimulationError,
     TrackingTarget,
 };
-use crate::actuator::{Actuator, ActuatorInput};
+use crate::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use crate::ads1015::FEEDBACK_FULL_SCALE;
 use crate::drive::{Command, DriveCommand, MOVEMENT_LEASE_MS};
+use crate::duty::{DutyConfig, DutyHistory};
 use crate::feedback::{
     FeedbackHealth, FeedbackMonitor, FeedbackSample, FEEDBACK_MAX_LATENCY_MS, FEEDBACK_PERIOD_MS,
 };
@@ -27,6 +28,9 @@ pub struct SimulationSettings {
     pub tolerance_deg: f32,
     /// Already consumed azimuth/elevation duty before this simulated run.
     pub used_duty_ms: [u64; 2],
+    /// Output policy to exercise. The offline default assumes confirmed AC
+    /// hardware; live firmware retains the unidentified-hardware allowance.
+    pub actuator: ActuatorConfig,
 }
 
 impl Default for SimulationSettings {
@@ -36,6 +40,10 @@ impl Default for SimulationSettings {
             feedback_latency_ms: 100,
             tolerance_deg: 2.0,
             used_duty_ms: [0, 0],
+            actuator: ActuatorConfig {
+                duty: DutyConfig::CONFIRMED_AC,
+                ..ActuatorConfig::DEFAULT
+            },
         }
     }
 }
@@ -127,6 +135,8 @@ impl Simulation {
             || settings.feedback_latency_ms > FEEDBACK_MAX_LATENCY_MS
             || !settings.tolerance_deg.is_finite()
             || !(0.0..=180.0).contains(&settings.tolerance_deg)
+            || !settings.actuator.is_valid()
+            || !DutyHistory::Known(settings.used_duty_ms).is_valid(settings.actuator.duty)
         {
             return Err(SimulationError::InvalidSettings);
         }
@@ -137,7 +147,10 @@ impl Simulation {
             settings,
             controller,
             model,
-            actuator: Actuator::new(),
+            actuator: Actuator::with_config(
+                settings.actuator,
+                DutyHistory::Known(settings.used_duty_ms),
+            ),
             monitor: FeedbackMonitor::new(calibration, None),
             interlock: FeedbackInterlock::INHIBITED,
             network: NetworkGate::new(),
@@ -264,6 +277,26 @@ impl Simulation {
         self.account_transitions(before, update.output);
         if let Some(fault) = update.status.motion_fault {
             return Err(SimulationError::Motion(fault));
+        }
+        if let Command::Drive(drive) | Command::Jog(drive) = requested {
+            for (axis, requested, applied, duty) in [
+                (
+                    Axis::Azimuth,
+                    drive.azimuth.is_some(),
+                    update.output.azimuth.is_some(),
+                    update.status.duty.azimuth,
+                ),
+                (
+                    Axis::Elevation,
+                    drive.elevation.is_some(),
+                    update.output.elevation.is_some(),
+                    update.status.duty.elevation,
+                ),
+            ] {
+                if requested && !applied && duty.cooldown_ms > 0 {
+                    return Err(SimulationError::DutyLimit(axis));
+                }
+            }
         }
         self.model.advance(update.output, 0)?;
         let position = self.model.position();

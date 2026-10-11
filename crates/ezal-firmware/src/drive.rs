@@ -100,7 +100,7 @@ pub async fn direction_task(
 ) -> ! {
     outputs.stop();
     let mut actuator = Actuator::new();
-    state.record_actuator(actuator.actual(), actuator.fault());
+    state.record_actuator(actuator.actual(), actuator.status());
     crate::watchdog::start(&mut watchdog);
     let mut next_service = Instant::now();
 
@@ -109,7 +109,7 @@ pub async fn direction_task(
         let input = state.take_actuator_input(now.as_millis());
         let update = actuator.step(input, now.as_millis());
         outputs.apply_drive(update.output);
-        state.record_actuator(update.output, update.status.motion_fault);
+        state.record_actuator(update.output, update.status);
 
         // Feeding from this loop proves the actuator task ran and serviced the
         // output boundary; a separate heartbeat task could hide a stall here.

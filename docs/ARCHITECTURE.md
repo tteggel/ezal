@@ -42,7 +42,8 @@ returns values. It has no peripherals, global runtime state or Embassy tasks.
 | Representation | `protocol`, `dashboard` | Decode manual messages, encode telemetry, provide the browser asset and shared timing configuration |
 
 The actuator uses `interlock` for current feedback and endpoint assessments,
-`motion` for applied-output progress and plausibility, and private timing helpers
+`motion` for applied-output progress and plausibility, `duty` for per-axis
+energized/rest accounting, and private timing helpers
 in `drive`. These helpers do not provide alternative firmware actuation paths.
 The per-axis relay state machine is shared by azimuth and elevation. The
 `network` gate is a timestamped permission with a recovery generation, not a
@@ -93,8 +94,9 @@ health to dashboard fields; the domain does not construct protocol messages.
 The actuator independently evaluates sample age and travel margins at use. Age
 is measured from the original oldest-channel timestamp, including bus delay.
 The endpoint margin combines ADC resolution and the fastest possible travel
-since that timestamp; it can cut an outward axis without stopping an unaffected
-axis. See [CALIBRATION.md](CALIBRATION.md) for conversion limits and installation.
+since that timestamp plus configured release/coast; it can cut an outward axis
+without stopping an unaffected axis. See [CALIBRATION.md](CALIBRATION.md) for
+conversion limits and installation.
 
 ## Coordination and the output loop
 
@@ -116,15 +118,15 @@ a pending movement replaces its entire envelope, including the original expiry.
 
 `Actuator::step(input, now)` is the production output boundary:
 
-1. Account for motion under the previously applied output, before any cut.
-2. Assess feedback and latched motion faults; revoke active and pending requests
+1. Account for motion and duty under the previously applied output, before any cut.
+2. Assess feedback, duty and latched motion faults; revoke active and pending requests
    when permission is absent or the network recovery generation changed.
 3. Consume a queued command before advancing a pending relay activation at the
    same instant. Expire an old lease before admitting a late refresh.
-4. Record the resulting applied state and return output, fault status and the
+4. Record the resulting applied state and return output, fault/duty status and the
    earliest required service deadline.
 
-Command lifetime determines whether an activation can cover its minimum on-time.
+Command lifetime and remaining duty must both cover an activation's minimum on-time.
 Feedback and network deadlines independently revoke movement; shortening the
 activation lease to the 300 ms network deadline would prevent every activation.
 The private relay timing model retains ordinary `Drive`/`Stop` semantics; manual
@@ -135,16 +137,22 @@ Firmware applies the returned GPIO state, records it, and only then feeds the
 and its fixed 100 ms service schedule. Acquisition and GPIO servicing remain
 separate tasks, so a stuck sensor read cannot suspend output supervision.
 
-Motion faults retain accumulated energized time across short jogs, reversals and
-off-holds. Fresh communication or sensor recovery cannot erase a latched fault.
+Motion supervision retains accumulated energized time across short jogs, reversals
+and off-holds, and keeps direction/speed evidence across pulse trains. There is no
+per-activation blind window. Fresh communication or sensor recovery cannot erase
+a latched fault. `ActuatorConfig` supplies one validated set of relay, travel,
+motion and duty settings. Duty is per axis and survives source/owner changes;
+only full continuous rest restores it. Firmware boot uses unknown history and
+requires a full rest. Simulations explicitly provide their known prior usage.
 The detailed timing and recovery rules live in [CONTROL_CONTRACT.md](CONTROL_CONTRACT.md).
 
 ## Transport and dashboard
 
 Each periodic WebSocket message carries one coherent snapshot: raw position,
-calibrated feedback health, ownership, applied output and a freshness proof.
+calibrated feedback health, ownership, applied output, per-axis duty and a
+freshness proof.
 The proof is stamped before the state read and socket write, so a slow write
-consumes its one-second lifetime. Encoding uses a fixed 512-byte buffer; an
+consumes its one-second lifetime. Encoding uses a fixed 640-byte buffer; an
 encoding failure closes the session and releases ownership explicitly.
 Control acknowledgements carry no proof and never renew telemetry lifetime.
 
@@ -160,6 +168,8 @@ The browser uses explicit control-state transitions that return requested effect
 One adapter performs socket sends, pointer capture, timers and DOM rendering.
 Each axis holds one pointer claim; desired movement is distinct from server-applied
 output. Telemetry loss, control loss and page suspension clear held intent.
+Duty exhaustion clears and disables only the affected axis's hold and shows
+its rest countdown; allowance recovery requires a new press.
 Recovery requires a fresh physical press. `/dashboard-config.js` is generated
 from the firmware's timing constants, and the Node tests execute that exact
 configuration with the served script. Forecast fetching and presentation remain

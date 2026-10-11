@@ -6,11 +6,12 @@
 //!
 //! A sample reports where the dish was when its read began, and an energised
 //! axis keeps moving until the next sample. Each outward direction is
-//! therefore refused inside an endpoint band of one ADC code plus the fastest
-//! travel possible since that sample began. [`FeedbackInterlock::deadline_ms`]
+//! therefore refused inside an endpoint band of one ADC code, the fastest
+//! travel possible since that sample began, and post-release coast.
+//! [`FeedbackInterlock::deadline_ms`]
 //! reports when that band reaches an energised axis, so the actuator cuts it
-//! without waiting for another sample. Relay release time and coasting after
-//! the cut are outside this model.
+//! without waiting for another sample. The release/coast allowance is an
+//! explicit engineering assumption until measured on the installed mechanism.
 
 use crate::drive::{
     Command, DriveCommand, AZIMUTH_MAX_SPEED_DEG_PER_S, ELEVATION_MAX_SPEED_DEG_PER_S,
@@ -22,11 +23,67 @@ use crate::position::{InstalledCalibration, Pointing};
 /// refused without depending on floating-point rounding.
 const CODE_ROUNDING_MARGIN_MV: f32 = 0.5;
 
+/// Upper travel bounds for one axis, shared by endpoint and motion supervision.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AxisTravel {
+    /// Fastest supported physical rate while moving or coasting.
+    pub max_speed_deg_per_s: f32,
+    /// Assumed worst-case relay release and mechanical coast duration.
+    pub coast_ms: u64,
+}
+
+impl AxisTravel {
+    /// A finite positive rate and a representable stopping-distance allowance.
+    pub const fn is_valid(self) -> bool {
+        self.max_speed_deg_per_s.is_finite()
+            && self.max_speed_deg_per_s > 0.0
+            && (self.max_speed_deg_per_s * (self.coast_ms as f32 / 1_000.0)).is_finite()
+    }
+}
+
+/// The output owner's installed upper bounds, distinct from a nominal motor model.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TravelProfile {
+    /// Continuous azimuth travel bounds.
+    pub azimuth: AxisTravel,
+    /// Mechanical elevation travel bounds.
+    pub elevation: AxisTravel,
+}
+
+impl TravelProfile {
+    /// Existing AC rate assumptions plus the provisional 500 ms coast allowance.
+    pub const DEFAULT: Self = Self {
+        azimuth: AxisTravel {
+            max_speed_deg_per_s: AZIMUTH_MAX_SPEED_DEG_PER_S,
+            coast_ms: 500,
+        },
+        elevation: AxisTravel {
+            max_speed_deg_per_s: ELEVATION_MAX_SPEED_DEG_PER_S,
+            coast_ms: 500,
+        },
+    };
+
+    /// Whether both axes have usable upper travel bounds.
+    pub const fn is_valid(self) -> bool {
+        self.azimuth.is_valid() && self.elevation.is_valid()
+    }
+
+    /// Longest assumed release/coast interval of either axis.
+    pub const fn maximum_coast_ms(self) -> u64 {
+        if self.azimuth.coast_ms > self.elevation.coast_ms {
+            self.azimuth.coast_ms
+        } else {
+            self.elevation.coast_ms
+        }
+    }
+}
+
 /// Latest validated feedback and the limits required for any physical motion.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FeedbackInterlock {
     limits: Option<Limits>,
     feedback: Option<FeedbackSample>,
+    profile: TravelProfile,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,16 +99,14 @@ struct AxisLimits {
     max_deg: f32,
     /// One ADC code plus the rounding margin, in degrees.
     code_deg: f32,
-    speed_deg_per_ms: f32,
 }
 
 impl AxisLimits {
-    fn new(min_deg: f32, max_deg: f32, code_deg: f32, speed_deg_per_s: f32) -> Self {
+    fn new(min_deg: f32, max_deg: f32, code_deg: f32) -> Self {
         Self {
             min_deg,
             max_deg,
             code_deg,
-            speed_deg_per_ms: speed_deg_per_s / 1_000.0,
         }
     }
 
@@ -60,15 +115,17 @@ impl AxisLimits {
     }
 
     /// Sample age from which travel in one direction is refused.
-    fn refusal_age_ms(self, position_deg: f32, increases_angle: bool) -> u64 {
+    fn refusal_age_ms(self, position_deg: f32, increases_angle: bool, travel: AxisTravel) -> u64 {
         let room_deg = if increases_angle {
             self.max_deg - self.code_deg - position_deg
         } else {
             position_deg - self.min_deg - self.code_deg
         };
+        let speed_deg_per_ms = travel.max_speed_deg_per_s / 1_000.0;
+        let room_deg = room_deg - speed_deg_per_ms * travel.coast_ms as f32;
         // Truncation refuses up to a millisecond early, never late.
         if room_deg > 0.0 {
-            (room_deg / self.speed_deg_per_ms) as u64
+            (room_deg / speed_deg_per_ms) as u64
         } else {
             0
         }
@@ -80,6 +137,7 @@ impl FeedbackInterlock {
     pub const INHIBITED: Self = Self {
         limits: None,
         feedback: None,
+        profile: TravelProfile::DEFAULT,
     };
 
     /// Derive output limits from the same validated model used to calibrate samples.
@@ -92,19 +150,29 @@ impl FeedbackInterlock {
                 minimum.azimuth_deg,
                 maximum.azimuth_deg,
                 resolution.azimuth_deg,
-                AZIMUTH_MAX_SPEED_DEG_PER_S,
             ),
             elevation: AxisLimits::new(
                 minimum.elevation_deg,
                 maximum.elevation_deg,
                 resolution.elevation_deg,
-                ELEVATION_MAX_SPEED_DEG_PER_S,
             ),
         });
         Self {
             limits,
             feedback: None,
+            profile: TravelProfile::DEFAULT,
         }
+    }
+
+    /// Apply the actuator's travel policy to this calibrated observation.
+    /// Invalid bounds inhibit; callers cannot recover missing calibration here.
+    pub fn with_travel_profile(mut self, profile: TravelProfile) -> Self {
+        if profile.is_valid() {
+            self.profile = profile;
+        } else {
+            self.limits = None;
+        }
+        self
     }
 
     /// Publish validated feedback, or invalidate the gate after a read fault.
@@ -159,18 +227,18 @@ impl FeedbackInterlock {
         let (limits, position, _) = self.current(now_ms)?;
         let mut refusal_age_ms = FEEDBACK_MAX_AGE_MS + 1;
         if let Some(direction) = active.azimuth {
-            refusal_age_ms = refusal_age_ms.min(
-                limits
-                    .azimuth
-                    .refusal_age_ms(position.azimuth_deg, direction.increases_angle()),
-            );
+            refusal_age_ms = refusal_age_ms.min(limits.azimuth.refusal_age_ms(
+                position.azimuth_deg,
+                direction.increases_angle(),
+                self.profile.azimuth,
+            ));
         }
         if let Some(direction) = active.elevation {
-            refusal_age_ms = refusal_age_ms.min(
-                limits
-                    .elevation
-                    .refusal_age_ms(position.elevation_deg, direction.increases_angle()),
-            );
+            refusal_age_ms = refusal_age_ms.min(limits.elevation.refusal_age_ms(
+                position.elevation_deg,
+                direction.increases_angle(),
+                self.profile.elevation,
+            ));
         }
         self.feedback?.sampled_at_ms().checked_add(refusal_age_ms)
     }
@@ -184,15 +252,19 @@ impl FeedbackInterlock {
         DriveCommand {
             azimuth: drive.azimuth.filter(|direction| {
                 age_ms
-                    < limits
-                        .azimuth
-                        .refusal_age_ms(position.azimuth_deg, direction.increases_angle())
+                    < limits.azimuth.refusal_age_ms(
+                        position.azimuth_deg,
+                        direction.increases_angle(),
+                        self.profile.azimuth,
+                    )
             }),
             elevation: drive.elevation.filter(|direction| {
                 age_ms
-                    < limits
-                        .elevation
-                        .refusal_age_ms(position.elevation_deg, direction.increases_angle())
+                    < limits.elevation.refusal_age_ms(
+                        position.elevation_deg,
+                        direction.increases_angle(),
+                        self.profile.elevation,
+                    )
             }),
         }
     }

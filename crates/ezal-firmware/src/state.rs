@@ -7,13 +7,12 @@ use core::cell::RefCell;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_sync::signal::Signal;
 use embassy_time::Instant;
-use ezal_core::actuator::ActuatorInput;
+use ezal_core::actuator::{ActuatorInput, ActuatorStatus};
 use ezal_core::coordination::{ControlStatus, CoordinationState, TelemetrySnapshot};
 use ezal_core::drive::DriveCommand;
 use ezal_core::feedback::FeedbackSnapshot;
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::mailbox::CommandEnvelope;
-use ezal_core::motion::MotionFault;
 use ezal_core::network::NetworkGate;
 use ezal_core::position::FeedbackVoltages;
 
@@ -95,8 +94,8 @@ impl SharedState {
         accepted
     }
 
-    pub fn record_actuator(&self, drive: DriveCommand, fault: Option<MotionFault>) {
-        self.with(|state| state.record_actuator(drive, fault));
+    pub fn record_actuator(&self, drive: DriveCommand, status: ActuatorStatus) {
+        self.with(|state| state.record_actuator(drive, status));
     }
 
     pub fn take_actuator_input(&self, now_ms: u64) -> ActuatorInput {

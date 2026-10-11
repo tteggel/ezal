@@ -29,6 +29,41 @@ pub const AZIMUTH_MAX_SPEED_DEG_PER_S: f32 = 7.0;
 /// manual's 67 s per 180° at 60 Hz (2.7°/s), plus margin.
 pub const ELEVATION_MAX_SPEED_DEG_PER_S: f32 = 3.0;
 
+/// Ordinary relay timing, independent of source leases and revocable permissions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelayConfig {
+    /// Minimum ordinary energized interval; inhibition still cuts immediately.
+    pub min_active_ms: u64,
+    /// Minimum off-time before reusing the last energized direction.
+    pub same_direction_off_ms: u64,
+    /// Minimum off-time before energizing the opposite direction.
+    pub reversal_off_ms: u64,
+}
+
+impl RelayConfig {
+    /// Existing installed timing, retained until commissioning validates changes.
+    pub const DEFAULT: Self = Self {
+        min_active_ms: OUTPUT_MIN_ACTIVE_MS,
+        same_direction_off_ms: OUTPUT_MIN_INACTIVE_MS,
+        reversal_off_ms: OUTPUT_MIN_INACTIVE_MS,
+    };
+
+    /// Proposed tracking timing for simulation and commissioning only.
+    pub const TRACKING_CANDIDATE: Self = Self {
+        min_active_ms: 500,
+        same_direction_off_ms: 500,
+        reversal_off_ms: 1_000,
+    };
+
+    /// The movement lease must cover an ordinary pulse, with a real off-time.
+    pub const fn is_valid(self) -> bool {
+        self.min_active_ms > 0
+            && self.min_active_ms <= MOVEMENT_LEASE_MS
+            && self.same_direction_off_ms > 0
+            && self.reversal_off_ms >= self.same_direction_off_ms
+    }
+}
+
 /// Azimuth motion carried by a drive command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AzimuthDirection {
@@ -105,27 +140,47 @@ pub enum Command {
 /// deadline; both directions share the inactive hold before reactivation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AxisRelay<D> {
+    config: RelayConfig,
     target: Option<D>,
     actual: Option<D>,
+    last_direction: Option<D>,
     on_until_ms: u64,
     off_until_ms: u64,
+    reverse_until_ms: u64,
 }
 
 impl<D: Copy + Eq> AxisRelay<D> {
-    const fn new() -> Self {
+    const fn new(config: RelayConfig) -> Self {
         Self {
+            config,
             target: None,
             actual: None,
+            last_direction: None,
             on_until_ms: 0,
             off_until_ms: 0,
+            reverse_until_ms: 0,
+        }
+    }
+
+    fn release(&mut self, now_ms: u64) {
+        if let Some(direction) = self.actual.take() {
+            self.last_direction = Some(direction);
+            self.off_until_ms = now_ms.saturating_add(self.config.same_direction_off_ms);
+            self.reverse_until_ms = now_ms.saturating_add(self.config.reversal_off_ms);
+        }
+    }
+
+    fn inactive_until_ms(&self) -> u64 {
+        if self.last_direction.is_some() && self.target != self.last_direction {
+            self.reverse_until_ms
+        } else {
+            self.off_until_ms
         }
     }
 
     fn inhibit(&mut self, now_ms: u64) {
         self.target = None;
-        if self.actual.take().is_some() {
-            self.off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
-        }
+        self.release(now_ms);
     }
 
     fn update(&mut self, now_ms: u64, activation_limit_ms: u64) {
@@ -136,13 +191,14 @@ impl<D: Copy + Eq> AxisRelay<D> {
             if now_ms < self.on_until_ms {
                 return;
             }
-            self.actual = None;
-            self.off_until_ms = now_ms.saturating_add(OUTPUT_MIN_INACTIVE_MS);
+            self.release(now_ms);
         }
-        if now_ms < self.off_until_ms {
+        if now_ms < self.inactive_until_ms() {
             return;
         }
-        let on_until_ms = now_ms.saturating_add(OUTPUT_MIN_ACTIVE_MS);
+        let Some(on_until_ms) = now_ms.checked_add(self.config.min_active_ms) else {
+            return;
+        };
         if self.target.is_some() && on_until_ms <= activation_limit_ms {
             self.actual = self.target;
             self.on_until_ms = on_until_ms;
@@ -155,7 +211,12 @@ impl<D: Copy + Eq> AxisRelay<D> {
         } else if self.actual.is_some() {
             Some(self.on_until_ms.max(now_ms))
         } else {
-            activation_ms(self.off_until_ms, now_ms, activation_limit_ms)
+            activation_ms(
+                self.inactive_until_ms(),
+                now_ms,
+                activation_limit_ms,
+                self.config.min_active_ms,
+            )
         }
     }
 }
@@ -170,10 +231,15 @@ struct RelayTiming {
 }
 
 impl RelayTiming {
+    #[cfg(test)]
     const fn new() -> Self {
+        Self::with_config(RelayConfig::DEFAULT)
+    }
+
+    const fn with_config(config: RelayConfig) -> Self {
         Self {
-            azimuth: AxisRelay::new(),
-            elevation: AxisRelay::new(),
+            azimuth: AxisRelay::new(config),
+            elevation: AxisRelay::new(config),
         }
     }
 
@@ -282,8 +348,13 @@ pub(crate) struct ActuatorGuard {
 impl ActuatorGuard {
     /// Create an idle guard with no active lease.
     pub const fn new() -> Self {
+        Self::with_timing(RelayConfig::DEFAULT)
+    }
+
+    /// Create an idle guard with validated installation timing.
+    pub const fn with_timing(config: RelayConfig) -> Self {
         Self {
-            relays: RelayTiming::new(),
+            relays: RelayTiming::with_config(config),
             lease_deadline_ms: None,
         }
     }
@@ -402,9 +473,14 @@ impl Default for ActuatorGuard {
 }
 
 /// When a pending activation may start, if the limit covers its on-time.
-fn activation_ms(off_until_ms: u64, now_ms: u64, activation_limit_ms: u64) -> Option<u64> {
+fn activation_ms(
+    off_until_ms: u64,
+    now_ms: u64,
+    activation_limit_ms: u64,
+    min_active_ms: u64,
+) -> Option<u64> {
     let start_ms = off_until_ms.max(now_ms);
-    (start_ms.saturating_add(OUTPUT_MIN_ACTIVE_MS) <= activation_limit_ms).then_some(start_ms)
+    (start_ms.checked_add(min_active_ms)? <= activation_limit_ms).then_some(start_ms)
 }
 
 #[cfg(test)]

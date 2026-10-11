@@ -22,7 +22,9 @@ use ezal_core::dashboard::{ClientConfig, CONFIG_PATH, INDEX_HTML};
 use ezal_core::drive::Command;
 use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::passes::Report;
-use ezal_core::protocol::{ClientMessage, TelemetryMessage, TELEMETRY_CAPACITY, WS_PATH};
+use ezal_core::protocol::{
+    ClientMessage, TelemetryMessage, CONTROL_STATUS_CAPACITY, TELEMETRY_CAPACITY, WS_PATH,
+};
 use ezal_core::session::{CommandFreshness, TELEMETRY_PERIOD_MS};
 
 use crate::state::{SharedState, STATE};
@@ -176,7 +178,7 @@ async fn send_control_status<W: PicoserveWrite>(
     state: &'static SharedState,
     client_id: u32,
 ) -> Result<(), SocketError<W::Error>> {
-    let mut payload: String<256> = String::new();
+    let mut payload: String<CONTROL_STATUS_CAPACITY> = String::new();
     state
         .control_status(client_id)
         .write_json(&mut payload)

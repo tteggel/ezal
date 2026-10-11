@@ -323,12 +323,14 @@ header {
       <div class="value-row"><span id="azimuth" class="value">--</span><span class="unit">°</span></div>
       <span class="detail">A1 <span id="a1">--</span> mV</span>
       <span class="detail">drive <span id="azimuth-drive" class="drive-state" aria-live="polite">unknown</span></span>
+      <span id="azimuth-duty" class="detail">Motor allowance unknown</span>
     </div>
     <div class="meter">
       <span class="label">Elevation</span>
       <div class="value-row"><span id="elevation" class="value">--</span><span class="unit">°</span></div>
       <span class="detail">A0 <span id="a0">--</span> mV</span>
       <span class="detail">drive <span id="elevation-drive" class="drive-state" aria-live="polite">unknown</span></span>
+      <span id="elevation-duty" class="detail">Motor allowance unknown</span>
     </div>
   </section>
   <section class="pad-wrap" aria-labelledby="controls-title">
@@ -372,6 +374,7 @@ header {
   const hasDesired = (state) => Boolean(state.held.azimuth || state.held.elevation);
   const telemetryFresh = (state, now) => state.token !== null && now < state.telemetryUntil;
   const feedbackReady = (state) => state.telemetry?.feedback.control_state === "idle";
+  const axisReady = (state, axis) => state.duty?.[axis]?.cooldown === 0;
   const canControl = (state, now) => state.connected && state.controller && state.networkReady
     && !state.motionFault && !state.hidden && telemetryFresh(state, now) && feedbackReady(state);
   const canTake = (state, now) => state.connected && !state.controller && state.networkReady
@@ -379,9 +382,11 @@ header {
   const initialControl = () => ({
     connected: false, controller: false, networkReady: false, motionFault: null,
     hidden: false, token: null, telemetryUntil: -Infinity, sequence: 0,
-    held: idle(), drive: idle(), telemetry: null, status: "offline", retryMs: 400,
+    held: idle(), drive: idle(), duty: null, telemetry: null, status: "offline", retryMs: 400,
   });
 
+  const dutyPair = (value) => Array.isArray(value) && value.length === 2
+    && value.every((ms) => Number.isSafeInteger(ms) && ms >= 0);
   const validTelemetry = (message) => {
     const optionalNumber = (value) => value === null || Number.isFinite(value);
     return message.position && message.feedback && message.control
@@ -391,6 +396,7 @@ header {
       && typeof message.feedback.control_state === "string"
       && typeof message.control.controller === "boolean"
       && typeof message.control.network_ready === "boolean"
+      && dutyPair(message.control.duty_remaining_ms) && dutyPair(message.control.duty_cooldown_ms)
       && (message.freshness === null || (message.freshness
         && typeof message.freshness.token === "string" && /^\d+$/.test(message.freshness.token)));
   };
@@ -427,7 +433,22 @@ header {
         azimuth: ["cw", "ccw"].includes(message.azimuth) ? message.azimuth : null,
         elevation: ["up", "down"].includes(message.elevation) ? message.elevation : null,
       };
+      if (dutyPair(message.duty_remaining_ms) && dutyPair(message.duty_cooldown_ms)) {
+        state.duty = Object.fromEntries(["azimuth", "elevation"].map((axis, i) => [axis, {
+          remaining: message.duty_remaining_ms[i], cooldown: message.duty_cooldown_ms[i],
+        }]));
+      }
       if (!state.controller || !state.networkReady || state.motionFault) clearHeld();
+      let released = false;
+      for (const axis of ["azimuth", "elevation"]) {
+        if (state.held[axis] && !axisReady(state, axis)) {
+          state.held[axis] = null;
+          released = true;
+        }
+      }
+      // Keep the other axis under its existing hold, and require a fresh press
+      // on the resting axis even after its allowance is replenished.
+      if (released) movement(false);
     };
 
     // Also check when input or telemetry arrives: suspended browser timers
@@ -470,7 +491,7 @@ header {
       }
       case "press": {
         const axis = axes[event.direction];
-        if (!axis || state.held[axis] || !canControl(state, now)) break;
+        if (!axis || state.held[axis] || !canControl(state, now) || !axisReady(state, axis)) break;
         state.held[axis] = { source: event.source, id: event.id, direction: event.direction };
         movement(true);
         if (event.source === "pointer") effects.push({ type: "capture", direction: event.direction, pointerId: event.id });
@@ -519,11 +540,20 @@ header {
     azimuth: document.getElementById("azimuth-drive"),
     elevation: document.getElementById("elevation-drive")
   };
+  const dutyIndicators = {
+    azimuth: document.getElementById("azimuth-duty"),
+    elevation: document.getElementById("elevation-duty")
+  };
   const buttons = Array.from(document.querySelectorAll(".dir"));
   let state = { ...initialControl(), hidden: document.hidden };
   let ws;
   let repeat = 0;
   const degrees = (tenths) => tenths === null || tenths === undefined ? "--" : (tenths / 10).toFixed(1);
+  const duration = (ms) => {
+    const seconds = Math.ceil(ms / 1000);
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  const restHint = (axis) => `${axis === "azimuth" ? "Azimuth" : "Elevation"} motor needs ${duration(state.duty[axis].cooldown)} of continuous rest.`;
 
   const controlView = (now) => {
     if (!configured) return ["unavailable", "Control settings failed to load. Reload this page."];
@@ -551,6 +581,8 @@ header {
     if (applied.length) return held.length
       ? ["driving", `Driving ${applied.join(" + ").toUpperCase()}. Release to stop.`]
       : ["stopping", "Released. Waiting for the controller to confirm stop."];
+    const resting = ["azimuth", "elevation"].filter((axis) => !axisReady(state, axis));
+    if (resting.length) return ["resting", resting.map(restHint).join(" ")];
     return ["ready", "Ready. Amber means requested; green means the controller reports an active drive output."];
   };
 
@@ -574,14 +606,21 @@ header {
     take.title = canTake(state, now) ? "Take control to enable manual movement" : state.controller ? "You have control" : hint;
     buttons.forEach((button) => {
       const direction = button.dataset.cmd;
-      button.disabled = !canControl(state, now);
-      button.title = button.disabled ? hint : `Hold to move ${direction.toUpperCase()}; release to stop`;
+      const cooling = known && !axisReady(state, axes[direction]);
+      button.disabled = !canControl(state, now) || cooling;
+      button.title = button.disabled ? (cooling ? restHint(axes[direction]) : hint) : `Hold to move ${direction.toUpperCase()}; release to stop`;
       button.classList.toggle("held", state.held[axes[direction]]?.direction === direction);
       button.classList.toggle("active", Boolean(known && state.drive[axes[direction]] === direction));
     });
     Object.entries(driveIndicators).forEach(([axis, indicator]) => {
       setText(indicator, known ? (state.drive[axis] || "idle").toUpperCase() : "unknown");
       indicator.classList.toggle("active", Boolean(known && state.drive[axis]));
+    });
+    Object.entries(dutyIndicators).forEach(([axis, indicator]) => {
+      const duty = known ? state.duty?.[axis] : null;
+      setText(indicator, !duty ? "Motor allowance unknown" : duty.cooldown > 0
+        ? `Rest required · ${duration(duty.cooldown)} remaining`
+        : `Motor allowance · ${duration(duty.remaining)} on-time`);
     });
   };
 

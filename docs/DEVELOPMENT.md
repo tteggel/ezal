@@ -399,8 +399,13 @@ watchdog timeout. A debugger reset clears that inhibition.
 ### Hardware verification after safety changes
 
 Cross-compilation and host tests cannot verify GPIO reset behavior or motor
-coasting. With motor power disconnected and a logic analyzer on the direction
-outputs, verify:
+coasting. Start with motor power disconnected and a logic analyzer on the
+direction outputs.
+
+Allow the boot duty countdown to complete before motion checks: unknown prior
+usage requires 15 minutes continuously idle. Confirm both axis countdowns are
+visible and that a command attempted during rest does not run when rest ends.
+Then verify:
 
 1. Holding the CPU at a breakpoint while a direction output is active causes
    watchdog reset and output removal within the configured 500 ms interval
@@ -421,7 +426,12 @@ outputs, verify:
    positions after the change to 2 mV ADC resolution, then measure
    coast/brake distance with motor power restored.
 5. Flashing a CI UF2 by BOOTSEL boots into normal operation: the boot ROM's
-   own watchdog reboot is not reported as a firmware watchdog fault.
+   own watchdog reboot is not reported as a firmware watchdog fault. The normal
+   unknown-history duty rest still applies.
+6. Duty is charged only while each physical output is active, survives ownership
+   transfer and short pulse gaps, and replenishes only after continuous rest.
+   Exhausting one axis leaves the other usable and clears the exhausted axis's
+   pending request. A power cycle starts a full rest again.
 
 ## Editor setup
 

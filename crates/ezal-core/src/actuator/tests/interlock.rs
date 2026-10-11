@@ -3,13 +3,12 @@
 use super::common;
 
 use common::{installed, sample, TEST_CALIBRATION};
-use ezal_core::actuator::Actuator;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{
     AzimuthDirection, Command, DriveCommand, ElevationDirection, AZIMUTH_MAX_SPEED_DEG_PER_S,
 };
 use ezal_core::feedback::{FeedbackMonitor, FEEDBACK_MAX_AGE_MS};
-use ezal_core::interlock::FeedbackInterlock;
+use ezal_core::interlock::{FeedbackInterlock, TravelProfile};
 use ezal_core::position::{
     FeedbackVoltages, InstalledCalibration, Pointing, FEEDBACK_ENDPOINT_MARGIN_MV,
 };
@@ -33,7 +32,7 @@ fn gate_at(position: Pointing, timestamp_ms: u64) -> FeedbackInterlock {
 #[test]
 fn held_command_refreshes_cannot_extend_feedback_lifetime() {
     let gate = gate_at(Pointing::new(180.0, 45.0), 0);
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     for now_ms in [0, 150, 300, 450] {
         actuator.service(&gate, now_ms);
         actuator.command(Command::Drive(BOTH), &gate, now_ms);
@@ -59,7 +58,7 @@ fn held_command_refreshes_cannot_extend_feedback_lifetime() {
 #[test]
 fn fault_clears_active_movement_before_minimum_on_time() {
     let mut gate = gate_at(Pointing::new(180.0, 45.0), 0);
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     actuator.command(Command::Drive(BOTH), &gate, 0);
     gate.publish(None);
     assert!(actuator.service(&gate, 100));
@@ -80,8 +79,8 @@ fn fault_clears_active_movement_before_minimum_on_time() {
 
 #[test]
 fn a_pending_activation_is_checked_against_feedback_when_it_falls_due() {
-    let mut gate = gate_at(Pointing::new(180.0, 45.0), 0);
-    let mut actuator = Actuator::new();
+    let mut gate = gate_at(Pointing::new(355.0, 45.0), 0);
+    let mut actuator = common::rested_actuator();
     actuator.command(Command::Drive(CLOCKWISE), &gate, 0);
     actuator.command(Command::Inhibit, &gate, 100);
 
@@ -91,8 +90,8 @@ fn a_pending_activation_is_checked_against_feedback_when_it_falls_due() {
     assert_eq!(actuator.target(), CLOCKWISE);
     assert_eq!(actuator.next_deadline_ms(&gate, 1_900), Some(2_100));
 
-    // The dish reaches the endpoint before the inactive hold ends.
-    gate.publish(Some(sample(Pointing::new(360.0, 45.0), 2_050)));
+    // Updated feedback enters the coast allowance before the inactive hold ends.
+    gate.publish(Some(sample(Pointing::new(356.2, 45.0), 2_050)));
     assert!(!actuator.service(&gate, 2_100));
     assert_eq!(actuator.actual(), DriveCommand::IDLE);
     assert_eq!(actuator.target(), DriveCommand::IDLE);
@@ -102,11 +101,11 @@ fn a_pending_activation_is_checked_against_feedback_when_it_falls_due() {
 #[test]
 fn endpoint_inhibits_outward_axis_immediately_and_preserves_other_axis() {
     let mut gate = gate_at(Pointing::new(355.0, 45.0), 0);
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     actuator.command(Command::Drive(BOTH), &gate, 0);
     assert_eq!(actuator.actual(), BOTH);
     let lease = actuator.lease_deadline_ms();
-    gate.publish(Some(sample(Pointing::new(360.0, 45.0), 100)));
+    gate.publish(Some(sample(Pointing::new(356.2, 45.0), 100)));
     assert!(actuator.service(&gate, 100));
     let up = DriveCommand {
         azimuth: None,
@@ -141,6 +140,36 @@ fn each_endpoint_allows_only_inward_axis_directions() {
     assert_eq!(lower.guard_drive(decreasing, 0), DriveCommand::IDLE);
     assert_eq!(upper.guard_drive(BOTH, 0), DriveCommand::IDLE);
     assert_eq!(upper.guard_drive(decreasing, 0), decreasing);
+}
+
+#[test]
+fn the_actuators_coast_policy_overrides_the_feedback_producers_default() {
+    let mut travel = TravelProfile::DEFAULT;
+    travel.azimuth.coast_ms = 1_000;
+    travel.elevation.coast_ms = 1_000;
+    let decreasing = DriveCommand {
+        azimuth: Some(AzimuthDirection::CounterClockwise),
+        elevation: Some(ElevationDirection::Down),
+    };
+    for (position, outward, inward) in [
+        (Pointing::new(354.0, 87.5), BOTH, decreasing),
+        (Pointing::new(6.0, 2.5), decreasing, BOTH),
+    ] {
+        let gate = gate_at(position, 0);
+        assert_eq!(gate.guard_drive(outward, 0), outward);
+        let mut actuator = ezal_core::actuator::Actuator::with_config(
+            ezal_core::actuator::ActuatorConfig {
+                travel,
+                ..ezal_core::actuator::ActuatorConfig::DEFAULT
+            },
+            ezal_core::duty::DutyHistory::Known([0, 0]),
+        );
+        actuator.command(Command::Jog(outward), &gate, 0);
+        assert_eq!(actuator.actual(), DriveCommand::IDLE);
+        actuator.command(Command::Jog(inward), &gate, 0);
+        assert_eq!(actuator.actual(), inward);
+        assert_eq!(actuator.fault(), None);
+    }
 }
 
 #[test]
@@ -224,14 +253,14 @@ fn quantized_endpoint_readings_refuse_outward_motion_and_permit_inward_motion() 
         Command::Jog(inward)
     );
 
-    // Two codes inside, a fresh sample permits outward motion only until the
-    // dish could have travelled into the band.
+    // Far enough inside to reserve coast plus quantization, a fresh sample
+    // permits outward motion only until travel consumes the remaining room.
     let update = supervisor.update(
         102,
         100,
         Ok(FeedbackVoltages {
-            a0_elevation_mv: elevation.voltage_min_mv - 2 * code_mv,
-            a1_azimuth_mv: azimuth.voltage_max_mv - 2 * code_mv,
+            a0_elevation_mv: elevation.voltage_min_mv - 12 * code_mv,
+            a1_azimuth_mv: azimuth.voltage_max_mv - 12 * code_mv,
         }),
     );
     let gate = update.interlock;
@@ -246,9 +275,9 @@ fn quantized_endpoint_readings_refuse_outward_motion_and_permit_inward_motion() 
 #[test]
 fn outward_travel_is_cut_before_it_could_reach_an_endpoint_code() {
     let sample_ms = 1_000;
-    let start = Pointing::new(358.0, 88.0);
+    let start = Pointing::new(354.0, 86.0);
     let gate = gate_at(start, sample_ms);
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     actuator.command(Command::Drive(BOTH), &gate, sample_ms + 5);
     assert_eq!(actuator.actual(), BOTH);
 
@@ -267,7 +296,9 @@ fn outward_travel_is_cut_before_it_could_reach_an_endpoint_code() {
     let azimuth = TEST_CALIBRATION.azimuth;
     let code_deg = (azimuth.angle_max_deg - azimuth.angle_min_deg) * FEEDBACK_FULL_SCALE.code_mv()
         / (azimuth.voltage_max_mv - azimuth.voltage_min_mv) as f32;
-    let worst_travel_deg = (cut_ms - sample_ms) as f32 * AZIMUTH_MAX_SPEED_DEG_PER_S / 1_000.0;
+    let worst_travel_deg = (cut_ms - sample_ms + TravelProfile::DEFAULT.azimuth.coast_ms) as f32
+        * AZIMUTH_MAX_SPEED_DEG_PER_S
+        / 1_000.0;
     assert!(start.azimuth_deg + worst_travel_deg < azimuth.angle_max_deg - code_deg);
 
     // Elevation has more room, so it keeps moving until the sample expires.
@@ -283,10 +314,10 @@ fn a_released_axis_stops_the_same_way_whether_or_not_the_other_axis_is_refused()
         azimuth: None,
         elevation: BOTH.elevation,
     };
-    for elevation_deg in [45.0, 90.0] {
+    for elevation_deg in [45.0, 88.5] {
         let released_azimuth = |command: fn(DriveCommand) -> Command| {
-            let mut gate = gate_at(Pointing::new(180.0, 45.0), 0);
-            let mut actuator = Actuator::new();
+            let mut gate = gate_at(Pointing::new(180.0, elevation_deg - 0.4), 0);
+            let mut actuator = common::rested_actuator();
             actuator.command(command(BOTH), &gate, 0);
             gate.publish(Some(sample(Pointing::new(180.0, elevation_deg), 100)));
             actuator.command(command(up), &gate, 100);
@@ -301,7 +332,7 @@ fn a_released_axis_stops_the_same_way_whether_or_not_the_other_axis_is_refused()
 
 #[test]
 fn a_command_is_admitted_before_a_transition_due_at_the_same_instant() {
-    let mut actuator = Actuator::new();
+    let mut actuator = common::rested_actuator();
     actuator.command(
         Command::Drive(CLOCKWISE),
         &gate_at(Pointing::new(180.0, 45.0), 0),

@@ -3,7 +3,7 @@
 mod common;
 
 use common::{installed, sample, TEST_CALIBRATION};
-use ezal_core::actuator::{Actuator, ActuatorInput};
+use ezal_core::actuator::ActuatorInput;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{AzimuthDirection, Command, DriveCommand};
 use ezal_core::feedback::{
@@ -32,7 +32,7 @@ fn feedback_faults_cut_manual_motion_during_the_minimum_on_time() {
         }),
     ] {
         let mut monitor = FeedbackMonitor::new(TEST_CALIBRATION, None);
-        let mut actuator = Actuator::new();
+        let mut actuator = common::rested_actuator();
         let mut network = NetworkGate::new();
         network.observe(2_000, true);
         let initial = monitor.update(2_000, 2_000, feedback(100.0, 20.0));

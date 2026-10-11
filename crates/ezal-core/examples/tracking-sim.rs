@@ -1,6 +1,7 @@
 //! Offline development replay. No network access, GPIOs or installed calibration.
 //! Run with `cargo run -p ezal-core --target <host> --example tracking-sim`.
 
+use ezal_core::drive::RelayConfig;
 use ezal_core::orbit::{Catalog, GroundStation, Observer};
 use ezal_core::passes::{Config, Search, Track};
 use ezal_core::position::{AxisCalibration, Pointing, PositionCalibration};
@@ -30,10 +31,10 @@ fn replay(
     name: &str,
     duration_ms: u64,
     profile: MotorProfile,
+    settings: SimulationSettings,
     mut target_at: impl FnMut(u64) -> TrackingTarget,
 ) {
     let initial = target_at(0).mechanical;
-    let settings = SimulationSettings::default();
     let mut sim = Simulation::new(
         CALIBRATION,
         initial,
@@ -96,7 +97,16 @@ fn synthetic_target(at_ms: u64, miss_deg: f64, over_top: bool) -> TrackingTarget
 }
 
 fn main() {
-    println!("Tracking development replay — current 500 ms on / 2 s off actuator timing.");
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    let mut settings = SimulationSettings::default();
+    match args.as_slice() {
+        [] => println!("Tracking development replay — installed 500 ms on / 2 s off timing."),
+        [flag] if flag == "--candidate-timing" => {
+            settings.actuator.relays = RelayConfig::TRACKING_CANDIDATE;
+            println!("Tracking development replay — proposed 500 ms on / 500 ms same / 1 s reverse off timing.");
+        }
+        _ => panic!("usage: tracking-sim [--candidate-timing]"),
+    }
     println!("Unmeasured AC profiles, synthetic calibration, initially at the first target.");
     println!("20 ms maximum sampling; 2° modeled allocation leaves 1° for unmodeled uncertainty.");
     println!("No preparation planner or reacquisition; sampled results are not feasibility certification.\n");
@@ -114,9 +124,13 @@ fn main() {
             ("88deg conventional", 2.0, false),
             ("88deg offset over-top", 2.0, true),
         ] {
-            replay(&format!("{label} {name}"), 600_000, profile, |at_ms| {
-                synthetic_target(at_ms, miss, over_top)
-            });
+            replay(
+                &format!("{label} {name}"),
+                600_000,
+                profile,
+                settings,
+                |at_ms| synthetic_target(at_ms, miss, over_top),
+            );
         }
     }
 
@@ -164,6 +178,7 @@ fn main() {
             &format!("recorded conventional {name}"),
             (pass.los_unix_s - pass.aos_unix_s) as u64 * 1_000,
             profile,
+            settings,
             |at_ms| {
                 let look = orbit
                     .look_at(&station, pass.aos_unix_s as f64 + at_ms as f64 / 1_000.0)

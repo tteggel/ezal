@@ -5,11 +5,54 @@
 //! is consumed before a pending activation. Firmware supplies time, applies
 //! the resulting GPIO state, and wakes for the returned deadline.
 
-use crate::drive::{ActuatorGuard, Command, DriveCommand};
-use crate::interlock::FeedbackInterlock;
+use crate::drive::{ActuatorGuard, Command, DriveCommand, RelayConfig};
+use crate::duty::{DutyConfig, DutyHistory, DutyMonitor, DutyStatus};
+use crate::feedback::FEEDBACK_MAX_AGE_MS;
+use crate::interlock::{FeedbackInterlock, TravelProfile};
 use crate::mailbox::CommandEnvelope;
 use crate::motion::{MotionConfig, MotionFault, MotionMonitor};
 use crate::network::NetworkGate;
+
+/// Installation policy owned by the final output boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActuatorConfig {
+    /// Ordinary relay timing; source expiry and inhibition remain independent.
+    pub relays: RelayConfig,
+    /// Common rate/coast bounds for endpoint and physical-motion supervision.
+    pub travel: TravelProfile,
+    /// Progress and measurement-noise thresholds.
+    pub motion: MotionConfig,
+    /// Per-axis energized/rest accounting shared by every source.
+    pub duty: DutyConfig,
+}
+
+impl ActuatorConfig {
+    /// Installed timing with provisional coast bounds and unidentified-hardware duty.
+    pub const DEFAULT: Self = Self {
+        relays: RelayConfig::DEFAULT,
+        travel: TravelProfile::DEFAULT,
+        motion: MotionConfig::DEFAULT,
+        duty: DutyConfig::DEFAULT,
+    };
+
+    /// Reversal must allow old-direction coast and old feedback to finish before
+    /// establishing the new direction's baseline. No per-pulse blind window is used.
+    pub const fn is_valid(self) -> bool {
+        let Some(reversal_settle_ms) = self
+            .travel
+            .maximum_coast_ms()
+            .checked_add(FEEDBACK_MAX_AGE_MS)
+        else {
+            return false;
+        };
+        self.relays.is_valid()
+            && self.travel.is_valid()
+            && self.motion.is_valid()
+            && self.duty.is_valid()
+            && self.duty.energized_ms >= self.relays.min_active_ms
+            && self.relays.reversal_off_ms >= reversal_settle_ms
+    }
+}
 
 /// Coherent inputs copied by the coordination owner for one output step.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,6 +70,8 @@ pub struct ActuatorInput {
 pub struct ActuatorStatus {
     /// First motion fault, latched until the actuator is recreated on reset.
     pub motion_fault: Option<MotionFault>,
+    /// Remaining per-axis allowance and any required cooldown.
+    pub duty: DutyStatus,
 }
 
 /// Output and next required service instant after an actuator step.
@@ -43,23 +88,29 @@ pub struct ActuatorUpdate {
 /// Leased output state with feedback, network and motion supervision.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Actuator {
+    config: ActuatorConfig,
+    configuration_valid: bool,
     guard: ActuatorGuard,
     motion: MotionMonitor,
+    duty: DutyMonitor,
     network_generation: u64,
 }
 
 impl Actuator {
-    /// Create an idle actuator.
+    /// Boot idle with unknown prior motor duty; a full rest is required.
     pub const fn new() -> Self {
-        Self::with_motion_config(MotionConfig::DEFAULT)
+        Self::with_config(ActuatorConfig::DEFAULT, DutyHistory::Unknown)
     }
 
-    /// Create an idle actuator with installation-specific motion thresholds.
-    /// Invalid thresholds latch an inhibition before any output can energise.
-    pub const fn with_motion_config(config: MotionConfig) -> Self {
+    /// Create an idle actuator with explicit policy and trustworthy duty history.
+    /// Invalid settings/history latch inhibition before any output can energize.
+    pub const fn with_config(config: ActuatorConfig, history: DutyHistory) -> Self {
         Self {
-            guard: ActuatorGuard::new(),
-            motion: MotionMonitor::new(config),
+            config,
+            configuration_valid: config.is_valid() && history.is_valid(config.duty),
+            guard: ActuatorGuard::with_timing(config.relays),
+            motion: MotionMonitor::new(config.motion, config.travel),
+            duty: DutyMonitor::new(config.duty, history, config.relays.min_active_ms),
             network_generation: 0,
         }
     }
@@ -72,7 +123,9 @@ impl Actuator {
     pub fn step(&mut self, input: ActuatorInput, now_ms: u64) -> ActuatorUpdate {
         // Account for the output that existed throughout the elapsed interval
         // before a network, feedback, or incoming command cut changes it.
-        self.enforce(&input.interlock, now_ms);
+        self.duty.observe(self.guard.actual(), now_ms);
+        let interlock = input.interlock.with_travel_profile(self.config.travel);
+        self.enforce(&interlock, now_ms);
         let network_ready = input.network.ready(now_ms);
         if !network_ready || self.network_generation != input.network.generation() {
             self.guard.command(Command::Inhibit, now_ms);
@@ -80,10 +133,18 @@ impl Actuator {
         self.network_generation = input.network.generation();
 
         if let Some(envelope) = input.command {
-            let permitted = if !network_ready || self.motion.fault().is_some() {
+            let permitted = if !network_ready || self.fault().is_some() {
                 Command::Inhibit
             } else {
-                input.interlock.guard_command(envelope.command, now_ms)
+                match interlock.guard_command(envelope.command, now_ms) {
+                    Command::Drive(drive) => {
+                        Command::Drive(self.duty.guard_drive(drive, self.guard.actual()))
+                    }
+                    Command::Jog(drive) => {
+                        Command::Jog(self.duty.guard_drive(drive, self.guard.actual()))
+                    }
+                    other => other,
+                }
             };
             // command_until expires the old lease before a late refresh and
             // consumes a release before advancing its pending activation.
@@ -93,20 +154,16 @@ impl Actuator {
             self.guard.update(now_ms);
         }
         self.motion.applied(self.guard.actual(), now_ms);
+        self.duty.applied(self.guard.actual());
 
         let network_deadline = network_ready.then(|| input.network.deadline_ms()).flatten();
         ActuatorUpdate {
             output: self.guard.actual(),
-            status: ActuatorStatus {
-                motion_fault: self.motion.fault(),
-            },
-            next_deadline_ms: [
-                self.next_deadline_ms(&input.interlock, now_ms),
-                network_deadline,
-            ]
-            .into_iter()
-            .flatten()
-            .min(),
+            status: self.status(),
+            next_deadline_ms: [self.next_deadline_ms(&interlock, now_ms), network_deadline]
+                .into_iter()
+                .flatten()
+                .min(),
         }
     }
 
@@ -116,8 +173,12 @@ impl Actuator {
         self.motion.observe(interlock, now_ms);
         let actual = self.guard.actual();
         let target = self.guard.target();
-        let permitted_actual = interlock.guard_drive(actual, now_ms);
-        let permitted_target = interlock.guard_drive(target, now_ms);
+        let permitted_actual = self
+            .duty
+            .guard_drive(interlock.guard_drive(actual, now_ms), actual);
+        let permitted_target = self
+            .duty
+            .guard_drive(interlock.guard_drive(target, now_ms), actual);
         self.guard.inhibit_axes(
             actual.azimuth != permitted_actual.azimuth
                 || target.azimuth != permitted_target.azimuth,
@@ -125,16 +186,22 @@ impl Actuator {
                 || target.elevation != permitted_target.elevation,
             now_ms,
         );
-        if self.motion.fault().is_some() {
+        if self.fault().is_some() {
             self.guard.command(Command::Inhibit, now_ms);
         }
     }
 
     /// Physical deadlines, combined with operating permission by `step`.
     fn next_deadline_ms(&self, interlock: &FeedbackInterlock, now_ms: u64) -> Option<u64> {
+        let interlock = interlock.with_travel_profile(self.config.travel);
         let transition = self.guard.next_transition_ms(now_ms);
         let feedback = interlock.deadline_ms(self.guard.actual(), now_ms);
-        [transition, feedback, self.motion.deadline_ms(now_ms)]
+        let duty = if self.fault().is_none() {
+            self.duty.deadline_ms(self.guard.actual(), now_ms)
+        } else {
+            None
+        };
+        [transition, feedback, self.motion.deadline_ms(now_ms), duty]
             .into_iter()
             .flatten()
             .min()
@@ -158,7 +225,19 @@ impl Actuator {
     /// First motion fault, latched until this actuator is recreated on reset.
     /// Both target and actual outputs remain inhibited while this is present.
     pub const fn fault(&self) -> Option<MotionFault> {
-        self.motion.fault()
+        if self.configuration_valid {
+            self.motion.fault()
+        } else {
+            Some(MotionFault::InvalidConfiguration)
+        }
+    }
+
+    /// Coherent health and duty state at the most recent service instant.
+    pub const fn status(&self) -> ActuatorStatus {
+        ActuatorStatus {
+            motion_fault: self.fault(),
+            duty: self.duty.status(),
+        }
     }
 }
 

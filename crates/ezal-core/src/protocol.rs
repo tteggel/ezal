@@ -20,6 +20,9 @@ pub const WS_PATH: &str = "/ws";
 /// WebSocket message used by a viewer to become the controller.
 pub const TAKE_CONTROL_MESSAGE: &str = "control:take";
 
+/// Fixed acknowledgement buffer, including maximum-width duty counters.
+pub const CONTROL_STATUS_CAPACITY: usize = 320;
+
 use crate::session::{CommandToken, MovementRequest};
 
 /// Decode only movement directions; freshness and ownership are separate policy.
@@ -140,7 +143,14 @@ impl ControlStatus {
             self.network_ready
         )?;
         write_option(out, self.motion_fault.map(MotionFault::as_str))?;
-        fmt::Write::write_str(out, "}")
+        write!(
+            out,
+            ",\"duty_remaining_ms\":[{},{}],\"duty_cooldown_ms\":[{},{}]}}",
+            self.duty.azimuth.remaining_ms,
+            self.duty.elevation.remaining_ms,
+            self.duty.azimuth.cooldown_ms,
+            self.duty.elevation.cooldown_ms
+        )
     }
 }
 
@@ -217,7 +227,7 @@ fn degrees_to_tenths(degrees: f32) -> i32 {
 }
 
 /// Fixed maximum payload allocation for one periodic observation.
-pub const TELEMETRY_CAPACITY: usize = 512;
+pub const TELEMETRY_CAPACITY: usize = 640;
 
 /// One coherent domain observation and its original freshness proof.
 pub struct TelemetryMessage {
