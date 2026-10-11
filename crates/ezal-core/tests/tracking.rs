@@ -257,7 +257,7 @@ fn coast_can_cross_a_limit_after_the_relay_has_been_released() {
 
 #[test]
 fn follower_requires_current_feedback_and_preserves_continuous_coordinates() {
-    let controller = FollowingController::new(MotorProfile::AC_50HZ, 0.5).unwrap();
+    let mut controller = FollowingController::new(MotorProfile::AC_50HZ, 0.5).unwrap();
     let position = Pointing::new(359.0, 45.0);
     let feedback = FeedbackSample::from_voltages(
         InstalledCalibration::new(CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
@@ -267,7 +267,7 @@ fn follower_requires_current_feedback_and_preserves_continuous_coordinates() {
     .unwrap();
     assert_eq!(
         controller.command(
-            Pointing::new(361.0, 45.0),
+            Pointing::new(362.0, 45.0),
             Some(feedback),
             DriveCommand::IDLE,
             100
@@ -314,6 +314,122 @@ fn simulated_feedback_is_quantized_and_delayed_before_any_activation() {
             close(feedback.position().elevation_deg, 45.0);
             assert_eq!(sample.applied, CW);
             break;
+        }
+    }
+}
+
+#[test]
+fn channel_skew_preserves_oldest_timestamp_and_each_channels_capture_position() {
+    let mut plant = ideal_profile(2.0);
+    plant.azimuth.rate_deg_per_s = 4.0;
+    let mut sim = Simulation::new(
+        CALIBRATION,
+        Pointing::new(100.0, 45.0),
+        plant,
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15).unwrap(),
+        SimulationSettings {
+            step_ms: 50,
+            feedback_latency_ms: 150,
+            channel_skew_ms: 150,
+            ..SimulationSettings::default()
+        },
+    )
+    .unwrap();
+    let mut elevation_at_capture = 0.0;
+    loop {
+        let now = sim.now_ms();
+        let sample = sim.step(Some(Pointing::new(200.0, 90.0))).unwrap();
+        if now == 250 {
+            elevation_at_capture = sample.position.elevation_deg;
+        }
+        if now == 400 {
+            let feedback = sample.feedback.unwrap();
+            assert_eq!(feedback.sampled_at_ms(), 250);
+            assert!((feedback.position().azimuth_deg - sample.position.azimuth_deg).abs() < 0.17);
+            assert!((feedback.position().elevation_deg - elevation_at_capture).abs() < 0.11);
+            assert!(
+                (feedback.position().elevation_deg - sample.position.elevation_deg).abs() > 0.19
+            );
+            break;
+        }
+        assert!(now < 400);
+    }
+}
+
+#[test]
+fn noisy_feedback_is_applied_before_adc_quantization_and_alternates_per_read() {
+    let mut sim = Simulation::new(
+        CALIBRATION,
+        Pointing::new(100.11, 45.07),
+        MotorProfile::AC_50HZ,
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15).unwrap(),
+        SimulationSettings {
+            feedback_latency_ms: 0,
+            noise_codes: [1, -1],
+            alternate_noise: true,
+            ..SimulationSettings::default()
+        },
+    )
+    .unwrap();
+    let first = sim.step(None).unwrap().feedback.unwrap();
+    while sim.now_ms() < 100 {
+        sim.step(None).unwrap();
+    }
+    let second = sim.step(None).unwrap().feedback.unwrap();
+    close(
+        first.position().azimuth_deg - second.position().azimuth_deg,
+        2.0 / 3.0,
+    );
+    // Elevation voltage decreases as the mechanical angle increases.
+    close(
+        first.position().elevation_deg - second.position().elevation_deg,
+        0.4,
+    );
+    assert_eq!(first.sampled_at_ms(), 0);
+    assert_eq!(second.sampled_at_ms(), 100);
+}
+
+#[test]
+fn pulse_aware_follower_avoids_reversal_chatter_with_both_relay_policies() {
+    for relays in [
+        ezal_core::drive::RelayConfig::DEFAULT,
+        ezal_core::drive::RelayConfig::TRACKING_CANDIDATE,
+    ] {
+        for plant in [
+            MotorProfile::AC_SLOW,
+            MotorProfile::AC_50HZ,
+            MotorProfile::AC_FAST,
+        ] {
+            let mut sim = Simulation::new(
+                CALIBRATION,
+                Pointing::new(180.0, 10.0),
+                plant,
+                FollowingController::with_timing(MotorProfile::AC_50HZ, 0.15, relays).unwrap(),
+                SimulationSettings {
+                    actuator: ActuatorConfig {
+                        relays,
+                        ..SimulationSettings::default().actuator
+                    },
+                    ..SimulationSettings::default()
+                },
+            )
+            .unwrap();
+            while sim.now_ms() < 600_000 {
+                sim.step(Some(Pointing::new(
+                    180.0,
+                    10.0 + 160.0 * sim.now_ms() as f32 / 600_000.0,
+                )))
+                .unwrap();
+            }
+            sim.step(None).unwrap();
+            while !sim.is_settled() {
+                sim.step(None).unwrap();
+            }
+            let summary = sim.summary();
+            assert!(summary.max_deviation_deg < 1.5, "{summary:?}");
+            assert_eq!(summary.reversals, [0, 0]);
+            assert_eq!(summary.energized_ms[0], 0);
+            assert!(summary.energized_ms[1] < 70_000);
         }
     }
 }

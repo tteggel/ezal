@@ -239,6 +239,24 @@ impl Actuator {
             duty: self.duty.status(),
         }
     }
+
+    /// Settings copied into a plan; replacing them during a run requires replanning.
+    pub const fn configuration(&self) -> ActuatorConfig {
+        self.config
+    }
+
+    /// Require a serviced, inhibited, physically settled starting snapshot.
+    /// Copying the entire actuator then preserves relay holds, fault/progress
+    /// state and partially completed duty rest in offline evaluation.
+    pub(crate) fn resting_history(&self, now_ms: u64) -> Option<([u64; 2], [u64; 2])> {
+        if self.actual().is_active() || self.target().is_active() || self.fault().is_some() {
+            return None;
+        }
+        let (used, idle) = self.duty.history(now_ms)?;
+        (idle[0] >= self.config.travel.azimuth.coast_ms
+            && idle[1] >= self.config.travel.elevation.coast_ms)
+            .then_some((used, idle))
+    }
 }
 
 impl Default for Actuator {

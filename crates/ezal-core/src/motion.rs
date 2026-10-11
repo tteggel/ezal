@@ -121,6 +121,9 @@ struct AxisMonitor {
     last_direction: Option<bool>,
     run_started_ms: u64,
     stopped_ms: Option<u64>,
+    // Include the first post-coast observation: a short pulse can do most of
+    // its observable travel after the electrical output has been released.
+    coast_observation_pending: bool,
     /// Furthest position in the same direction, retained across pulse gaps.
     direction_extreme_deg: Option<f32>,
     speed_anchor: Option<Sample>,
@@ -135,6 +138,7 @@ impl AxisMonitor {
             last_direction: None,
             run_started_ms: 0,
             stopped_ms: None,
+            coast_observation_pending: false,
             direction_extreme_deg: None,
             speed_anchor: None,
             sample: None,
@@ -188,7 +192,14 @@ impl AxisMonitor {
                 || self.stopped_ms.is_some_and(|stopped| {
                     sample.timestamp_ms <= stopped.saturating_add(travel.coast_ms)
                 });
-            if expected_motion {
+            let coast_observation = self.coast_observation_pending
+                && self.stopped_ms.is_some_and(|stopped| {
+                    sample.timestamp_ms
+                        <= stopped
+                            .saturating_add(travel.coast_ms)
+                            .saturating_add(crate::feedback::FEEDBACK_MAX_AGE_MS)
+                });
+            if expected_motion || coast_observation {
                 if let Some(increases_angle) = self.last_direction {
                     let sign = if increases_angle { 1.0 } else { -1.0 };
                     if let Some(extreme) = self.direction_extreme_deg {
@@ -204,7 +215,7 @@ impl AxisMonitor {
                     }
                 }
             }
-            if self.applied.is_some() {
+            if expected_motion || coast_observation {
                 // Absolute displacement is intentional: reversal must not
                 // erase accumulated stalled-motor time. Wrong-direction
                 // displacement is checked independently above, without a per-pulse blind window.
@@ -217,6 +228,11 @@ impl AxisMonitor {
                         }
                     }
                 }
+            }
+            if self.stopped_ms.is_some_and(|stopped| {
+                sample.timestamp_ms >= stopped.saturating_add(travel.coast_ms)
+            }) {
+                self.coast_observation_pending = false;
             }
             self.sample = Some(sample);
         }
@@ -234,6 +250,7 @@ impl AxisMonitor {
         }
         if self.applied.is_some() {
             self.stopped_ms = Some(now_ms);
+            self.coast_observation_pending = true;
         }
         self.applied = direction;
         if direction.is_some() {

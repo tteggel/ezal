@@ -139,6 +139,14 @@ pub(crate) struct DutyMonitor {
 }
 
 impl DutyMonitor {
+    /// Read accounting at the last serviced instant, for an offline clone.
+    pub(crate) fn history(&self, now_ms: u64) -> Option<([u64; 2], [u64; 2])> {
+        (self.observed_ms == Some(now_ms)).then_some((
+            [self.axes[0].used_ms, self.axes[1].used_ms],
+            [self.axes[0].idle_ms, self.axes[1].idle_ms],
+        ))
+    }
+
     pub(crate) const fn new(config: DutyConfig, history: DutyHistory, min_active_ms: u64) -> Self {
         let used = match history {
             DutyHistory::Unknown => [config.energized_ms; 2],

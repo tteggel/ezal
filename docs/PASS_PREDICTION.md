@@ -623,7 +623,7 @@ commissioning supplies that evidence.
   reversals, stale feedback, cancellation of preparation-style pulses and unknown
   duty on boot. Publish per-axis allowance/rest in telemetry and the dashboard.
   Depends on T1; relaxed live timing also requires T10 measurements.
-- [ ] **T3 — Bounded trajectory planner.** Generate continuous conventional,
+- [x] **T3 — Bounded trajectory planner.** Generate continuous conventional,
   azimuth-overlap and over-the-top candidates; refine near zenith and limits.
   Evaluate preparation and the entire pass with the shared controller across
   motion uncertainty. Report supported feasibility, peak deviation, gaps and
@@ -673,80 +673,104 @@ commissioning supplies that evidence.
   passes before enabling routine automatic tracking. Measurement work can
   start alongside T1; final acceptance depends on T9.
 
-### Current simulation milestone
+### Current planning milestone
 
 [`tracking`](../crates/ezal-core/src/tracking.rs) now supplies a pure-core
-feedback follower and a bounded simulator. The simulator feeds quantized,
-delayed observations through the production feedback validator and actuator;
-its default uses the current 500 ms minimum on-time and 2 s off-time. It records
-actual energized time, relay transitions, reversals, sampled peak sky deviation and
-time outside the modeled allowance. Invalid inputs, duty exhaustion, physical
-travel violations and actuator motion faults stop a run with explicit reasons.
-Cancellation inhibits pending as well as active output; further idle steps
-model coast to the final position.
+incremental planner, feedback follower and simulator. The planner searches 24
+conventional, inverted and over-the-top/azimuth-overlap candidates. It unwraps
+azimuth continuously and refines geometry near zenith and the azimuth wrap;
+linear interpolation stays inside the measured mechanical range. Over-the-top
+bridges at 80°, 85° and 88° can intentionally offset the sky direction. Every
+following-error check includes that offset.
 
-Run the offline [replay example](../crates/ezal-core/examples/tracking-sim.rs)
+Run the offline [planning example](../crates/ezal-core/examples/tracking-plan.rs)
+or the individual [controller replays](../crates/ezal-core/examples/tracking-sim.rs)
 inside the development shell:
 
 ```bash
 TRACKING_HOST=$(rustc -vV | sed -n 's/host: //p')
+cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-plan
 cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim
 # Compare proposed timing offline; this does not configure the device:
+cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-plan -- --candidate-timing
 cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim -- --candidate-timing
 ```
 
-The example compares slow/nominal/fast AC profiles on synthetic exact-zenith
-and 88° peak passes, then replays orbital geometry from the recorded TLE
-fixture. It starts at the first target with a synthetic full-travel calibration
-and a rested, confirmed-AC 300 s duty allowance. Live firmware uses the
-unidentified-hardware 180 s policy and requires full rest at boot. The first
-motor direction is assumed engaged;
-reversals consume explicit backlash, including across short pulses. Motor
-startup is a dead time, and coast is constant-rate travel for the assumed
-release duration. Paired feedback is quantized directly to ADC codes and
-delayed by 100 ms; channel skew, electrical noise and alignment uncertainty
-are not yet modeled. The baseline follower uses a 0.5° mechanical deadband
-and estimates release travel from feedback age and the assumed coast rate.
-It keeps its nominal reference profile while the simulated motor rates vary.
+The planner requires a serviced, settled copy of the output owner's actuator,
+network generation and fresh feedback acquired after coast. It copies relay
+availability, duty/rest and supervision history; it never mutates live outputs.
+Preparation probes establish the worst readiness time, including a 2 s settled
+dwell. The scheduled lead is `max(60 s, preparation + 20 s)`, clipped to the
+current time. Each complete verification then simulates scheduled preparation
+and the pass in one run, retaining on-time and relay holds at AOS. Far-future
+idle waiting is skipped with its actual rest credit; no hours-long simulation
+loop is needed. Late preparation, duty exhaustion, motion faults and travel
+violations produce explicit rejections, including the scenario and phase.
 
-Route position and satellite direction are separate inputs. An intentional
-keyhole offset therefore contributes to sky deviation even when the motor
-route is followed exactly. The default simulation threshold is the 2° modeled
-allocation, leaving the agreed 1° uncertainty reserve within the 3° total
-target. Samples are at most 20 ms apart, with earlier actuator/acquisition
-deadlines honored. This milestone does not bound unsampled pointing error,
-plan preparation or reacquisition, or certify a pass as feasible.
+Nine default scenarios cover nominal/slow/fast rates, mixed axis rates,
+initial gearbox engagement, fixed/alternating one-code measurement offsets,
+0–150 ms acquisition latency and up to 150 ms channel skew. A0 is captured
+first; the feedback timestamp remains that oldest capture time. The fixed
+nominal follower accounts for minimum pulse completion, target velocity,
+startup and coast, requires an additional 0.15° predicted improvement, and
+waits for post-coast feedback before another correction. The scenarios still
+share provisional 300 ms startup, 500 ms coast and 1° backlash assumptions.
+They do not cover every intermediate parameter combination or prove real
+hardware performance. Loaded measurements must replace them.
 
-The initial nominal-profile replay produces approximately 0.91° sampled peak
-deviation for the synthetic over-the-top zenith pass, versus 7.12° for the
-conventional zenith route. The recorded 70.75° peak pass reaches 3.11°, exceeding
-the modeled allocation. Faster scenarios show frequent reversals, and the
-fast conventional zenith case is now held inside the endpoint by the coast
-guard, reaching 5.83° peak deviation. Some near-zenith scenarios stop with an
-azimuth no-progress fault after repeated reversals. These
-are results from provisional models, not measured antenna performance; they
-provide concrete cases for T3's controller/planner
-tuning. A fixed 2° keyhole offset also consumes the entire modeled allocation
-before following error is added, so it is not automatically an acceptable route.
+The modeled allocation is 2° within the provisional 3° total target, reserving
+1° for alignment/orbit/time uncertainty. At most 20 ms separates checks, with
+earlier output/acquisition deadlines and exact AOS/LOS boundaries. Between
+adjacent checks, the planner bounds error using the axis-rate vector and an
+explicit assumed sky-rate bound (default 2°/s), plus 0.002° numerical allowance.
+Observed violations of the sky-rate assumption reject the job; unobserved
+violations remain outside the guarantee. This is conditional support across
+the supplied finite scenarios. Source authentication and timing uncertainty
+validation still belong to T5.
 
-The shorter candidate timings are not an improvement with the baseline
-follower: the nominal over-the-top zenith case rises to 2.28° peak deviation,
-203 elevation reversals and 232 s of elevation on-time, compared with 0.91°,
-zero reversals and 51 s using installed timing. The recorded nominal case
-rises from 3.11° to 4.38°. T3 must account for pulse completion, coast and
-backlash in its hysteresis/lead tuning before adopting shorter timings.
+Any interval not established within budget is a predicted gap. The report
+retains the worst scenario's total gap time and up to 16 intervals, explicitly
+flagging truncation. Unsupported attempts cannot become a `TrackingPlan`.
+No-gap support requires every scenario to complete through final coast. Gap
+acceptance and late intercepts remain deferred to T6's bounded reacquisition.
+Cancellation or a source/work/storage failure invalidates the entire job,
+including earlier candidates. Exhausting this finite search means no supported
+route was found, not that every possible physical route is impossible.
 
-The [tracking tests](../crates/ezal-core/tests/tracking.rs) cover geometry,
-startup/coast, partial backlash take-up, duty/rest, delayed quantized feedback,
-invalid inputs, ordinary relay timing, cancellation racing a pending activation,
-stall/speed faults, full synthetic/recorded passes and intentional sky offsets.
-The shared output safeguards are wired into the firmware's existing manual
-control path. They include pulse-aware motion checks, configured coast bounds,
-validated same-direction/reversal timing, and per-axis duty preserved through
-command/owner changes. Unknown history requires 900 s rest at boot. The
-dashboard displays allowance/rest and requires fresh input after a block;
-an unaffected axis remains usable. [Output-policy tests](../crates/ezal-core/tests/output_policy.rs)
-exercise these rules, with coordination, motion and dashboard regressions.
+The planner stores at most 2,048 route points, nine scenarios and 16 gap
+intervals. One step performs at most one propagation and one simulator service,
+or bounded route bookkeeping; the whole job stops at 20 million steps.
+Preparation probes are limited to 300 s and reception windows to 30 minutes.
+A planner occupies about 77 KiB on the host; the default synthetic zenith job
+takes about 2.75 million steps. Embedded memory placement and execution time
+under concurrent firmware load must be checked in T7 before integration.
 
-The tracking follower and simulator remain offline; pass selection/execution
-is not yet available. Next implementation task: **T3 — Bounded trajectory planner**.
+Current development results, using synthetic full travel and confirmed-AC duty:
+
+| Case | Result |
+|---|---|
+| Nominal zenith, over the top, either relay policy | 0.85° sampled peak, zero reversals, 51 s elevation drive |
+| Planned zenith, installed relay timing, nine scenarios | Supported: 1.46° sampled / 1.53° bounded peak; 60 s preparation lead |
+| Zenith with elevation limited to 90° | Unsupported keyhole gap |
+| Planned 88° peak, nine scenarios | No supported route; reported gaps/faults depend on candidate |
+| Recorded 70.75° peak, nominal controller replay | 2.08° sampled peak, one elevation reversal; exceeds modeled allowance |
+| Recorded pass, all nine planning scenarios | Rejected during preparation by speed supervision under alternating noise |
+
+The shorter-timing nominal zenith replay previously made 203 reversals and
+used 232 s of elevation drive. Pulse-aware release removes that behavior;
+it does not make every recorded pass fit the pointing allocation or justify
+relaxing live limits. The examples never extend the installed 0–360°/0–90°
+calibration. Live firmware retains 500 ms on / 2 s off timing, the unidentified
+hardware 180 s duty policy, and 900 s initial rest.
+
+[Planner tests](../crates/ezal-core/tests/planner.rs) exercise full zenith/recorded
+passes, wrap continuity, one-propagation steps, preparation/duty carryover,
+retained relay holds, far-future rest, late starts, cancellation and bounded
+storage. [Controller tests](../crates/ezal-core/tests/tracking.rs) cover plant
+physics, noisy/skewed feedback, relay timing and pulse hysteresis.
+[Output-policy tests](../crates/ezal-core/tests/output_policy.rs) verify that
+post-release coast can prove progress without forgiving stalls, reversed
+feedback or movement first observed after a long idle.
+
+The planner and follower remain offline; pass selection/execution is not yet
+available. Next task: **T4 — Single-pass lifecycle and exclusive operator lease**.

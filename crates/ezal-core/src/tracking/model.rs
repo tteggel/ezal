@@ -147,6 +147,25 @@ pub struct MotorModel {
 }
 
 impl MotorModel {
+    pub(super) fn set_initial_rest(&mut self, idle_ms: [u64; 2], engagement: [Option<bool>; 2]) {
+        self.azimuth.idle_ms = idle_ms[0];
+        self.elevation.idle_ms = idle_ms[1];
+        self.azimuth.engagement_deg = engagement[0].map(|positive| {
+            if positive {
+                f64::from(self.profile.azimuth.backlash_deg)
+            } else {
+                0.0
+            }
+        });
+        self.elevation.engagement_deg = engagement[1].map(|positive| {
+            if positive {
+                f64::from(self.profile.elevation.backlash_deg)
+            } else {
+                0.0
+            }
+        });
+    }
+
     /// Start at rest with explicit previously consumed azimuth/elevation duty.
     /// `[0, 0]` asserts a fully rested model; it is not a reboot recovery policy.
     pub fn new(

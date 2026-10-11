@@ -8,11 +8,21 @@
 
 mod controller;
 mod model;
+mod planner;
+mod route;
 mod simulation;
 
 pub use controller::FollowingController;
 pub use model::MotorModel;
-pub use simulation::{Simulation, SimulationSample, SimulationSettings, SimulationSummary};
+pub use planner::{
+    Assessment, CandidateFailure, EvaluationPhase, PlannedGap, Planner, PlanningConfig,
+    PlanningError, PlanningReport, PlanningWindow, Scenario, TrackingPlan, MAX_GAPS,
+    MAX_PLANNING_STEPS, MAX_SCENARIOS,
+};
+pub use route::{Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
+pub use simulation::{
+    RestingStart, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
+};
 
 use crate::feedback::FeedbackHealth;
 use crate::motion::MotionFault;
@@ -147,6 +157,8 @@ impl MotorProfile {
 /// Why a development simulation could not continue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SimulationError {
+    /// Starting actuator/feedback snapshot was not coherently serviced and settled.
+    InvalidStart,
     /// Motor assumptions or initial duty accounting were invalid.
     InvalidProfile,
     /// The simulated installation was not observable by the configured ADC.

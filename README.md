@@ -211,10 +211,10 @@ successful check. Manual control requires the dashboard but not internet access.
 The firmware propagates current TLEs only to list upcoming passes. The
 [tracking design](docs/PASS_PREDICTION.md#planned-tracking) specifies controller
 ownership, automatic updates before preparation, local execution, visible
-deviation and reacquisition. The [first simulation milestone](docs/PASS_PREDICTION.md#current-simulation-milestone)
-exercises a feedback follower against the production actuator with provisional
-motor profiles and recorded passes. Trajectory planning, firmware/UI integration
-and commissioning, including an authenticated data path, remain future work.
+deviation and reacquisition. The [planning milestone](docs/PASS_PREDICTION.md#current-planning-milestone)
+evaluates preparation and conventional/over-the-top routes through the production
+actuator across provisional motor and feedback scenarios. Firmware/UI integration,
+reacquisition and commissioning, including an authenticated data path, remain future work.
 Predictions never authorize movement in the current firmware.
 
 ## License

@@ -26,6 +26,73 @@ const EL: DriveCommand = DriveCommand {
     elevation: BOTH.elevation,
 };
 
+#[test]
+fn short_pulse_progress_includes_first_post_coast_feedback_without_forgiving_stalls() {
+    let service = |actuator: &mut Actuator, now, sampled, elevation, command| {
+        let mut interlock = FeedbackInterlock::new(common::installed());
+        interlock.publish(Some(common::sample(
+            Pointing::new(180.0, elevation),
+            sampled,
+        )));
+        let mut network = NetworkGate::new();
+        network.observe(now, true);
+        actuator.step(
+            ActuatorInput {
+                interlock,
+                network,
+                command: Some(CommandEnvelope {
+                    command,
+                    valid_until_ms: now + MOVEMENT_LEASE_MS,
+                }),
+            },
+            now,
+        )
+    };
+    for (movement, delay, expected) in [
+        (1.0, 1100, None),
+        (0.0, 1100, Some(MotionFault::ElevationNoProgress)),
+        (-1.0, 1100, Some(MotionFault::ElevationWrongDirection)),
+        // Movement observed long after coast cannot replenish a stalled pulse budget.
+        (1.0, 1600, Some(MotionFault::ElevationNoProgress)),
+    ] {
+        let mut actuator = common::rested_actuator();
+        for pulse in 0..12 {
+            let start = pulse * 2500;
+            let position = 30.0 + pulse as f32 * movement;
+            service(&mut actuator, start, start, position, Command::Drive(EL));
+            service(
+                &mut actuator,
+                start + 250,
+                start,
+                position,
+                Command::Drive(EL),
+            );
+            service(
+                &mut actuator,
+                start + 500,
+                start,
+                position,
+                Command::Inhibit,
+            );
+            service(
+                &mut actuator,
+                start + delay,
+                start + delay,
+                position + movement,
+                Command::Inhibit,
+            );
+            if actuator.fault().is_some() {
+                break;
+            }
+        }
+        assert_eq!(
+            actuator.fault(),
+            expected,
+            "movement={movement}, delay={delay}"
+        );
+    }
+}
+
 fn step_at(
     actuator: &mut Actuator,
     now_ms: u64,

@@ -21,8 +21,16 @@ pub struct SimulationSettings {
     /// acquisition deadlines can produce shorter intervals.
     pub step_ms: u64,
     /// Delay from paired acquisition start to publication, at most 150 ms.
-    /// Both channel values are captured at the start; channel skew is not modeled.
+    /// The pair's original timestamp remains the first channel's capture time.
     pub feedback_latency_ms: u64,
+    /// A1 capture delay after A0, bounded by total pair latency.
+    pub channel_skew_ms: u64,
+    /// Azimuth/elevation measurement offsets in ADC codes, applied before quantization.
+    pub noise_codes: [i8; 2],
+    /// Reverse the noise offsets on successive paired acquisitions.
+    pub alternate_noise: bool,
+    /// Initially engaged side of each gearbox; `None` assumes first direction engaged.
+    pub initial_engagement: [Option<bool>; 2],
     /// Modeled deviation threshold used only for reporting, not output permission.
     /// Defaults to 2°, leaving 1° of the proposed 3° total budget for uncertainty.
     pub tolerance_deg: f32,
@@ -38,6 +46,10 @@ impl Default for SimulationSettings {
         Self {
             step_ms: 20,
             feedback_latency_ms: 100,
+            channel_skew_ms: 0,
+            noise_codes: [0, 0],
+            alternate_noise: false,
+            initial_engagement: [None, None],
             tolerance_deg: 2.0,
             used_duty_ms: [0, 0],
             actuator: ActuatorConfig {
@@ -87,6 +99,22 @@ struct PendingRead {
     sampled_at_ms: u64,
     ready_at_ms: u64,
     raw: FeedbackVoltages,
+    azimuth_captured: bool,
+}
+
+/// A coherent, already-serviced snapshot for evaluating preparation. The live
+/// actuator is copied, never reset or mutated by planning. It must have no
+/// active/pending output and have completed its configured mechanical coast.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RestingStart {
+    /// Original monotonic service instant, independent of the pass's UTC anchor.
+    pub at_ms: u64,
+    /// Current calibrated position acquired after mechanical coast completed.
+    pub feedback: FeedbackSample,
+    /// Output-owner state, including duty and relay availability.
+    pub actuator: Actuator,
+    /// Permission generation copied with the actuator snapshot.
+    pub network: NetworkGate,
 }
 
 /// Bounded, allocation-free simulation using the real feedback and output policy.
@@ -112,6 +140,7 @@ pub struct Simulation {
     network: NetworkGate,
     pending_read: Option<PendingRead>,
     next_read_ms: u64,
+    reads: u64,
     now_ms: u64,
     serviced_ms: u64,
     previous_deviation: Option<f32>,
@@ -133,14 +162,21 @@ impl Simulation {
     ) -> Result<Self, SimulationError> {
         if !(1..=100).contains(&settings.step_ms)
             || settings.feedback_latency_ms > FEEDBACK_MAX_LATENCY_MS
+            || settings.channel_skew_ms > settings.feedback_latency_ms
+            || settings
+                .noise_codes
+                .iter()
+                .any(|code| code.unsigned_abs() > 2)
             || !settings.tolerance_deg.is_finite()
             || !(0.0..=180.0).contains(&settings.tolerance_deg)
             || !settings.actuator.is_valid()
+            || controller.minimum_pulse_ms() != settings.actuator.relays.min_active_ms
             || !DutyHistory::Known(settings.used_duty_ms).is_valid(settings.actuator.duty)
         {
             return Err(SimulationError::InvalidSettings);
         }
-        let model = MotorModel::new(profile, calibration, initial, settings.used_duty_ms)?;
+        let mut model = MotorModel::new(profile, calibration, initial, settings.used_duty_ms)?;
+        model.set_initial_rest([0, 0], settings.initial_engagement);
         Ok(Self {
             calibration,
             profile,
@@ -156,6 +192,7 @@ impl Simulation {
             network: NetworkGate::new(),
             pending_read: None,
             next_read_ms: 0,
+            reads: 0,
             now_ms: 0,
             serviced_ms: 0,
             previous_deviation: None,
@@ -163,6 +200,78 @@ impl Simulation {
             summary: SimulationSummary::default(),
             fault: None,
         })
+    }
+
+    /// Evaluate from an existing idle installation instead of assuming rested
+    /// relays and unused duty. `settings.used_duty_ms` is replaced by the snapshot.
+    pub fn from_rest(
+        calibration: PositionCalibration,
+        profile: MotorProfile,
+        controller: FollowingController,
+        mut settings: SimulationSettings,
+        start: RestingStart,
+    ) -> Result<Self, SimulationError> {
+        let (used, idle) = start
+            .actuator
+            .resting_history(start.at_ms)
+            .ok_or(SimulationError::InvalidStart)?;
+        let age = start
+            .at_ms
+            .checked_sub(start.feedback.sampled_at_ms())
+            .ok_or(SimulationError::InvalidStart)?;
+        if settings.actuator != start.actuator.configuration()
+            || age > crate::feedback::FEEDBACK_MAX_AGE_MS
+            || idle[0] < age.saturating_add(settings.actuator.travel.azimuth.coast_ms)
+            || idle[1] < age.saturating_add(settings.actuator.travel.elevation.coast_ms)
+        {
+            return Err(SimulationError::InvalidStart);
+        }
+        settings.used_duty_ms = used;
+        let mut sim = Self::new(
+            calibration,
+            start.feedback.position(),
+            profile,
+            controller,
+            settings,
+        )?;
+        sim.model
+            .set_initial_rest(idle, settings.initial_engagement);
+        sim.actuator = start.actuator;
+        sim.network = start.network;
+        sim.now_ms = start.at_ms;
+        sim.serviced_ms = start.at_ms;
+        sim.next_read_ms = start.at_ms;
+        Ok(sim)
+    }
+
+    /// Skip a fully idle waiting interval before preparation. No pending motion
+    /// or coast may be discarded; duty rest is accounted at the next step.
+    pub fn skip_idle_until(&mut self, at_ms: u64) -> Result<(), SimulationError> {
+        if self.fault.is_some()
+            || !self.is_settled()
+            || self.actuator.target().is_active()
+            || at_ms < self.now_ms
+        {
+            return Err(SimulationError::InvalidStart);
+        }
+        self.controller.clear_target();
+        self.previous_deviation = None;
+        self.pending_read = None;
+        self.next_read_ms = at_ms;
+        self.now_ms = at_ms;
+        Ok(())
+    }
+
+    /// Last serviced output-owner state, for preparation/readiness assessment.
+    pub const fn actuator(&self) -> &Actuator {
+        &self.actuator
+    }
+
+    /// Honor phase boundaries such as AOS/LOS exactly, even between grid ticks.
+    pub fn stop_step_at(&mut self, at_ms: u64) {
+        if at_ms > self.serviced_ms {
+            self.now_ms = self.now_ms.min(at_ms);
+        }
     }
 
     /// Next sample time; evaluate the supplied trajectory at this time.
@@ -223,6 +332,9 @@ impl Simulation {
                 self.now_ms,
             );
             self.account_transitions(before, self.actuator.actual());
+            self.controller
+                .observe_output(self.actuator.actual(), self.now_ms);
+            self.controller.clear_target();
         }
         result
     }
@@ -257,6 +369,9 @@ impl Simulation {
         self.acquire_feedback()?;
         self.network.observe(now_ms, true);
         let feedback = self.interlock.feedback();
+        if target.is_none() {
+            self.controller.clear_target();
+        }
         let requested = target.map_or(Command::Inhibit, |target| {
             self.controller
                 .command(target.mechanical, feedback, before, now_ms)
@@ -275,6 +390,7 @@ impl Simulation {
             now_ms,
         );
         self.account_transitions(before, update.output);
+        self.controller.observe_output(update.output, now_ms);
         if let Some(fault) = update.status.motion_fault {
             return Err(SimulationError::Motion(fault));
         }
@@ -308,9 +424,13 @@ impl Simulation {
         let mut next_ms = now_ms
             .checked_add(self.settings.step_ms)
             .ok_or(SimulationError::TimeOverflow)?;
-        let read_ms = self
-            .pending_read
-            .map_or(self.next_read_ms, |r| r.ready_at_ms);
+        let read_ms = self.pending_read.map_or(self.next_read_ms, |r| {
+            if r.azimuth_captured {
+                r.ready_at_ms
+            } else {
+                r.sampled_at_ms + self.settings.channel_skew_ms
+            }
+        });
         next_ms = next_ms.min(read_ms);
         if let Some(deadline) = update.next_deadline_ms {
             // Once serviced, a current deadline must not cause a zero-time loop.
@@ -351,13 +471,10 @@ impl Simulation {
             let position = self.model.position();
             // Quantize the analog voltage directly. Going through the diagnostic
             // integer-mV conversion first would round twice and bias ADC codes.
-            let code_mv = f64::from(FEEDBACK_FULL_SCALE.code_mv());
-            let quantize = |axis: AxisCalibration, angle: f32| {
-                let fraction = f64::from(angle - axis.angle_min_deg)
-                    / f64::from(axis.angle_max_deg - axis.angle_min_deg);
-                let mv = f64::from(axis.voltage_min_mv)
-                    + fraction * f64::from(axis.voltage_max_mv - axis.voltage_min_mv);
-                (libm::round(mv / code_mv) * code_mv) as i32
+            let sign = if self.settings.alternate_noise && self.reads % 2 == 1 {
+                -1
+            } else {
+                1
             };
             self.pending_read = Some(PendingRead {
                 sampled_at_ms: self.now_ms,
@@ -366,10 +483,36 @@ impl Simulation {
                     .checked_add(self.settings.feedback_latency_ms)
                     .ok_or(SimulationError::TimeOverflow)?,
                 raw: FeedbackVoltages {
-                    a0_elevation_mv: quantize(self.calibration.elevation, position.elevation_deg),
-                    a1_azimuth_mv: quantize(self.calibration.azimuth, position.azimuth_deg),
+                    a0_elevation_mv: quantize(
+                        self.calibration.elevation,
+                        position.elevation_deg,
+                        sign * self.settings.noise_codes[1],
+                    ),
+                    a1_azimuth_mv: quantize(
+                        self.calibration.azimuth,
+                        position.azimuth_deg,
+                        sign * self.settings.noise_codes[0],
+                    ),
                 },
+                azimuth_captured: self.settings.channel_skew_ms == 0,
             });
+        }
+        if let Some(read) = &mut self.pending_read {
+            if !read.azimuth_captured
+                && self.now_ms >= read.sampled_at_ms + self.settings.channel_skew_ms
+            {
+                let sign = if self.settings.alternate_noise && self.reads % 2 == 1 {
+                    -1
+                } else {
+                    1
+                };
+                read.raw.a1_azimuth_mv = quantize(
+                    self.calibration.azimuth,
+                    self.model.position().azimuth_deg,
+                    sign * self.settings.noise_codes[0],
+                );
+                read.azimuth_captured = true;
+            }
         }
         if let Some(read) = self.pending_read.filter(|r| r.ready_at_ms <= self.now_ms) {
             let update = self
@@ -377,6 +520,7 @@ impl Simulation {
                 .update(self.now_ms, read.sampled_at_ms, Ok(read.raw));
             self.interlock = update.interlock;
             self.pending_read = None;
+            self.reads = self.reads.saturating_add(1);
             self.next_read_ms = self
                 .now_ms
                 .checked_add(FEEDBACK_PERIOD_MS)
@@ -409,4 +553,13 @@ impl Simulation {
             }
         }
     }
+}
+
+fn quantize(axis: AxisCalibration, angle: f32, noise: i8) -> i32 {
+    let fraction =
+        f64::from(angle - axis.angle_min_deg) / f64::from(axis.angle_max_deg - axis.angle_min_deg);
+    let mv = f64::from(axis.voltage_min_mv)
+        + fraction * f64::from(axis.voltage_max_mv - axis.voltage_min_mv);
+    let code_mv = f64::from(FEEDBACK_FULL_SCALE.code_mv());
+    (libm::round(mv / code_mv + f64::from(noise)) * code_mv) as i32
 }

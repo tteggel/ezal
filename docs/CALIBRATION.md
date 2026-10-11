@@ -259,6 +259,7 @@ Position endpoints must be measured before extending permitted travel.
 | Angular travel after output release and time to rest | TBD | TBD | TBD | TBD |
 | Reversal delay and backlash/take-up angle | TBD | TBD | TBD | TBD |
 | Feedback noise at rest and position residual | TBD | TBD | TBD | TBD |
+| Paired ADC latency and A0-to-A1 capture delay | TBD | TBD | TBD | TBD |
 
 Time travel over a known span away from the endpoints, in both directions
 and at several elevations under the normal dish load. Record slow and fast
@@ -266,6 +267,16 @@ runs, not only their average. Repeat pulses with progressively shorter
 intervals, starting from the implemented 500 ms on / 2 s off behavior.
 The proposed shorter off/reversal intervals are commissioning candidates;
 observe useful movement, stopping and supervision before applying them.
+
+The offline [planner](PASS_PREDICTION.md#current-planning-milestone) now tests
+fixed and alternating one-code offsets, 0–150 ms read latency and up to
+150 ms between the two channel captures. These are explicit test scenarios,
+not measured noise limits. In the recorded fixture, an alternating-noise case
+trips the current speed supervision during preparation. Record actual noise
+and acquisition timing together before adjusting either the planner assumptions
+or supervision thresholds; increasing noise tolerance also requires enough
+progress resolution to distinguish movement from noise. Replay with the same
+installed calibration, output policy and measured profile intended for execution.
 
 Use the measured slow rates for preparation/intercept estimates and the
 measured fast rates plus stopping travel for endpoint margins. Separate the
@@ -296,7 +307,11 @@ AC hardware. The default is 180 s; both require 900 s continuously idle per axis
 Measure normal startup delay, movement at the slowest expected load, feedback
 noise, and reversal settling. Verify healthy movement clears the progress
 threshold within its budget and normal noise cannot simulate progress. Idle
-time pauses the budget; short jogs and reversals do not reset it. Confirm that
+time pauses the budget; short jogs and reversals do not reset it. Observed
+coast movement can establish progress, including the first fresh observation
+within 500 ms after the assumed coast ends. Wrong-direction and speed checks
+also apply to that observation; movement first observed after a long idle
+cannot clear the stalled-motor budget. Confirm that
 frozen midrange feedback, wrong-direction feedback across pulses, and abrupt
 implausible movement produce the named dashboard motion fault. Each fault
 latches both outputs off until the board is reset after investigation; a new
