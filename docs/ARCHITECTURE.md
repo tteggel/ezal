@@ -2,8 +2,8 @@
 
 ezal separates deterministic control policy from the RP2350 peripherals that
 observe and apply it. Firmware boots idle and moves only in response to fresh
-manual input. NTP and orbital forecasts are advisory. Real tracking is outside
-this implementation.
+manual input. NTP and orbital forecasts are advisory. Tracking planning and
+lifecycle policy exist in the pure core; live tracking integration is pending.
 
 The [manual control contract](CONTROL_CONTRACT.md) defines the safeguard owner,
 effect, recovery condition and timing boundaries. It is the reference for
@@ -54,6 +54,16 @@ Other core modules remain independent: `ads1015` models registers and decoding;
 `wifi` validates credentials and selects retry delays; `ntp` validates packets
 and maintains an expiring UTC anchor; `http`, `orbit` and `passes` parse streamed
 elements and calculate reception windows. UTC never drives motion timers.
+
+The offline tracking policy has separate ownership for operator authority and
+the selected run. `operator::OperatorLease` enforces exclusive, expiring grants;
+`tracking::TrackingSession` binds the selection, planning tickets, frozen inputs,
+executor generations and pending output. Releasing a browser grant does not
+release an armed run. The planner and lifecycle both use the existing actuator
+policy, so simulation, preparation and later following share duty and relay
+constraints. See the [lifecycle milestone](PASS_PREDICTION.md#current-lifecycle-milestone)
+for the transition and integration contract. The current firmware's manual
+coordination remains the only live output source until that integration.
 
 `ezal-firmware` owns the asynchronous shell:
 

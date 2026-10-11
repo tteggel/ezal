@@ -62,9 +62,21 @@ impl Scenario {
     };
 }
 
+/// Preparation schedule that must be included in the complete simulation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PreparationTiming {
+    /// Wait until the computed preparation lead before AOS.
+    #[default]
+    Scheduled,
+    /// Evaluate preparation beginning at the supplied starting snapshot.
+    Immediate,
+}
+
 /// Explicit planning assumptions, frozen with a supported route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanningConfig {
+    /// Starting early needs its own duty/relay evaluation, not a schedule override.
+    pub preparation_timing: PreparationTiming,
     /// Total operational pointing target (provisional default 3°).
     pub tolerance_deg: f32,
     /// Reserved alignment/orbit/time uncertainty (provisional default 1°).
@@ -92,6 +104,7 @@ impl Default for PlanningConfig {
         let slow = MotorProfile::AC_SLOW;
         let fast = MotorProfile::AC_FAST;
         Self {
+            preparation_timing: PreparationTiming::Scheduled,
             tolerance_deg: 3.0,
             uncertainty_deg: 1.0,
             sky_rate_bound_deg_per_s: 2.0,
@@ -681,46 +694,49 @@ impl<E: Ephemeris> Planner<E> {
             .at_ms
             .checked_add(duty.azimuth.cooldown_ms.max(duty.elevation.cooldown_ms))
             .ok_or(PlanningError::Configuration)?;
-        self.probe_start_ms = if probe {
-            let (used, idle) = self
-                .start
-                .actuator
-                .resting_history(self.start.at_ms)
-                .ok_or(PlanningError::StartingState)?;
-            let rest_ms = self.start.actuator.configuration().duty.rest_ms;
-            let until_full_rest = (0..2)
-                .map(|i| {
-                    if used[i] > 0 {
-                        rest_ms.saturating_sub(idle[i])
+        self.probe_start_ms =
+            if probe && self.config.preparation_timing == PreparationTiming::Scheduled {
+                let (used, idle) = self
+                    .start
+                    .actuator
+                    .resting_history(self.start.at_ms)
+                    .ok_or(PlanningError::StartingState)?;
+                let rest_ms = self.start.actuator.configuration().duty.rest_ms;
+                let until_full_rest = (0..2)
+                    .map(|i| {
+                        if used[i] > 0 {
+                            rest_ms.saturating_sub(idle[i])
+                        } else {
+                            0
+                        }
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let full_rest_at = self
+                    .start
+                    .at_ms
+                    .checked_add(until_full_rest)
+                    .ok_or(PlanningError::Configuration)?;
+                // Credit guaranteed idle time before the earliest possible
+                // preparation start. A partial allowance may also replenish
+                // before AOS; measure the slew after that rest when available.
+                // Verification must fit the real duty at the scheduled instant.
+                rest_end
+                    .max(
+                        self.window
+                            .aos_at_ms
+                            .saturating_sub(MAX_PREPARATION_MS + 20_000),
+                    )
+                    .max(if full_rest_at <= self.window.aos_at_ms {
+                        full_rest_at
                     } else {
-                        0
-                    }
-                })
-                .max()
-                .unwrap_or(0);
-            let full_rest_at = self
-                .start
-                .at_ms
-                .checked_add(until_full_rest)
-                .ok_or(PlanningError::Configuration)?;
-            // Credit guaranteed idle time before the earliest possible
-            // preparation start. A partial allowance may also replenish
-            // before AOS; measure the slew after that rest when available.
-            // Verification must fit the real duty at the scheduled instant.
-            rest_end
-                .max(
-                    self.window
-                        .aos_at_ms
-                        .saturating_sub(MAX_PREPARATION_MS + 20_000),
-                )
-                .max(if full_rest_at <= self.window.aos_at_ms {
-                    full_rest_at
-                } else {
-                    self.start.at_ms
-                })
-        } else {
-            rest_end.max(self.assessment.prepare_at_ms)
-        };
+                        self.start.at_ms
+                    })
+            } else if probe {
+                rest_end
+            } else {
+                rest_end.max(self.assessment.prepare_at_ms)
+            };
         sim.skip_idle_until(self.probe_start_ms)
             .map_err(|_| PlanningError::StartingState)?;
         self.sim = Some(sim);
@@ -774,7 +790,10 @@ impl<E: Ephemeris> Planner<E> {
         let los = aos + u64::from(self.window.duration_ms);
         let start_pose = self.route.pointing_at(0).expect("complete route");
         let preparing = probe || now < aos;
-        if preparing && now.saturating_sub(self.probe_start_ms) > MAX_PREPARATION_MS {
+        if preparing
+            && !self.prepared
+            && now.saturating_sub(self.probe_start_ms) > MAX_PREPARATION_MS
+        {
             self.fail_candidate(CandidateFailure::PreparationTimeout);
             return Ok(());
         }
@@ -837,10 +856,13 @@ impl<E: Ephemeris> Planner<E> {
                 if self.scenario == self.config.scenarios.len() {
                     self.assessment.preparation_lead_ms =
                         60_000.max(self.assessment.preparation_ms + 20_000);
-                    self.assessment.prepare_at_ms = self
-                        .start
-                        .at_ms
-                        .max(aos.saturating_sub(self.assessment.preparation_lead_ms));
+                    self.assessment.prepare_at_ms = match self.config.preparation_timing {
+                        PreparationTiming::Scheduled => self
+                            .start
+                            .at_ms
+                            .max(aos.saturating_sub(self.assessment.preparation_lead_ms)),
+                        PreparationTiming::Immediate => self.start.at_ms,
+                    };
                     self.scenario = 0;
                     self.phase = Phase::Verify;
                 }

@@ -19,8 +19,9 @@
 //! validation and reconnect timing. Advisory prediction is separate: [`ntp`]
 //! supplies an expiring UTC anchor, [`http`] frames streamed downloads, and
 //! [`orbit`]/[`passes`] validate elements and calculate reception windows.
-//! [`tracking`] develops automatic following with an offline motor simulator;
-//! it is not yet connected to the firmware's output requests.
+//! [`tracking`] supplies bounded planning, a device-owned lifecycle, following
+//! and offline simulation. [`operator`] supplies its exclusive controller lease.
+//! This tracking policy is not yet connected to firmware output requests.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
@@ -45,6 +46,7 @@ pub mod mailbox;
 pub mod motion;
 pub mod network;
 pub mod ntp;
+pub mod operator;
 pub mod orbit;
 pub mod passes;
 pub mod position;

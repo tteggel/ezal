@@ -632,7 +632,7 @@ commissioning supplies that evidence.
   skew in the uncertainty budget. Tune follower hysteresis/lead
   against the slow/nominal/fast scenarios to reduce the baseline controller's
   reversals without hiding sky error. Depends on T1 and T2.
-- [ ] **T4 — Single-pass lifecycle and exclusive operator lease.** Implement
+- [x] **T4 — Single-pass lifecycle and exclusive operator lease.** Implement
   device-owned selection, arm/prepare/follow/complete, stable pass identity,
   revisioned updates until preparation, atomic plan freeze and idempotent
   cancellation. Tracking survives browser/lease expiry; only the current
@@ -772,5 +772,93 @@ physics, noisy/skewed feedback, relay timing and pulse hysteresis.
 post-release coast can prove progress without forgiving stalls, reversed
 feedback or movement first observed after a long idle.
 
-The planner and follower remain offline; pass selection/execution is not yet
-available. Next task: **T4 — Single-pass lifecycle and exclusive operator lease**.
+The planner and follower remain offline. The lifecycle below uses their plan
+contract; the dashboard does not yet expose pass selection or execution.
+
+### Current lifecycle milestone
+
+[`TrackingSession`](../crates/ezal-core/src/tracking/lifecycle.rs) implements
+the device-owned selection and lifecycle in the pure core. It starts disarmed
+in Manual mode, owns at most one selection and accepts only a supported plan
+when arming. Selection alone previews a pass. Tracking rejects manual movement
+and manual stop messages; the current operator uses Cancel or Manual to stop
+the run. These actions inhibit active/pending output and invalidate the run
+generation before fresh manual commands can be admitted.
+
+[`OperatorLease`](../crates/ezal-core/src/operator.rs) gives one connection a
+provisional five-second renewable grant. Another connection cannot displace
+it. Expiry is exclusive; a heartbeat at the deadline cannot resurrect the
+old grant. Repeated claims and read-only snapshots do not renew it. Release or
+expiry inhibits manual motion, while an armed or executing tracking run keeps
+its own authority. A new controller can manage that existing run; an old
+socket's close or delayed request cannot release the new grant.
+
+Every operator mutation carries the connection-bound lease generation and a
+strictly increasing request number. Select, Arm and Prepare now also require
+the observed state revision. Cancel and Manual deliberately ignore that
+revision so automatic replanning cannot prevent a stop. An exact retry of the
+last request returns its original outcome; older requests are rejected without
+repeating their effect. The transport must bind the token to its actual
+connection identity: lease serials provide ordering, not authentication.
+
+The selected event gets an opaque identity that survives forecast changes.
+Association requires the same catalog number, overlapping reception windows,
+and AOS/LOS within 300 seconds of the **original** selected window. Repeated
+refreshes cannot walk the association to another orbit. Missing, ambiguous,
+invalid or over-capacity forecasts block preparation with explicit reasons.
+The comparison uses a complete forecast and is independent of row order.
+
+Each planning ticket binds the selection to orbital, observer, calibration,
+motion, clock and starting-state revisions, plus the preparation schedule.
+Publishing newer inputs immediately removes the preceding plan's permission
+to prepare. Only the latest job can publish, even if an older successful job
+finishes later. Manual movement also invalidates a preview's starting pose.
+An unsupported or failed replacement never falls back to an older success.
+Before preparation, jobs can update a selection in either mode. At preparation,
+the latest accepted plan and its owned input snapshot become immutable in one
+transition. Later forecast/observer/clock updates leave that snapshot intact;
+an installed calibration or motion-policy change stops the run.
+
+| Event | Core behavior |
+|---|---|
+| Scheduled preparation becomes due | Freeze the current supported plan and issue a new executor generation |
+| Prepare now | Request a new `Immediate` plan; start only after that schedule passes evaluation |
+| Executor confirms measured readiness | Enter Ready; retain the same frozen route and inputs |
+| AOS while Ready | Enter Following independently of operator presence |
+| AOS without preparation/readiness | Stop with a late-preparation reason; late interception remains T6 work |
+| LOS while Following | Inhibit, return to Manual and retain the result/selection; no park or next pass |
+| Cancel, replacement or interruption | Invalidate old jobs/callbacks/commands and preserve an unconsumed stop |
+
+Prepare now evaluates duty and relay history at the early start; it cannot
+spend rest that a scheduled plan would have gained later. A ready dish can
+remain at the preparation pose beyond the 300-second acquisition probe limit;
+the complete planning job still has its fixed work bound. Long early waits
+can therefore return an explicit work-limit failure rather than run unbounded.
+
+The input owner supplies an exclusive `freeze_before_ms` validity deadline.
+T4 checks that deadline, complete-window plan consistency and remaining
+preparation time. T5 must construct the trusted orbital/observer/clock snapshot,
+validate it through LOS and interrupt a frozen run if its source or timing
+becomes unusable. The executor must confirm readiness from real settled
+feedback and relay state; the callback is not a browser operation.
+
+The output mailbox keeps inhibition ahead of refreshes. Executor commands are
+bound to the current run generation and retain their original short source
+deadline, at most 750 ms; LOS/cancellation checks run again on drain. The same
+production actuator remains responsible for feedback, network, motion, relay
+and duty constraints, so changing owners never resets physical accounting.
+[Lifecycle tests](../crates/ezal-core/tests/tracking_lifecycle.rs) cover browser
+loss, lease transfer, stale generations, duplicate requests, forecast matching,
+plan-update/freeze/cancel races, early preparation, manual admission and LOS.
+A test feeds cancellation through the real actuator at a queued activation's
+deadline and verifies that no pulse starts and consumed duty is retained.
+
+This is core policy, not a second live output path. The current firmware still
+uses its manual `CoordinationState` and WebSocket ownership behavior. T7/T8 must
+replace that authority/mailbox path with `TrackingSession`, serialize input
+updates and preparation transitions, service deadlines, and bind browser and
+executor requests to their respective generations. In particular, socket
+cleanup must use lease release instead of unconditionally stopping tracking.
+Only the device output task applies GPIOs and feeds the watchdog.
+
+Next task: **T5 — Execution clock and trusted orbital inputs**.

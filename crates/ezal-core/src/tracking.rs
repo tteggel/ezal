@@ -1,23 +1,34 @@
-//! Tracking development primitives; not connected to firmware movement.
+//! Tracking planning, lifecycle and simulation; not connected to firmware movement.
 //!
 //! Continuous mechanical coordinates are distinct from sky bearings. A route
 //! planner must choose those coordinates before the following controller runs.
 //! The incremental simulator exercises that controller through the production
 //! actuator, using explicit, unmeasured motor assumptions. Its sampled results
 //! are development diagnostics, not permission to track a pass on hardware.
+//! [`TrackingSession`] binds a single selected event, revisioned plans and
+//! executor generations to an exclusive operator lease. It owns frozen input
+//! snapshots independently of browser connections; firmware integration is separate.
 
 mod controller;
+mod event;
+mod lifecycle;
 mod model;
 mod planner;
 mod route;
 mod simulation;
 
 pub use controller::FollowingController;
+pub use event::{reconcile_event, EventError, EventId, PassEvent, MAX_EVENT_SHIFT_S};
+pub use lifecycle::{
+    BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
+    RunToken, Selection, TrackingAction, TrackingMode, TrackingPhase, TrackingRequest,
+    TrackingSession, TrackingSnapshot, TrackingStop, TrackingTermination,
+};
 pub use model::MotorModel;
 pub use planner::{
     Assessment, CandidateFailure, EvaluationPhase, PlannedGap, Planner, PlanningConfig,
-    PlanningError, PlanningReport, PlanningWindow, Scenario, TrackingPlan, MAX_GAPS,
-    MAX_PLANNING_STEPS, MAX_SCENARIOS,
+    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, Scenario, TrackingPlan,
+    MAX_GAPS, MAX_PLANNING_STEPS, MAX_SCENARIOS,
 };
 pub use route::{Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
 pub use simulation::{

@@ -56,11 +56,12 @@ embedded Rust.
 │   │       ├── motion.rs          # latched progress, direction, and speed checks
 │   │       ├── duty.rs            # per-axis energized allowance and continuous rest
 │   │       ├── network.rs         # expiring network permission for motion
+│   │       ├── operator.rs        # exclusive leases for the tracking lifecycle
 │   │       ├── ntp.rs             # SNTP validation + expiring UTC anchor
 │   │       ├── http.rs            # streamed HTTP framing for TLE downloads
 │   │       ├── orbit.rs           # TLE validation, catalog, SGP4 look angles
 │   │       ├── passes.rs          # pass search, forecasts, /api/passes JSON
-│   │       ├── tracking.rs        # following controller + offline motor simulation
+│   │       ├── tracking.rs        # planning, lifecycle, following + offline simulation
 │   │       ├── protocol.rs        # wire parsing and coherent telemetry
 │   │       ├── dashboard.rs       # browser asset and shared timing configuration
 │   │       └── drive.rs           # vocabulary and private relay timing
@@ -213,8 +214,11 @@ The firmware propagates current TLEs only to list upcoming passes. The
 ownership, automatic updates before preparation, local execution, visible
 deviation and reacquisition. The [planning milestone](docs/PASS_PREDICTION.md#current-planning-milestone)
 evaluates preparation and conventional/over-the-top routes through the production
-actuator across provisional motor and feedback scenarios. Firmware/UI integration,
-reacquisition and commissioning, including an authenticated data path, remain future work.
+actuator across provisional motor and feedback scenarios. The
+[lifecycle core](docs/PASS_PREDICTION.md#current-lifecycle-milestone) adds exclusive
+operator leases, one selected pass, plan freezing and browser-independent execution
+state. Firmware/UI integration, reacquisition and commissioning, including an
+authenticated data path, remain future work.
 Predictions never authorize movement in the current firmware.
 
 ## License

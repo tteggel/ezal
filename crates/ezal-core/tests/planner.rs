@@ -11,8 +11,8 @@ use ezal_core::passes::Ephemeris;
 use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
 use ezal_core::tracking::{
     CandidateFailure, FollowingController, MotorProfile, Planner, PlanningConfig, PlanningError,
-    PlanningReport, PlanningWindow, RestingStart, RouteKind, Scenario, Simulation, SimulationError,
-    SimulationSettings, MAX_PLANNING_STEPS,
+    PlanningReport, PlanningWindow, PreparationTiming, RestingStart, RouteKind, Scenario,
+    Simulation, SimulationError, SimulationSettings, MAX_PLANNING_STEPS,
 };
 use std::cell::Cell;
 
@@ -356,6 +356,43 @@ fn recorded_pass_includes_real_sky_error_and_reports_noisy_preparation_failure()
     let scenario = PlanningConfig::default().scenarios[attempt.failure_scenario.unwrap()];
     assert!(scenario.alternate_noise);
     assert!(attempt.energized_ms.iter().any(|used| *used > 0));
+}
+
+#[test]
+fn prepare_now_does_not_borrow_future_rest_and_can_hold_after_readiness() {
+    let source = |_: f64| {
+        Some(LookAngle {
+            azimuth_deg: 300.0,
+            elevation_deg: 60.0,
+        })
+    };
+    let time = PlanningWindow {
+        aos_at_ms: 1_000_000,
+        ..window(10_000)
+    };
+    let mut config = nominal();
+    config.preparation_timing = PreparationTiming::Immediate;
+    let start = snapshot(CAL, Pointing::new(100.0, 10.0), [0, 0]);
+    let report = run(Planner::new(source, time, CAL, start, config.clone()).unwrap());
+    let plan = report
+        .plan
+        .unwrap_or_else(|| panic!("{:?}", report.closest_attempt));
+    assert_eq!(plan.assessment.prepare_at_ms, start.at_ms);
+    assert!(plan.assessment.preparation_ms < 60_000);
+    // The same early schedule cannot spend rest that will only finish later.
+    let report = run(Planner::new(
+        source,
+        time,
+        CAL,
+        snapshot(CAL, Pointing::new(100.0, 10.0), [295_000, 295_000]),
+        config,
+    )
+    .unwrap());
+    assert!(report.plan.is_none());
+    assert!(matches!(
+        report.closest_attempt.unwrap().failure,
+        Some(CandidateFailure::Simulation(SimulationError::DutyLimit(_)))
+    ));
 }
 
 #[test]
