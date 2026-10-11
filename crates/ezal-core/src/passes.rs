@@ -5,6 +5,20 @@
 //! finds short grazing passes whose entire visible portion can fall between
 //! scan samples. Crossings are refined to better than one second.
 //!
+//! Think of geometric elevation as a scalar function e(t). A reception window
+//! is an interval where e(t) is at least the configured elevation mask. Its
+//! endpoints solve e(t) - mask = 0; its peak must also clear the minimum peak
+//! setting. The search first finds a local maximum, then walks away from that
+//! maximum in both time directions to find and refine those two roots.
+//!
+//! This method assumes the smooth, isolated pass peaks of the nearly circular
+//! LEOs accepted by `orbit.rs`. A coarse scan brackets a peak, ternary search
+//! narrows its time, and bisection narrows each mask crossing. It needs neither
+//! derivatives nor orbital velocities. Each refinement is stored as state so
+//! one call does only a bounded amount of work before firmware can yield.
+//! The time tolerances describe numerical refinement, not orbital accuracy;
+//! old elements, clock error and omitted physical effects can dominate them.
+//!
 //! A [`Forecast`] covers a fixed twelve-hour span, so it remains complete for
 //! every six-hour dashboard window that fits inside it. Validity is therefore
 //! a coverage question, not an age limit: the shell recomputes when coverage
@@ -35,7 +49,13 @@ pub const MAX_PASSES_PER_SATELLITE: usize = 12;
 pub const MAX_PASSES: usize = SATELLITE_COUNT * MAX_PASSES_PER_SATELLITE;
 /// A served window, including a pass in progress, spans under five orbits.
 pub const MAX_SERVED: usize = SATELLITE_COUNT * 6;
+// Coarse sampling locates maxima, not crossings. A 30-second grid can still
+// bracket a grazing peak whose above-mask interval is shorter than one step.
 const STEP_S: i64 = 30;
+// Look either side of the requested span to capture complete boundary passes.
+// Also bound the walk from a peak to either crossing, so an ephemeris that
+// never drops below the mask fails instead of extending the search forever.
+// This is a domain assumption for our low-eccentricity LEOs, not all orbits.
 const MARGIN_S: i64 = 30 * 60;
 const DEFAULT_MIN_PEAK_DEG: f64 = 10.0;
 const LATEST_START_UNIX_S: i64 = 4_102_444_800; // 2100-01-01
@@ -169,6 +189,8 @@ pub struct Search<E> {
     start: i64,
     end: i64,
     next: i64,
+    // Elevations of the last two coarse samples. With the next sample these
+    // give a three-point bracket around a local maximum; no history is needed.
     previous: [Option<f64>; 2],
     refinement: Option<Refinement>,
     finished: bool,
@@ -182,12 +204,18 @@ struct Sample {
 
 enum Refinement {
     Peak {
+        // Time interval presumed to contain one smooth maximum (unimodal).
         low: f64,
         high: f64,
     },
     Crossing {
         peak: Sample,
+        // None while solving the rising edge (AOS); Some while solving LOS.
+        // The same crossing algorithm works backward and forward in time.
         aos: Option<Sample>,
+        // These names describe elevation, not time order: inside is at/above
+        // the mask, outside is a probe until bracketed, then below the mask.
+        // For AOS outside < inside; for LOS inside < outside.
         inside: f64,
         outside: f64,
         bracketed: bool,
@@ -218,6 +246,8 @@ impl<E: Ephemeris> Search<E> {
             satellite,
             start: start_unix_s,
             end: end_unix_s,
+            // Begin before the window so an ongoing pass keeps its real AOS.
+            // Scanning beyond end likewise allows its peak to occur after end.
             next: start_unix_s - MARGIN_S,
             previous: [None; 2],
             refinement: None,
@@ -253,6 +283,8 @@ impl<E: Ephemeris> Search<E> {
 
     fn advance(&mut self) -> Result<Option<Pass>, Error> {
         if let Some(refinement) = self.refinement.take() {
+            // Pause the coarse scan while solving this peak and its crossings.
+            // next/previous retain their scan state for when refinement ends.
             return self.refine(refinement);
         }
         if self.next > self.end + MARGIN_S {
@@ -265,6 +297,11 @@ impl<E: Ephemeris> Search<E> {
         let [left, center] = self.previous;
         self.previous = [center, Some(elevation)];
         if let (Some(left), Some(center)) = (left, center) {
+            // At times t-60, t-30, t, a rise followed by a fall/flat segment
+            // brackets a maximum in [t-60, t]. The strict left comparison
+            // prevents a flat sampled summit from repeatedly starting searches.
+            // Do not require center >= mask: all three samples can be below
+            // the mask while a narrow peak between them is briefly above it.
             if center > left && center >= elevation {
                 self.refinement = Some(Refinement::Peak {
                     low: (time - 2 * STEP_S) as f64,
@@ -279,6 +316,12 @@ impl<E: Ephemeris> Search<E> {
         self.refinement = match refinement {
             Refinement::Peak { mut low, mut high } => {
                 if high - low > 0.25 {
+                    // Ternary search for a unimodal maximum. Compare the two
+                    // interior thirds: if e(a) < e(b), the maximum cannot be
+                    // left of a; otherwise discard the region right of b.
+                    // Each iteration retains 2/3 of the interval, narrowing
+                    // a 60-second bracket to <= 0.25 s in about 14 iterations.
+                    // Only two ephemeris evaluations occur in this step.
                     let a = low + (high - low) / 3.0;
                     let b = high - (high - low) / 3.0;
                     if self.at(a)?.elevation_deg < self.at(b)?.elevation_deg {
@@ -288,12 +331,19 @@ impl<E: Ephemeris> Search<E> {
                     }
                     Some(Refinement::Peak { low, high })
                 } else {
+                    // Use the midpoint of the final peak-time bracket; the
+                    // temporal uncertainty is at most half its width under
+                    // the unimodality assumption. Evaluate the elevation there
+                    // rather than using the largest coarse sample as the peak.
                     let time = (low + high) / 2.0;
                     let peak = Sample {
                         time,
                         angle: self.at(time)?,
                     };
-                    // A tangency at the mask has zero duration.
+                    // The peak cutoff decides whether a pass is useful; the
+                    // mask determines its endpoints. A tangency at the mask
+                    // has zero duration, so it must strictly exceed the mask
+                    // even if the configured minimum peak equals that mask.
                     if peak.angle.elevation_deg >= self.config.min_peak_elevation_deg
                         && peak.angle.elevation_deg > self.config.min_elevation_deg
                     {
@@ -301,6 +351,8 @@ impl<E: Ephemeris> Search<E> {
                             peak,
                             aos: None,
                             inside: time,
+                            // The peak is known to be inside. First probe one
+                            // minute earlier, then walk backward to bracket AOS.
                             outside: time - 60.0,
                             bracketed: false,
                         })
@@ -316,6 +368,10 @@ impl<E: Ephemeris> Search<E> {
                 mut outside,
                 mut bracketed,
             } => {
+                // Once bracketed, f(t) = elevation(t) - mask has opposite signs
+                // at the endpoints. Continuity gives a root between them.
+                // Bisect in time; each evaluation halves the uncertainty.
+                // Before bracketing, evaluate the next outward one-minute probe.
                 let time = if bracketed {
                     (inside + outside) / 2.0
                 } else {
@@ -326,9 +382,17 @@ impl<E: Ephemeris> Search<E> {
                     angle: self.at(time)?,
                 };
                 if bracketed && (inside - outside).abs() <= 0.25 {
+                    // The midpoint lies within 0.125 s of the bracketed root.
+                    // Keep fractional time through refinement, then round once
+                    // for the API (adding up to 0.5 s of quantization). This is
+                    // solver precision, not a bound on the true RF event time.
                     if let Some(aos) = aos {
                         let aos_unix_s = libm::round(aos.time) as i64;
                         let los_unix_s = libm::round(time) as i64;
+                        // A pass overlaps [start, end) when LOS > start and
+                        // AOS < end. Return the actual crossings, without
+                        // clipping them to the search span. Also omit windows
+                        // that collapse to zero seconds after rounding.
                         if time > self.start as f64
                             && aos.time < self.end as f64
                             && los_unix_s > aos_unix_s
@@ -342,6 +406,8 @@ impl<E: Ephemeris> Search<E> {
                         }
                         None
                     } else {
+                        // AOS is complete. Restart at the same peak and walk
+                        // forward to bracket LOS; then use identical bisection.
                         Some(Refinement::Crossing {
                             peak,
                             aos: Some(sample),
@@ -351,12 +417,18 @@ impl<E: Ephemeris> Search<E> {
                         })
                     }
                 } else {
+                    // Equality belongs to inside. Updating the endpoint with
+                    // the same sign as this sample preserves the bracket;
+                    // absolute width works with either endpoint time ordering.
                     if sample.angle.elevation_deg < self.config.min_elevation_deg {
                         outside = time;
                         bracketed = true;
                     } else {
                         inside = time;
                         if !bracketed {
+                            // Keep walking away from the peak, one minute per
+                            // call. Once a below-mask sample is found, these
+                            // adjacent probes give a bracket at most 60 s wide.
                             outside += if aos.is_some() { 60.0 } else { -60.0 };
                             if (outside - peak.time).abs() > MARGIN_S as f64 {
                                 return Err(Error::Propagation);
@@ -406,6 +478,9 @@ impl Forecast {
     /// The last instant whose served window, `[now, now + WINDOW_S +
     /// SERVE_AHEAD_S]`, lies inside this forecast's span.
     pub fn valid_until_unix_s(&self) -> i64 {
+        // now + window + serve_ahead <= end, rearranged to bound now. Coverage
+        // follows from the searched time span; the computation timestamp alone
+        // cannot establish that all passes in a later rolling window are known.
         self.end_unix_s - WINDOW_S - SERVE_AHEAD_S
     }
 

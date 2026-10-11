@@ -147,13 +147,229 @@ stops acknowledging delays only its own reply. Response futures hold only a
 reference to the slot, which keeps per-task RAM small. No critical section
 spans an await or serialization.
 
-Propagation uses the library's WGS72/AFSPC initialization. TEME positions are
-rotated with the library's sidereal time into Earth-fixed coordinates, then
-projected onto a WGS84 station's east/north/up basis. UTC approximates UT1;
-polar motion and atmospheric refraction are omitted. The search scans at
-thirty-second spacing, refines local peaks (including short grazing passes),
-then brackets and bisects AOS/LOS to 0.25 seconds before rounding. The ±30 minute
-search margin is specific to the supported low-eccentricity HRPT LEOs.
+### From orbital elements to a satellite position
+
+The calculation in `crates/ezal-core/src/orbit.rs` starts with a validated
+Two-Line Element set (TLE). Its epoch is the reference time of the orbit fit,
+which can differ from the time we downloaded it. The principal elements are
+inclination (tilt of the orbital plane), right ascension of the ascending node
+(orientation of that plane), eccentricity (shape), argument of perigee
+(orientation of closest approach within the plane), mean anomaly (phase at
+the epoch), and mean motion (revolutions per day). Mean anomaly advances
+uniformly in an ideal two-body orbit; it differs from the satellite's actual
+angular position, called true anomaly, on an eccentric orbit.
+
+These are mean elements fitted for the SGP4 model. Treating them as an
+instantaneous Kepler ellipse and advancing only the mean anomaly would lose
+the perturbations required to reconstruct the orbit.
+[CelesTrak's model documentation](https://celestrak.org/NORAD/documentation/)
+explains this connection between the elements and their propagator. SGP4
+(Simplified General Perturbations 4) handles the gravity and drag corrections;
+our code prepares its constants once per TLE and supplies elapsed time as:
+
+```text
+elapsed_minutes = (requested_unix_seconds - tle_epoch_unix_seconds) / 60
+```
+
+Fractional epoch seconds are retained to milliseconds, and refinement uses
+fractional requested seconds. Negative elapsed times are permitted for a
+slightly future epoch. Predictions start from the same epoch constants, so
+evaluating times out of order during refinement does not accumulate an
+integration error from one query to the next. The result used here is a
+geocentric position in kilometres in TEME (True Equator, Mean Equinox).
+SGP4 also returns velocity, which this geometric window calculation does not
+need.
+
+We use [WGS72/AFSPC initialization](https://docs.rs/sgp4/2.4.0/sgp4/struct.Constants.html#method.from_elements_afspc_compatibility_mode)
+for the TLE propagator and WGS84 for the receiver geometry. Those models have
+separate roles: SGP4 needs its conventional gravity constants, while station
+coordinates refer to the WGS84 reference ellipsoid. The ordinary `propagate`
+method and the library's AFSPC propagation variant differ only for certain
+deep-space orbits, outside the supported LEO range.
+
+The application accepts eccentricity from 0 to 0.05 and mean motion from 9.6
+to 18 revolutions/day. Since `period_minutes = 1440 / mean_motion`, that
+corresponds to 80–150 minutes. These restrictions establish the domain of the
+pass search below; they are narrower than the orbits SGP4 itself can handle.
+
+### Locating the receiver on the ellipsoid
+
+`GroundStation::new` converts configured geodetic latitude `φ`, east-positive
+longitude `λ` and ellipsoid height `h` to Earth-centred, Earth-fixed (ECEF)
+coordinates. Latitude and longitude are converted to radians and height to
+kilometres. ECEF has its origin at Earth's centre, its x axis through the
+equator at Greenwich, its y axis through the equator at 90° east, and its z
+axis through the north pole.
+
+[WGS84's defining ellipsoid parameters](https://earth-info.nga.mil/index.php?action=wgs84&dir=wgs84)
+are equatorial radius `a = 6378.137 km` and flattening
+`f = 1 / 298.257223563`. The squared ellipsoid eccentricity is
+`e² = f(2 - f) = 0.00669437999014`; it is unrelated to the satellite's orbital
+eccentricity. Using the
+[ellipsoidal-to-Cartesian equations](https://gssc.esa.int/navipedia/index.php/Ellipsoidal_and_Cartesian_Coordinates_Conversion):
+
+```text
+N = a / sqrt(1 - e² sin²φ)
+
+X_station = (N + h) cosφ cosλ
+Y_station = (N + h) cosφ sinλ
+Z_station = (N(1 - e²) + h) sinφ
+```
+
+`N` is a radius of curvature, not the distance from Earth's centre. Geodetic
+latitude measures the ellipsoid's surface normal relative to the equatorial
+plane; geocentric latitude instead measures a radius from Earth's centre.
+The formulas use geodetic latitude throughout. Height adds displacement along
+that normal, and the `1 - e²` factor accounts for the flattened polar shape.
+The resulting station position and its latitude/longitude trigonometric terms
+are reused for every satellite and time in the search.
+
+### Rotating the satellite into the receiver's frame
+
+We cannot subtract the station's ECEF coordinates directly from SGP4's TEME
+coordinates: the two sets of axes have different orientations. At the
+requested instant, `GroundStation::look_at` obtains Greenwich sidereal angle
+`θ` from the library's AFSPC sidereal routine. The argument to that routine is
+Julian years since J2000:
+
+```text
+J2000 = 2000-01-01 12:00 UTC = Unix 946728000 seconds
+one Julian year = 365.25 × 86400 = 31557600 seconds
+years_since_J2000 = (unix_seconds - 946728000) / 31557600
+
+X_fixed =  cosθ X_TEME + sinθ Y_TEME
+Y_fixed = -sinθ X_TEME + cosθ Y_TEME
+Z_fixed = Z_TEME
+
+(dx, dy, dz) = (X_fixed, Y_fixed, Z_fixed)
+             - (X_station, Y_station, Z_station)
+```
+
+The rotation undoes Earth's rotation about its polar axis. Sidereal time
+measures that rotation relative to the equinox, so UTC's fraction of a
+24-hour solar day cannot replace `θ`. The signs matter: the coordinate axes
+rotate with Earth while the satellite vector is being expressed in them.
+Subtraction then gives the displacement from receiver to satellite, in km.
+
+Strictly, the rotation produces pseudo-Earth-fixed (PEF) coordinates; treating
+them as ECEF omits polar motion. We also approximate Earth-rotation time UT1
+with UTC rather than ingesting Earth orientation parameters. This follows the
+TEME-to-PEF approach described in
+[Vallado et al., *Revisiting Spacetrack Report #3*](https://celestrak.org/publications/AIAA/2006-6753/AIAA-2006-6753.pdf),
+with those approximations explicitly applied.
+
+### Turning the displacement into azimuth and elevation
+
+The local east/north/up (ENU) axes form an orthonormal basis at the receiver.
+Dot products with those unit vectors project the displacement onto that basis:
+
+```text
+east  = -sinλ dx + cosλ dy
+north = -sinφ cosλ dx - sinφ sinλ dy + cosφ dz
+up    =  cosφ cosλ dx + cosφ sinλ dy + sinφ dz
+
+horizontal_range = sqrt(east² + north²)
+azimuth_radians   = atan2(east, north)
+elevation_radians = atan2(up, horizontal_range)
+```
+
+The basis comes from the
+[ECEF-to-ENU transformation](https://gssc.esa.int/navipedia/index.php/Transformations_between_ECEF_and_ENU_coordinates).
+East and north lie in the ellipsoid's tangent plane; up points along its
+normal. `atan2` retains quadrant information. Supplying east first and north
+second makes azimuth increase clockwise from true north: north is 0°, east
+90°, south 180°, and west 270°. A negative result is shifted by 360° before
+returning degrees. Positive elevation is above the local horizontal and
+negative elevation is below it. The common vector scale cancels in `atan2`,
+so normalizing to a unit line of sight is unnecessary. At an exact zenith or
+nadir the horizontal projection vanishes and azimuth is undefined.
+
+### Searching for complete pass windows
+
+`crates/ezal-core/src/passes.rs` treats elevation as a scalar function `e(t)`.
+For elevation mask `m`, define `g(t) = e(t) - m`. AOS is the rising root
+`g(t) = 0`, LOS is the falling root, and the interval between them is at or
+above the mask. A separate minimum peak requirement decides whether to keep
+the interval. For example, a pass that peaks at 8° crosses a 5° mask but is
+omitted when the minimum peak is 10°.
+
+The search proceeds as follows:
+
+1. **Bracket a peak.** Sample elevation every 30 seconds. For consecutive
+   samples at `t - 60`, `t - 30`, and `t`, a middle sample higher than the left
+   and at least as high as the right starts refinement on `[t - 60, t]`.
+   Looking for maxima does not require any sampled point to exceed the mask.
+   This allows a short grazing interval between samples to be found, provided
+   the coarse samples bracket its peak. Checking only sampled mask crossings
+   would miss such an interval.
+2. **Refine the peak by ternary search.** Evaluate at the two interior thirds
+   `a = low + (high - low)/3` and `b = high - (high - low)/3`. Assuming a single
+   smooth maximum in the bracket, `e(a) < e(b)` rules out the portion left of
+   `a`; otherwise discard the portion right of `b`. Each iteration retains
+   two thirds of the time interval. A 60-second bracket reaches at most 0.25
+   seconds after 14 iterations. Evaluate its midpoint for the peak elevation.
+   Reject a peak below the minimum peak or one that merely touches the mask,
+   because a tangency has zero reception duration.
+3. **Bracket AOS and LOS separately.** Start at the above-mask peak and probe
+   backward in one-minute increments for AOS, then forward from the peak for
+   LOS. The first below-mask probe and the last at/above-mask probe enclose a
+   root. The state names `inside` and `outside` describe elevation relative
+   to the mask, not chronological order: outside is earlier for AOS and later
+   for LOS.
+4. **Bisect each root.** Evaluate the midpoint of the bracket and replace the
+   endpoint on the same side of the mask. Equality belongs to `inside`.
+   Continuity and the assumed single crossing on that flank keep the root
+   enclosed while each step halves the interval. Stop when its width is at
+   most 0.25 seconds and use the midpoint. A bracket initially 60 seconds wide
+   needs eight halvings. Round only the final crossing times to whole seconds;
+   omit an interval if its rounded endpoints coincide.
+5. **Keep overlapping windows.** Return a complete pass when `LOS > start`
+   and `AOS < end`, using the refined times for those comparisons. Neither
+   endpoint is clipped to the requested span. The coarse scan extends 30
+   minutes on either side to include peaks of boundary passes. A crossing
+   walk that cannot find its below-mask endpoint within 30 minutes of the
+   peak reports a propagation/search failure.
+
+The ternary and bisection iterations are stored in `Refinement`, rather than
+run in one long loop. A `Search::step` performs at most two ephemeris queries;
+firmware yields between calls. This keeps orbital work from monopolizing the
+cooperative runtime while actuator and network tasks need to run.
+
+The shape assumptions and ±30 minute margins apply to the accepted nearly
+circular HRPT LEOs. They do not prove completeness for arbitrary direction
+functions, highly eccentric orbits, or multiple maxima inside one coarse
+bracket. Increasing the tolerances' precision does not fix a violated shape
+assumption.
+
+### Numerical precision and forecast coverage
+
+A 0.25-second crossing bracket gives a midpoint error of at most 0.125
+seconds relative to the model's enclosed root. Rounding adds at most 0.5
+seconds. These are numerical bounds under the search assumptions, not a
+claim that measured RF acquisition agrees within one second. TLE fitting
+error, drag changes, maneuvers, clock error, unmeasured antenna height, terrain
+and atmospheric refraction can shift actual reception. The seven-day epoch
+age limit is a data policy, not an error bound. No refraction or terrain
+correction is included in `e(t)`.
+
+A forecast's rolling-window validity is also a time calculation. To serve
+every acquisition in the next six hours plus the one-minute polling allowance,
+the searched span must satisfy:
+
+```text
+forecast_start <= now
+now + WINDOW_S + SERVE_AHEAD_S <= forecast_end
+
+latest_covered_now = forecast_end - WINDOW_S - SERVE_AHEAD_S
+```
+
+This is why the forecast searches twelve hours and refreshes as remaining
+coverage falls below ten minutes. Age alone cannot establish completeness:
+even a recently computed forecast would miss acquisitions outside its searched
+span. A satellite's rows are added only after its entire search succeeds;
+failure or quota overflow discards its partial results and records `Failed`.
+
+### Verification
 
 Host tests use the committed `weather-2026-10-07.tle` fixture, downloaded from
 CelesTrak on 2026-10-07. Expected directions and crossings were independently
