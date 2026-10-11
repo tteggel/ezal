@@ -85,7 +85,7 @@ confirmed; check forecast capacity if significantly enlarging it.
 ## Time, data and failure behavior
 
 - NTP uses `pool.ntp.org`, with `time.cloudflare.com` on failure. Queries have
-  a ten-second total timeout. Good samples refresh hourly; failures retry in
+  a ten-second total timeout. Good samples refresh every five minutes; failures retry in
   one minute. Replies must match the source endpoint and random request cookie,
   be synchronized server replies, and have sane timestamps and RTT ≤2 seconds.
   UTC advances from Embassy uptime; six hours without a good sample invalidates
@@ -100,9 +100,10 @@ confirmed; check forecast capacity if significantly enlarging it.
   or non-200 responses fail the download without touching the catalog, and
   bytes after a complete body are ignored rather than counted.
 - The Pico uses the feed's HTTP endpoint without TLS. NTP is also unauthenticated.
-  Checksums, ID matching and age checks catch corruption, not an active network
-  attacker. This advisory implementation must gain an authenticated data path
-  before its predictions are used as a trusted autonomous command source.
+  On 2026-10-11 the operator explicitly accepted this transport risk for tracking,
+  superseding the earlier requirement for authenticated orbital downloads.
+  Checksums, ID matching and age checks validate data but cannot establish its
+  authenticity. No TLS stack or additional gateway service is required by T5.
 - Each line's fixed-width layout and checksum are checked before the `sgp4`
   library sees it: lines must be 69 ASCII characters, and numeric columns admit
   only digits, spaces, `.`, `+` and `-`, so `nan`/`inf` cannot parse and the
@@ -583,8 +584,8 @@ reason for every viewer. These values report pointing, not receiver lock.
 Keep planning, following control and the mode/lease state machine in the pure
 core. Run live following on an independently serviced firmware task, separate
 from TLE downloads and incremental planning. Bound planning memory and work
-per step so it cannot delay actuator/feedback servicing. Add an authenticated
-orbital-data path as required by the current advisory-data contract above.
+per step so it cannot delay actuator/feedback servicing. Use the validated
+orbital-input boundary and the explicitly accepted HTTP transport above.
 
 The shared output boundary now supervises direction/speed across short pulse
 trains and reserves an explicit coast margin at endpoints. Retain those checks,
@@ -638,8 +639,8 @@ commissioning supplies that evidence.
   cancellation. Tracking survives browser/lease expiry; only the current
   lease holder can mutate it. Test takeover refusal, transfer, stale commands
   and update/cancel/preparation races. Depends on T3's plan contract.
-- [ ] **T5 — Execution clock and trusted orbital inputs.** Add an authenticated
-  orbital-data path and a fractional UTC anchor tied to monotonic uptime.
+- [x] **T5 — Execution clock and validated orbital inputs.** Retain the explicitly
+  accepted HTTP feed and add a fractional UTC anchor tied to monotonic uptime.
   Freeze execution inputs, enforce source validity through LOS and account
   for timing uncertainty. Test clock steps, stale sources, failed refreshes,
   boot disarming and the initial stop-on-device-network-loss policy.
@@ -725,8 +726,8 @@ adjacent checks, the planner bounds error using the axis-rate vector and an
 explicit assumed sky-rate bound (default 2°/s), plus 0.002° numerical allowance.
 Observed violations of the sky-rate assumption reject the job; unobserved
 violations remain outside the guarantee. This is conditional support across
-the supplied finite scenarios. Source authentication and timing uncertainty
-validation still belong to T5.
+the supplied finite scenarios. The execution-input milestone below applies
+the separate timing reserve and whole-window source-validity checks.
 
 Any interval not established within budget is a predicted gap. The report
 retains the worst scenario's total gap time and up to 16 intervals, explicitly
@@ -837,8 +838,8 @@ can therefore return an explicit work-limit failure rather than run unbounded.
 
 The input owner supplies an exclusive `freeze_before_ms` validity deadline.
 T4 checks that deadline, complete-window plan consistency and remaining
-preparation time. T5 must construct the trusted orbital/observer/clock snapshot,
-validate it through LOS and interrupt a frozen run if its source or timing
+preparation time. T5 now supplies the validated orbital/observer/clock snapshot,
+checks it through LOS and interrupts a frozen run if its source or timing
 becomes unusable. The executor must confirm readiness from real settled
 feedback and relay state; the callback is not a browser operation.
 
@@ -855,10 +856,103 @@ deadline and verifies that no pulse starts and consumed duty is retained.
 
 This is core policy, not a second live output path. The current firmware still
 uses its manual `CoordinationState` and WebSocket ownership behavior. T7/T8 must
-replace that authority/mailbox path with `TrackingSession`, serialize input
+replace that authority/mailbox path with `TrackingRuntime`, serialize input
 updates and preparation transitions, service deadlines, and bind browser and
 executor requests to their respective generations. In particular, socket
 cleanup must use lease release instead of unconditionally stopping tracking.
 Only the device output task applies GPIOs and feeds the watchdog.
 
-Next task: **T5 — Execution clock and trusted orbital inputs**.
+### Current execution-input milestone
+
+T5 adds [`OrbitalDownload`, `OrbitalCatalog` and `ExecutionInputs`](../crates/ezal-core/src/tracking/inputs.rs).
+The download wrapper composes the existing bounded HTTP decoder and TLE parser.
+Only a complete framed response can produce a catalog publication; the first
+framing error stays latched. Truncation, timeout or non-200 responses cannot
+publish a partially received catalog. Malformed or older individual entries
+retain both their preceding elements and their original publication metadata.
+Each accepted entry has a device-owned revision and monotonic completion time.
+Reading or failing to refresh a cache changes neither. Orbital freshness uses
+the **TLE epoch**, not its download time.
+
+A planning snapshot owns the selected satellite's validated SGP4 constants,
+observer geometry, clock anchor, job ticket, window and planning assumptions.
+There are no mutable orbit/clock accessors. Publishing a result requires the
+same selection/revisions, satellite, fractional AOS/LOS mapping and configuration
+as that snapshot. The internal planner uses the snapshot as its ephemeris;
+the browser cannot supply an alternative orbit or planning report. The existing
+one-day future-epoch and seven-day age limits must cover now through LOS,
+expanded by the admitted timing error. These remain operational data limits,
+not measured orbital accuracy.
+
+[`ntp`](../crates/ezal-core/src/ntp.rs) retains millisecond UTC, the original
+monotonic receipt instant, a never-reused synchronization revision and an error
+estimate. That estimate adds half the measured network delay after server
+processing, half the nonnegative advertised root delay, root dispersion,
+server precision and a rounding allowance. The packet fields follow
+[RFC 5905](https://www.rfc-editor.org/rfc/rfc5905.html#section-7.3).
+It assumes honest time service and bounded local clock drift; SNTP provides no
+cryptographic time authentication. Samples announcing a leap remain usable
+for the advisory display but cannot authorize tracking. The old unquantified
+clock setter also cannot authorize execution.
+
+[`ExecutionClock`](../crates/ezal-core/src/tracking/clock.rs) reserves an explicit
+share of the planner's existing uncertainty allocation:
+
+| Provisional assumption | Default |
+|---|---|
+| Local oscillator drift bound | 100 ppm, pending measurement |
+| Maximum sample age | Six hours, exclusive; angular error usually limits it earlier |
+| Alignment/orbit share of the existing 1° reserve | 0.5° |
+| Remaining timing share | 0.5° |
+| Planner's assumed maximum sky rate | 2°/s |
+| Resulting maximum timing error | 250 ms |
+
+Error grows from the original sample by `elapsed_ms × drift_ppm / 1,000,000`.
+At 100 ppm that consumes 6 ms per minute. A sample with 50 ms initial error
+therefore covers about 33 minutes from receipt to LOS under these defaults.
+Successful NTP refreshes now run every five minutes; failed attempts retry in
+one minute without renewing the old anchor. These defaults require hardware
+and RF commissioning along with the motor/pointing assumptions.
+
+Early previews check the sample's current validity so a pass can be selected
+and armed hours ahead while source/clock updates trigger replacement planning.
+Immediately before preparation, the full error and age bounds must fit through
+LOS. An inadequate replacement blocks preparation with an input/timing reason;
+an older successful plan cannot take its place. The input owner supplies the
+exclusive admission deadline automatically.
+
+After preparation begins, propagation always uses the same millisecond anchor.
+A new NTP sample is compared with that frozen mapping; its discrepancy plus
+its uncertainty/drift through LOS must fit the timing allocation. Acceptable
+samples validate the run without shifting targets or deadlines. Excessive
+positive or negative corrections, missing time, stale/reversed clock
+publications and unusable source data inhibit the run with an explicit reason.
+Repeated small corrections cannot cumulatively move the frozen anchor.
+
+[`TrackingRuntime`](../crates/ezal-core/src/tracking/runtime.rs) owns the lifecycle
+and enforces this input boundary before preparation, internal command admission
+and mailbox drain. It accepts coherent device observations, with the existing
+timestamped `NetworkGate`, rather than a cached connected flag. Link/address
+loss, expired supervision, or a recovery generation change stops an armed or
+executing run and invalidates queued output; recovery cannot resume it.
+Browser loss and failed internet refreshes preserve a run while its cached
+inputs and device network permission remain valid. Boot is always Manual,
+without a selection, run or persisted permission.
+
+[Clock tests](../crates/ezal-core/tests/tracking_clock.rs) exercise fractional
+conversion, signed corrections, cumulative drift, expiry, leap announcements
+and checked arithmetic. [Input/runtime tests](../crates/ezal-core/tests/tracking_inputs.rs)
+use the recorded orbital fixture and real planner to test source binding,
+atomic download publication, through-LOS age, refresh/freeze ordering,
+browser-independent execution, network interruption, queued-output inhibition
+and boot disarming.
+
+Firmware now uses the framed catalog publication path and quantified NTP
+samples. Live following/output ownership and UI wiring remain T7/T8 work.
+That integration must publish complete source revisions **before** servicing a
+simultaneous preparation deadline, use `TrackingRuntime` rather than bypassing
+it with the generic lifecycle, and provide current clock/network observations
+on every output drain. Planning remains device-internal and must consume the
+same `ExecutionInputs` snapshot that accompanies its completed result.
+
+Next task: **T6 — Bounded reacquisition**.

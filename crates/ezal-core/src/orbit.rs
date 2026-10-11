@@ -161,6 +161,7 @@ pub struct LookAngle {
 }
 
 /// Prepared station geometry, reused across every propagation in a search.
+#[derive(Clone, Debug)]
 pub struct GroundStation {
     // Earth-fixed (ECEF) position in km: x through latitude/longitude (0°, 0°),
     // y through (0°, 90°E), z through the north pole; origin at Earth's centre.
@@ -509,19 +510,30 @@ impl Catalog {
     /// Apply a completed download. Staged entries replace current ones unless
     /// their epoch is older. Returns the number of entries updated.
     pub fn commit(&mut self, mut update: Update) -> usize {
+        self.commit_mask(&mut update).count_ones() as usize
+    }
+
+    /// Exact accepted slots, for attaching source metadata only to entries
+    /// actually published by a completed download.
+    pub(crate) fn commit_mask(&mut self, update: &mut Update) -> u8 {
         // A final line without a trailing newline is still a line.
         if !update.line.is_empty() || update.overlong {
             update.end_line();
         }
-        let mut updated = 0;
-        for (slot, staged) in self.orbits.iter_mut().zip(update.staged) {
-            if let Some(orbit) = staged {
+        let mut updated = 0u8;
+        for (index, (slot, staged)) in self
+            .orbits
+            .iter_mut()
+            .zip(update.staged.iter_mut())
+            .enumerate()
+        {
+            if let Some(orbit) = staged.take() {
                 if slot
                     .as_ref()
                     .is_none_or(|old| orbit.epoch_unix_s >= old.epoch_unix_s)
                 {
                     *slot = Some(orbit);
-                    updated += 1;
+                    updated |= 1 << index;
                 }
             }
         }

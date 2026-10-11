@@ -1,11 +1,11 @@
 //! Device-owned single-pass policy. Firmware must serialize these transitions
 //! with input publication and output admission. No method performs I/O or GPIO.
-//! `S` owns the immutable execution inputs (orbit/observer/clock in T5); transport
+//! `S` owns immutable execution inputs; `TrackingRuntime` supplies their gates. Transport
 //! never supplies those inputs or planning results directly.
 
 use super::{
-    reconcile_event, CandidateFailure, EventError, EventId, PassEvent, PlanningError,
-    PlanningReport, PreparationTiming, TrackingPlan,
+    reconcile_event, CandidateFailure, EventError, EventId, InputError, PassEvent, PlanningError,
+    PlanningReport, PreparationTiming, TimingError, TrackingPlan,
 };
 use crate::drive::{Command, MOVEMENT_LEASE_MS};
 use crate::mailbox::{CommandEnvelope, CommandMailbox};
@@ -131,6 +131,8 @@ pub enum TrackingPhase {
 /// Why planning cannot currently authorize preparation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanProblem {
+    /// The source snapshot needs replacement before preparation can begin.
+    Inputs(InputError),
     /// The original selected event cannot be uniquely associated.
     Event(EventError),
     /// The complete search found no supported route.
@@ -179,6 +181,10 @@ pub enum TrackingStop {
     NetworkUnavailable,
     /// Frozen source or timing validity no longer supports execution.
     SourceInvalid,
+    /// Frozen timing uncertainty, source age or a new correction is unacceptable.
+    Timing(TimingError),
+    /// Frozen orbital input failed its execution validity checks.
+    Inputs(InputError),
     /// A physical output fault, independently enforced by the actuator.
     Motion(MotionFault),
     /// Monotonic clock/counter failure; cannot safely continue or reuse identities.
@@ -236,7 +242,7 @@ pub enum TrackingAction {
 /// different intent; duplicate or older requests cannot repeat an action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrackingRequest {
-    /// Current grant, bound to the authenticated transport connection.
+    /// Current grant, bound to the server's actual transport connection.
     pub operator: OperatorToken,
     /// Strictly increasing nonzero number within this grant.
     pub sequence: u64,
@@ -436,6 +442,11 @@ impl<S> TrackingSession<S> {
         self.commands.submit(CommandEnvelope::INHIBIT);
     }
 
+    pub(super) fn clock_failure(&mut self, now_ms: u64) -> Result<(), LifecycleError> {
+        self.fail_clock(now_ms);
+        Err(LifecycleError::ClockOrCounter)
+    }
+
     fn bump(&mut self, now_ms: u64) -> Result<(), LifecycleError> {
         let Some(revision) = self.revision.checked_add(1) else {
             self.fail_clock(now_ms);
@@ -595,7 +606,7 @@ impl<S> TrackingSession<S> {
 
     /// Publish a complete forecast/input revision atomically before servicing
     /// preparation. Refreshes cannot replace frozen inputs; installation changes
-    /// stop them instead. Clock/source validity during execution is enforced by T5.
+    /// stop them instead. `TrackingRuntime` enforces clock/source validity.
     pub fn refresh(
         &mut self,
         forecast: &[PassEvent],
@@ -665,9 +676,27 @@ impl<S> TrackingSession<S> {
         self.plan.as_ref()
     }
 
+    /// The input owner can invalidate a preview without disarming its selection.
+    /// A subsequent complete input refresh starts a new job; no stale fallback.
+    pub(super) fn invalidate_inputs(
+        &mut self,
+        error: InputError,
+        now_ms: u64,
+    ) -> Result<(), LifecycleError> {
+        self.advance(now_ms)?;
+        if self.run.is_some() {
+            return Err(LifecycleError::NotReady);
+        }
+        self.bump(now_ms)?;
+        self.plan = None;
+        self.ticket = None;
+        self.plan_status = PlanStatus::Blocked(PlanProblem::Inputs(error));
+        Ok(())
+    }
+
     /// Publish only the latest completed job. `freeze_before_ms` is an exclusive
     /// admission deadline supplied by the trusted input/clock owner, not a browser.
-    /// T5 must validate those inputs through LOS as well as before freezing.
+    /// `TrackingRuntime` validates inputs through LOS as well as before freezing.
     pub fn publish_plan(
         &mut self,
         ticket: PlanTicket,

@@ -1,7 +1,9 @@
 //! Pure SNTP packet validation and UTC anchored to an injected monotonic clock.
 //!
 //! Neither the packet codec nor the clock reads time or performs I/O. UTC is
-//! for orbit predictions only: movement leases must continue using uptime.
+//! for orbital time only: movement leases must continue using uptime. SNTP is
+//! unauthenticated; the error estimate assumes an honest server/network and
+//! does not protect against an attacker changing the time.
 
 /// Basic NTP packet length, excluding optional extensions.
 pub const PACKET_LEN: usize = 48;
@@ -10,6 +12,30 @@ pub const MAX_SYNC_AGE_MS: u64 = 6 * 60 * 60 * 1000;
 const NTP_UNIX_OFFSET: u64 = 2_208_988_800;
 const MIN_UNIX_MS: u64 = 1_577_836_800_000; // 2020-01-01
 const MAX_UNIX_MS: u64 = 4_102_444_800_000; // 2100-01-01
+
+/// A validated SNTP estimate at receipt, with a conservative network/server
+/// error estimate. Local oscillator drift is added by the execution clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeSample {
+    unix_ms: u64,
+    uncertainty_ms: u64,
+    leap_pending: bool,
+}
+
+impl TimeSample {
+    /// UTC estimate at the monotonic receipt instant.
+    pub const fn unix_ms(self) -> u64 {
+        self.unix_ms
+    }
+    /// Network asymmetry, advertised root distance/precision and quantization.
+    pub const fn uncertainty_ms(self) -> u64 {
+        self.uncertainty_ms
+    }
+    /// An announced leap requires a new sample before autonomous execution.
+    pub const fn leap_pending(self) -> bool {
+        self.leap_pending
+    }
+}
 
 /// Reasons a reply cannot establish time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +63,17 @@ pub fn request(cookie: [u8; 8]) -> [u8; PACKET_LEN] {
 /// caller also checks the source IP/port. Server processing time is removed
 /// from RTT before estimating the return journey (symmetric-delay assumption).
 pub fn reply(packet: &[u8], cookie: [u8; 8], round_trip_ms: u64) -> Result<u64, Error> {
+    reply_sample(packet, cookie, round_trip_ms).map(TimeSample::unix_ms)
+}
+
+/// Validate a reply and retain its uncertainty rather than discarding it.
+/// Root delay is signed 16.16 seconds; negative values cannot reduce the bound.
+/// Dispersion is unsigned 16.16 seconds. Round upwards throughout.
+pub fn reply_sample(
+    packet: &[u8],
+    cookie: [u8; 8],
+    round_trip_ms: u64,
+) -> Result<TimeSample, Error> {
     if packet.len() < PACKET_LEN || !matches!((packet[0] >> 3) & 7, 3 | 4) || packet[0] & 7 != 4 {
         return Err(Error::Packet);
     }
@@ -53,7 +90,30 @@ pub fn reply(packet: &[u8], cookie: [u8; 8], round_trip_ms: u64) -> Result<u64, 
     if round_trip_ms > 2000 || processing_ms > round_trip_ms + 1 {
         return Err(Error::Time);
     }
-    Ok(transmit_ms + round_trip_ms.saturating_sub(processing_ms) / 2)
+    let network_ms = round_trip_ms.saturating_sub(processing_ms);
+    let unix_ms = transmit_ms + network_ms / 2;
+    if !(MIN_UNIX_MS..MAX_UNIX_MS).contains(&unix_ms) {
+        return Err(Error::Time);
+    }
+    let root_delay = i32::from_be_bytes(packet[4..8].try_into().unwrap()).max(0) as u64;
+    let dispersion = u32::from_be_bytes(packet[8..12].try_into().unwrap()) as u64;
+    let precision = packet[3] as i8;
+    // Absurd precision is an invalid clock, not a shift/overflow opportunity.
+    let precision_ms = match precision {
+        ..=-10 => 1,
+        -9..=-1 => 1000u64.div_ceil(1 << -precision),
+        0..=20 => 1000u64 << precision,
+        _ => return Err(Error::Time),
+    };
+    Ok(TimeSample {
+        unix_ms,
+        uncertainty_ms: network_ms.div_ceil(2)
+            + (root_delay * 1000).div_ceil(2 * 65_536)
+            + (dispersion * 1000).div_ceil(65_536)
+            + precision_ms
+            + 2,
+        leap_pending: packet[0] >> 6 != 0,
+    })
 }
 
 fn timestamp_ms(bytes: &[u8]) -> Result<u64, Error> {
@@ -79,23 +139,128 @@ fn timestamp_ms(bytes: &[u8]) -> Result<u64, Error> {
 /// A successful UTC sample and the monotonic instant at which it was received.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UtcClock {
-    anchor: Option<(u64, u64)>,
+    anchor: Option<UtcAnchor>,
+    revision: u64,
+    failed: bool,
+}
+
+/// Immutable, revisioned UTC mapping. A new synchronization never edits a copy
+/// already owned by an executing pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UtcAnchor {
+    monotonic_ms: u64,
+    unix_ms: u64,
+    revision: u64,
+    sample: Option<TimeSample>,
+}
+
+impl UtcAnchor {
+    /// Monotonic receipt instant, in the same domain as actuator deadlines.
+    pub const fn monotonic_ms(self) -> u64 {
+        self.monotonic_ms
+    }
+    /// Never-reused boot-local synchronization revision.
+    pub const fn revision(self) -> u64 {
+        self.revision
+    }
+    /// The quantified sample, absent for the legacy advisory-only setter.
+    pub const fn sample(self) -> Option<TimeSample> {
+        self.sample
+    }
+    /// Fractional UTC mapping; never truncates to whole seconds internally.
+    pub fn unix_ms(self, monotonic_ms: u64) -> Option<u64> {
+        let elapsed = monotonic_ms.checked_sub(self.monotonic_ms)?;
+        let unix = self.unix_ms.checked_add(elapsed)?;
+        (unix < MAX_UNIX_MS).then_some(unix)
+    }
+    /// Convert an absolute UTC deadline using this exact anchor, with checked
+    /// arithmetic in either direction. No live clock or integer seconds involved.
+    pub fn monotonic_at(self, unix_ms: u64) -> Option<u64> {
+        if !(MIN_UNIX_MS..MAX_UNIX_MS).contains(&unix_ms) {
+            return None;
+        }
+        if unix_ms >= self.unix_ms {
+            self.monotonic_ms.checked_add(unix_ms - self.unix_ms)
+        } else {
+            self.monotonic_ms.checked_sub(self.unix_ms - unix_ms)
+        }
+    }
+}
+
+/// Failed synchronization. A reversed uptime or exhausted revision disarms
+/// the clock until reboot; an invalid UTC sample leaves the old anchor alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockError {
+    /// UTC is outside 2020–2099.
+    Sample,
+    /// Uptime reversed or a synchronization revision would wrap.
+    MonotonicOrCounter,
 }
 
 impl UtcClock {
     /// An unsynchronized clock never fabricates a UTC timestamp.
     pub const fn new() -> Self {
-        Self { anchor: None }
+        Self {
+            anchor: None,
+            revision: 0,
+            failed: false,
+        }
     }
 
-    /// Apply a validated sample. Wall time may step; uptime remains untouched.
+    /// Legacy advisory-only setter, without an execution uncertainty estimate.
+    /// Wall time may step; uptime remains untouched. Use `synchronize_sample`
+    /// for the firmware's quantified SNTP path.
     pub fn synchronize(&mut self, monotonic_ms: u64, unix_ms: u64) {
-        self.anchor = Some((monotonic_ms, unix_ms));
+        let _ = self.update(monotonic_ms, unix_ms, None);
+    }
+
+    /// Accept a quantified sample. Failed network refreshes must not call this
+    /// method: they neither renew source age nor clear the previous good sample.
+    pub fn synchronize_sample(
+        &mut self,
+        monotonic_ms: u64,
+        sample: TimeSample,
+    ) -> Result<(), ClockError> {
+        self.update(monotonic_ms, sample.unix_ms, Some(sample))
+    }
+
+    fn update(
+        &mut self,
+        monotonic_ms: u64,
+        unix_ms: u64,
+        sample: Option<TimeSample>,
+    ) -> Result<(), ClockError> {
+        if self.failed
+            || self
+                .anchor
+                .is_some_and(|anchor| monotonic_ms < anchor.monotonic_ms)
+            || self.revision == u64::MAX
+        {
+            self.anchor = None;
+            self.failed = true;
+            return Err(ClockError::MonotonicOrCounter);
+        }
+        if !(MIN_UNIX_MS..MAX_UNIX_MS).contains(&unix_ms) {
+            return Err(ClockError::Sample);
+        }
+        self.revision += 1;
+        self.anchor = Some(UtcAnchor {
+            monotonic_ms,
+            unix_ms,
+            revision: self.revision,
+            sample,
+        });
+        Ok(())
+    }
+
+    /// Quantified or advisory anchor for a coherent source snapshot.
+    pub const fn anchor(self) -> Option<UtcAnchor> {
+        self.anchor
     }
 
     /// Milliseconds since the last good sample, even when it has expired.
     pub fn age_ms(self, monotonic_ms: u64) -> Option<u64> {
-        monotonic_ms.checked_sub(self.anchor?.0)
+        monotonic_ms.checked_sub(self.anchor?.monotonic_ms)
     }
 
     /// Current UTC, only while the sample is fresh and uptime has not reversed.
@@ -104,6 +269,6 @@ impl UtcClock {
         if age >= MAX_SYNC_AGE_MS {
             return None;
         }
-        self.anchor?.1.checked_add(age)
+        self.anchor?.unix_ms(monotonic_ms)
     }
 }

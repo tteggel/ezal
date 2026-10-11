@@ -17,10 +17,12 @@
 //!
 //! [`ads1015`] models ADC registers and decoding; [`wifi`] contains credential
 //! validation and reconnect timing. Advisory prediction is separate: [`ntp`]
-//! supplies an expiring UTC anchor, [`http`] frames streamed downloads, and
+//! supplies a revisioned UTC anchor and error estimate, [`http`] frames streamed downloads, and
 //! [`orbit`]/[`passes`] validate elements and calculate reception windows.
 //! [`tracking`] supplies bounded planning, a device-owned lifecycle, following
-//! and offline simulation. [`operator`] supplies its exclusive controller lease.
+//! and offline simulation. Its execution-input boundary owns orbital/clock
+//! snapshots and enforces source/timing/network validity. [`operator`] supplies
+//! its exclusive controller lease.
 //! This tracking policy is not yet connected to firmware output requests.
 
 #![cfg_attr(not(test), no_std)]

@@ -57,7 +57,7 @@ embedded Rust.
 │   │       ├── duty.rs            # per-axis energized allowance and continuous rest
 │   │       ├── network.rs         # expiring network permission for motion
 │   │       ├── operator.rs        # exclusive leases for the tracking lifecycle
-│   │       ├── ntp.rs             # SNTP validation + expiring UTC anchor
+│   │       ├── ntp.rs             # SNTP validation, uncertainty + revisioned UTC anchor
 │   │       ├── http.rs            # streamed HTTP framing for TLE downloads
 │   │       ├── orbit.rs           # TLE validation, catalog, SGP4 look angles
 │   │       ├── passes.rs          # pass search, forecasts, /api/passes JSON
@@ -206,7 +206,7 @@ successful check. Manual control requires the dashboard but not internet access.
 | 5    | Calibrated feedback and applied-output dashboard telemetry     | ✅ done  |
 | 6    | NTP time, TLE download, advisory HRPT pass prediction           | ✅ done  |
 | 7    | Persisted calibration + authenticated calibration UI           | planned  |
-| 8    | Production target transport (authenticated TLEs → controller)   | planned  |
+| 8    | Validated orbital inputs and frozen execution time             | core done; integration pending |
 | 9    | Single-pass tracking, over-the-top planning and reacquisition   | in progress |
 
 The firmware propagates current TLEs only to list upcoming passes. The
@@ -217,8 +217,11 @@ evaluates preparation and conventional/over-the-top routes through the productio
 actuator across provisional motor and feedback scenarios. The
 [lifecycle core](docs/PASS_PREDICTION.md#current-lifecycle-milestone) adds exclusive
 operator leases, one selected pass, plan freezing and browser-independent execution
-state. Firmware/UI integration, reacquisition and commissioning, including an
-authenticated data path, remain future work.
+state. The [execution-input boundary](docs/PASS_PREDICTION.md#current-execution-input-milestone)
+binds validated orbital snapshots and fractional UTC to each plan, checks timing
+uncertainty through LOS, and stops on device network loss. HTTP orbital downloads
+are an explicit installation decision. Firmware/UI integration, reacquisition
+and commissioning remain future work.
 Predictions never authorize movement in the current firmware.
 
 ## License

@@ -10,7 +10,7 @@ use embassy_net::{
 use embassy_rp::clocks::RoscRng;
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
-use ezal_core::ntp::{self, UtcClock};
+use ezal_core::ntp::{self, TimeSample, UtcClock};
 
 static CLOCK: Mutex<CriticalSectionRawMutex, Cell<UtcClock>> =
     Mutex::new(Cell::new(UtcClock::new()));
@@ -33,14 +33,24 @@ pub async fn synchronize(stack: Stack<'static>) -> ! {
         stack.wait_config_up().await;
         let result = with_timeout(Duration::from_secs(10), sample(stack, servers[server])).await;
         let delay = match result {
-            Ok(Ok((uptime, utc))) => {
-                CLOCK.lock(|clock| {
+            Ok(Ok((uptime, sample))) => {
+                let accepted = CLOCK.lock(|clock| {
                     let mut updated = clock.get();
-                    updated.synchronize(uptime, utc);
+                    let accepted = updated.synchronize_sample(uptime, sample).is_ok();
                     clock.set(updated);
+                    accepted
                 });
-                defmt::info!("NTP synchronized: Unix seconds {=u64}", utc / 1000);
-                Duration::from_secs(3600)
+                if accepted {
+                    defmt::info!(
+                        "NTP synchronized: Unix seconds {=u64}, uncertainty {=u64} ms",
+                        sample.unix_ms() / 1000,
+                        sample.uncertainty_ms()
+                    );
+                    Duration::from_secs(300)
+                } else {
+                    defmt::warn!("NTP sample rejected by the monotonic clock");
+                    Duration::from_secs(60)
+                }
             }
             _ => {
                 defmt::warn!("NTP synchronization failed; retrying in one minute");
@@ -52,7 +62,7 @@ pub async fn synchronize(stack: Stack<'static>) -> ! {
     }
 }
 
-async fn sample(stack: Stack<'_>, server: &str) -> Result<(u64, u64), ()> {
+async fn sample(stack: Stack<'_>, server: &str) -> Result<(u64, TimeSample), ()> {
     let addresses = stack
         .dns_query(server, DnsQueryType::A)
         .await
@@ -84,7 +94,8 @@ async fn sample(stack: Stack<'_>, server: &str) -> Result<(u64, u64), ()> {
             continue;
         }
         let received = Instant::now().as_millis();
-        let utc = ntp::reply(&packet[..size], cookie, received - started).map_err(|_| ())?;
-        return Ok((received, utc));
+        let sample =
+            ntp::reply_sample(&packet[..size], cookie, received - started).map_err(|_| ())?;
+        return Ok((received, sample));
     }
 }

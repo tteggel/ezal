@@ -8,17 +8,27 @@
 //! [`TrackingSession`] binds a single selected event, revisioned plans and
 //! executor generations to an exclusive operator lease. It owns frozen input
 //! snapshots independently of browser connections; firmware integration is separate.
+//! [`TrackingRuntime`] adds validated input publication and execution gating;
+//! firmware must use it to supervise the frozen timeline and device network.
 
+mod clock;
 mod controller;
 mod event;
+mod inputs;
 mod lifecycle;
 mod model;
 mod planner;
 mod route;
+mod runtime;
 mod simulation;
 
+pub use clock::{execution_window, ExecutionClock, TimingError, TimingPolicy};
 pub use controller::FollowingController;
 pub use event::{reconcile_event, EventError, EventId, PassEvent, MAX_EVENT_SHIFT_S};
+pub use inputs::{
+    CompletedOrbitalDownload, ExecutionInputs, InputError, InputSettings, OrbitalCatalog,
+    OrbitalDownload, OrbitalPublication, OrbitalSnapshot, OrbitalTransport,
+};
 pub use lifecycle::{
     BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
     RunToken, Selection, TrackingAction, TrackingMode, TrackingPhase, TrackingRequest,
@@ -31,6 +41,7 @@ pub use planner::{
     MAX_GAPS, MAX_PLANNING_STEPS, MAX_SCENARIOS,
 };
 pub use route::{Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
+pub use runtime::{RuntimeError, RuntimeObservation, TrackingRuntime};
 pub use simulation::{
     RestingStart, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
 };

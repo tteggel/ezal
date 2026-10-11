@@ -7,9 +7,9 @@ use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack};
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use ezal_core::{
-    http,
-    orbit::{Catalog, GroundStation, ObserverError, Update},
+    orbit::{GroundStation, ObserverError},
     passes::{needs_forecast, ConfigError, Elements, Forecast, Job, Report},
+    tracking::{CompletedOrbitalDownload, OrbitalCatalog, OrbitalDownload},
 };
 
 include!(concat!(env!("OUT_DIR"), "/prediction_config.rs"));
@@ -33,9 +33,9 @@ const _: () = match CONFIG.validate() {
     }
 };
 
-// Public, unauthenticated data: HTTP support was verified at this endpoint.
-// Checksums/age/ID/LEO checks detect bad data, not a malicious network. These
-// predictions are advisory and never submit actuator commands. Every byte of
+// HTTP is the explicitly accepted transport for this installation. Parser/age
+// checks validate data, without authenticating a potentially hostile network.
+// Predictions currently remain advisory. Every byte of
 // the response passes through ezal-core's bounded decoders, so a broken or
 // hostile reply can fail the download but cannot panic or stall the task.
 const TLE_HOST: &str = "celestrak.org";
@@ -78,7 +78,7 @@ pub fn report() -> Report {
 #[embassy_executor::task]
 pub async fn run(stack: Stack<'static>) -> ! {
     let station = GroundStation::new(CONFIG.observer).expect("validated at compile time");
-    let mut catalog = Catalog::new();
+    let mut catalog = OrbitalCatalog::new();
     let mut next_fetch = Instant::now();
     // New elements make the published forecast outdated even while it still
     // covers the window.
@@ -90,14 +90,16 @@ pub async fn run(stack: Stack<'static>) -> ! {
         };
         if Instant::now() >= next_fetch && stack.is_config_up() && stack.is_link_up() {
             let updated = match with_timeout(DOWNLOAD_TIMEOUT, download(stack, now)).await {
-                Ok(Ok(update)) => catalog.commit(update),
+                Ok(Ok(update)) => catalog
+                    .commit(update, Instant::now().as_millis())
+                    .unwrap_or(0),
                 _ => 0,
             };
             let succeeded = updated > 0;
             SHARED.lock(|cell| {
                 let elements = &mut cell.borrow_mut().elements;
                 if succeeded {
-                    elements.epochs = catalog.epochs();
+                    elements.epochs = catalog.catalog().epochs();
                     elements.updated_unix_s = Some(now);
                 }
                 elements.download_failed = !succeeded;
@@ -118,7 +120,7 @@ pub async fn run(stack: Stack<'static>) -> ! {
         let due = SHARED.lock(|cell| needs_forecast(cell.borrow().forecast.as_ref(), now));
         if elements_changed || due {
             // NTP only yields 2020–2099 UTC, which a job always accepts.
-            let job: Result<Job, _> = Job::new(&catalog, &station, CONFIG, now);
+            let job: Result<Job, _> = Job::new(catalog.catalog(), &station, CONFIG, now);
             if let Ok(mut job) = job {
                 // A timer yields even if every socket and CPU operation is
                 // immediately ready. ADC, network and actuator tasks keep running.
@@ -140,7 +142,7 @@ pub async fn run(stack: Stack<'static>) -> ! {
 /// small read buffer through the HTTP decoder into the TLE parser, so no
 /// response-sized buffer exists. Staged entries are committed by the caller
 /// only after the response is known to be complete.
-async fn download(stack: Stack<'_>, now_unix_s: i64) -> Result<Update, ()> {
+async fn download(stack: Stack<'_>, now_unix_s: i64) -> Result<CompletedOrbitalDownload, ()> {
     let addresses = stack
         .dns_query(TLE_HOST, DnsQueryType::A)
         .await
@@ -156,7 +158,10 @@ async fn download(stack: Stack<'_>, now_unix_s: i64) -> Result<Update, ()> {
     result
 }
 
-async fn exchange(socket: &mut TcpSocket<'_>, now_unix_s: i64) -> Result<Update, ()> {
+async fn exchange(
+    socket: &mut TcpSocket<'_>,
+    now_unix_s: i64,
+) -> Result<CompletedOrbitalDownload, ()> {
     let mut request = TLE_REQUEST;
     while !request.is_empty() {
         let written = socket.write(request).await.map_err(|_| ())?;
@@ -166,21 +171,17 @@ async fn exchange(socket: &mut TcpSocket<'_>, now_unix_s: i64) -> Result<Update,
         request = &request[written..];
     }
     socket.flush().await.map_err(|_| ())?;
-    let mut response = http::Response::new();
-    let mut update = Update::new(now_unix_s);
+    let mut download = OrbitalDownload::new(now_unix_s);
     let mut buffer = [0; 512];
     loop {
         // Every read awaits the socket, so the deadline can always fire.
         let read = socket.read(&mut buffer).await.map_err(|_| ())?;
         if read == 0 {
-            response.finish().map_err(|_| ())?;
-            return Ok(update);
+            return download.finish().map_err(|_| ());
         }
-        response
-            .feed(&buffer[..read], |body| update.push(body))
-            .map_err(|_| ())?;
-        if response.is_done() {
-            return Ok(update);
+        download.push(&buffer[..read]).map_err(|_| ())?;
+        if download.is_complete() {
+            return download.finish().map_err(|_| ());
         }
     }
 }

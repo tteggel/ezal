@@ -65,6 +65,16 @@ constraints. See the [lifecycle milestone](PASS_PREDICTION.md#current-lifecycle-
 for the transition and integration contract. The current firmware's manual
 coordination remains the only live output source until that integration.
 
+`tracking::TrackingRuntime` wraps that lifecycle with the execution-input gate.
+The firmware integration must use this owner: it validates source snapshots,
+clock corrections and timestamped network generations before preparation,
+executor commands and mailbox drain. `ExecutionInputs` owns its elements,
+observer and millisecond UTC anchor; later publications cannot edit a frozen
+run. A completed `OrbitalDownload` is required before `OrbitalCatalog` can
+publish element sets and their revisions. The installation explicitly accepts
+HTTP orbital data; these types establish framing/validation and identity, not
+cryptographic authenticity. NTP also remains unauthenticated.
+
 `ezal-firmware` owns the asynchronous shell:
 
 | Module | Resources and effects |

@@ -21,7 +21,7 @@ const MAX_PREPARATION_MS: u64 = 300_000;
 const READY_DWELL_MS: u64 = 2_000;
 
 /// The execution owner supplies the UTC/monotonic mapping; planning never reads
-/// or changes a clock. Source authentication/expiry belongs to that owner.
+/// or changes a clock. Source provenance/expiry belongs to that owner.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlanningWindow {
     /// Fractional UTC at acquisition.
