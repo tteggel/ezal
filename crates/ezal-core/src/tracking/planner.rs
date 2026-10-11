@@ -354,7 +354,7 @@ impl TrackingPlan {
 
 /// Completed finite search. No supported plan means “none found in this search”,
 /// not proof that every physically possible trajectory is impossible.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlanningReport {
     /// Best supported result; unsupported diagnostics cannot be armed as a plan.
     pub plan: Option<TrackingPlan>,
@@ -551,6 +551,10 @@ impl<E: Ephemeris> Planner<E> {
     pub fn is_finished(&self) -> bool {
         self.phase == Phase::Complete || self.error.is_some()
     }
+    /// Borrow the exact immutable ephemeris captured for this work.
+    pub const fn source(&self) -> &E {
+        &self.source
+    }
     /// Cancelling invalidates all partial and earlier candidate results.
     pub fn cancel(&mut self) {
         self.error = Some(PlanningError::Cancelled);
@@ -567,6 +571,19 @@ impl<E: Ephemeris> Planner<E> {
         } else {
             Ok(self.report)
         }
+    }
+    /// Move out a completed report without moving the large planner workspace.
+    /// Useful for a statically stored embedded worker. A second extraction is
+    /// rejected; partial work is never published as success.
+    pub fn take_report(&mut self) -> Result<PlanningReport, PlanningError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if self.phase != Phase::Complete {
+            return Err(PlanningError::Incomplete);
+        }
+        self.error = Some(PlanningError::Incomplete);
+        Ok(core::mem::take(&mut self.report))
     }
     /// Perform one bounded unit of work. Repeated calls after failure retain it.
     pub fn step(&mut self) -> Result<(), PlanningError> {

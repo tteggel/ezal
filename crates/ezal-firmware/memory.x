@@ -97,3 +97,10 @@ SECTIONS {
 
 PROVIDE(start_to_end = __end_block_addr - __start_block_addr);
 PROVIDE(end_to_start = __start_block_addr - __end_block_addr);
+
+/* Reserve room for the shared thread/interrupt stack as the task pools grow.
+ * Planning uses static storage, but report publication still has sizeable
+ * bounded stack frames. This is a capacity check, not a stack high-water test.
+ */
+ASSERT(_stack_start - _stack_end >= 192K,
+       "ezal requires at least 192 KiB for the shared execution/interrupt stack");

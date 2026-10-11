@@ -12,9 +12,10 @@ checks, and motion supervision guard the physical GPIO outputs.
 The firmware also synchronizes UTC with NTP, downloads weather-satellite
 TLEs, and predicts the next six hours of L-band HRPT reception windows on the
 dashboard. The default station is **All Saints Church, Clevedon**. Prediction
-is advisory; selecting or automatically tracking a real orbital pass is not
-implemented yet. See [pass prediction](docs/PASS_PREDICTION.md) for station
-settings, satellite coverage, acquisition/loss thresholds, and limitations.
+is advisory. Device-owned tracking execution is integrated; selecting and arming
+a pass from the dashboard is the next task (T8). See
+[pass prediction](docs/PASS_PREDICTION.md) for station settings, satellite coverage,
+acquisition/loss thresholds, and limitations.
 
 ## What this project will be
 
@@ -23,7 +24,8 @@ az/el rotator to track a low-earth-orbit (LEO) satellite as it passes
 overhead. The pure core now computes satellite az/el and reception windows
 from TLEs using SGP4. Manual control drives the G-5500's direction inputs
 through transistor switches and reads calibrated position feedback via an
-Adafruit ADS1015 I²C ADC. Automatic target following remains future work.
+Adafruit ADS1015 I²C ADC. The device executor is integrated; dashboard arming
+and hardware commissioning remain before routine automatic tracking.
 See [HARDWARE.md](docs/HARDWARE.md) and the [design/](design/) folder for the
 interface details and schematic.
 
@@ -74,6 +76,7 @@ embedded Rust.
 │           ├── feedback.rs        # ADC resource ownership and sampling
 │           ├── state.rs           # synchronization and actuator wake hint
 │           ├── drive.rs           # guarded direction GPIOs, watchdog feeding
+│           ├── tracking.rs        # yielding planner/recovery worker + timing diagnostics
 │           ├── watchdog.rs        # independent hardware reset fallback
 │           ├── web.rs             # dashboard, ownership, telemetry, passes
 │           ├── time.rs            # NTP over DNS/UDP
@@ -206,10 +209,10 @@ successful check. Manual control requires the dashboard but not internet access.
 | 5    | Calibrated feedback and applied-output dashboard telemetry     | ✅ done  |
 | 6    | NTP time, TLE download, advisory HRPT pass prediction           | ✅ done  |
 | 7    | Persisted calibration + authenticated calibration UI           | planned  |
-| 8    | Validated orbital inputs and frozen execution time             | core done; integration pending |
+| 8    | Validated orbital inputs and frozen execution time             | integrated |
 | 9    | Single-pass tracking, over-the-top planning and reacquisition   | in progress |
 
-The firmware propagates current TLEs only to list upcoming passes. The
+The firmware lists passes and now services a browser-independent tracking executor. The
 [tracking design](docs/PASS_PREDICTION.md#planned-tracking) specifies controller
 ownership, automatic updates before preparation, local execution, visible
 deviation and reacquisition. The [planning milestone](docs/PASS_PREDICTION.md#current-planning-milestone)
@@ -223,8 +226,11 @@ uncertainty through LOS, and stops on device network loss. HTTP orbital download
 are an explicit installation decision. The
 [recovery core](docs/PASS_PREDICTION.md#current-reacquisition-milestone) adds
 timestamp-matched deviation, bounded future intercepts and final pass summaries.
-Partial-pass admission, firmware/UI integration and commissioning remain future work.
-Predictions never authorize movement in the current firmware.
+Validated partial-pass admission and firmware execution are integrated. The
+[firmware milestone](docs/PASS_PREDICTION.md#independent-firmware-execution-t7)
+records host validation, Pico memory checks and remaining board measurements.
+Tracking API/dashboard work (T8), complete-pass acceptance and commissioning
+remain. The current dashboard still exposes manual control only.
 
 ## License
 

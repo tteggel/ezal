@@ -41,6 +41,7 @@ pub async fn synchronize(stack: Stack<'static>) -> ! {
                     accepted
                 });
                 if accepted {
+                    crate::state::STATE.publish_clock(clock());
                     defmt::info!(
                         "NTP synchronized: Unix seconds {=u64}, uncertainty {=u64} ms",
                         sample.unix_ms() / 1000,

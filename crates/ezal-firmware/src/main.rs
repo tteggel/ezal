@@ -1,5 +1,5 @@
-//! Manual rotator control, feedback acquisition and advisory pass prediction.
-//! Firmware boots idle; only fresh operator input can request movement.
+//! Leased manual control, device-owned tracking and background pass prediction.
+//! Firmware boots idle; browser-independent execution needs an explicitly armed pass.
 
 #![no_std]
 #![no_main]
@@ -12,6 +12,7 @@ mod feedback;
 mod prediction;
 mod state;
 mod time;
+mod tracking;
 mod watchdog;
 mod web;
 mod wifi;
@@ -185,6 +186,7 @@ async fn main(spawner: Spawner) {
     );
     spawner.spawn(time::synchronize(stack).expect("static task pool exhausted"));
     spawner.spawn(prediction::run(stack).expect("static task pool exhausted"));
+    spawner.spawn(tracking::run(&state::STATE).expect("static task pool exhausted"));
 
     // Start acceptors while offline. They remain registered across reconnects,
     // so successful retries expose the dashboard without rebuilding the stack.

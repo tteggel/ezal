@@ -1,26 +1,29 @@
-//! Embassy synchronization around pure manual-control coordination.
+//! Core-0 thread-executor synchronization around the device owner.
+//! No core-1 or interrupt-executor task may access this state. Thread-mode
+//! locking leaves IRQs enabled during bounded propagation/planning steps.
 //!
 //! No lock crosses an await or performs I/O. The signal is only a wake hint;
 //! every actuator iteration drains a coherent input from the stored state.
 
 use core::cell::RefCell;
-use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
+use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
 use embassy_sync::signal::Signal;
 use embassy_time::Instant;
-use ezal_core::actuator::{ActuatorInput, ActuatorStatus};
+use ezal_core::actuator::{Actuator, ActuatorInput};
 use ezal_core::coordination::{ControlStatus, CoordinationState, TelemetrySnapshot};
-use ezal_core::drive::DriveCommand;
 use ezal_core::feedback::FeedbackSnapshot;
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::network::NetworkGate;
+use ezal_core::ntp::UtcClock;
+use ezal_core::operator::{OperatorGrant, OperatorToken};
 use ezal_core::position::FeedbackVoltages;
 
 pub static STATE: SharedState = SharedState::new();
 
 pub struct SharedState {
-    inner: Mutex<CriticalSectionRawMutex, RefCell<CoordinationState>>,
-    changed: Signal<CriticalSectionRawMutex, ()>,
+    inner: Mutex<ThreadModeRawMutex, RefCell<CoordinationState>>,
+    changed: Signal<ThreadModeRawMutex, ()>,
 }
 
 impl SharedState {
@@ -31,7 +34,7 @@ impl SharedState {
         }
     }
 
-    fn with<R>(&self, operation: impl FnOnce(&mut CoordinationState) -> R) -> R {
+    pub(crate) fn with<R>(&self, operation: impl FnOnce(&mut CoordinationState) -> R) -> R {
         self.inner.lock(|state| operation(&mut state.borrow_mut()))
     }
 
@@ -55,7 +58,11 @@ impl SharedState {
     }
 
     pub fn publish_feedback(&self, feedback: FeedbackSnapshot, interlock: FeedbackInterlock) {
-        self.wake_if(self.with(|state| state.publish_feedback(feedback, interlock)));
+        self.wake_if(
+            self.with(|state| {
+                state.publish_feedback(feedback, interlock, Instant::now().as_millis())
+            }),
+        );
     }
 
     pub fn feedback(&self) -> FeedbackSnapshot {
@@ -83,7 +90,9 @@ impl SharedState {
     }
 
     pub fn release_client(&self, client_id: u32) {
-        self.wake_if(self.with(|state| state.release_client(client_id)));
+        self.wake_if(
+            self.with(|state| state.release_client(client_id, Instant::now().as_millis())),
+        );
     }
 
     pub fn accept_command(&self, client_id: u32, command: CommandEnvelope) -> bool {
@@ -94,8 +103,30 @@ impl SharedState {
         accepted
     }
 
-    pub fn record_actuator(&self, drive: DriveCommand, status: ActuatorStatus) {
-        self.with(|state| state.record_actuator(drive, status));
+    pub fn record_actuator(&self, actuator: &Actuator, now_ms: u64) {
+        self.with(|state| state.record_actuator(actuator, now_ms));
+    }
+
+    pub fn execute_tracking(&self, now_ms: u64) {
+        self.with(|state| state.execute_tracking(now_ms));
+    }
+
+    pub fn execution_deadline_ms(&self) -> Option<u64> {
+        self.with(|state| state.tracking().execution_deadline_ms())
+    }
+
+    pub fn publish_clock(&self, clock: UtcClock) {
+        self.with(|state| state.publish_clock(clock, Instant::now().as_millis()));
+        self.changed.signal(());
+    }
+
+    pub fn operator(&self, client_id: u32, now_ms: u64) -> Option<OperatorGrant> {
+        self.with(|state| state.operator(client_id, now_ms))
+    }
+
+    pub fn renew_operator(&self, token: OperatorToken, now_ms: u64) {
+        self.with(|state| state.renew_operator(token, now_ms));
+        self.changed.signal(());
     }
 
     pub fn take_actuator_input(&self, now_ms: u64) -> ActuatorInput {

@@ -4,12 +4,13 @@ The firmware displays a rolling six-hour forecast at `/api/passes` and
 in the dashboard. NTP synchronization starts after DHCP. TLE download waits
 for valid UTC, then the firmware computes SGP4 reception windows independently
 of dashboard connections. These windows are advisory and never authorize
-movement. The firmware boots idle and moves only in response to manual
-dashboard input; real tracking is deferred.
+movement. The firmware boots idle. Device-owned tracking execution is integrated
+in T7; the dashboard currently exposes manual control, with selection/arming
+API work scheduled for T8.
 
 The [planned tracking behavior](#planned-tracking) below records the agreed
-workflow and provisional commissioning values. It is a design for future
-firmware, separate from the advisory behavior described in the other sections.
+workflow and provisional commissioning values. Milestone sections below
+distinguish implemented policy/integration from remaining UI and board validation.
 
 ## Station configuration
 
@@ -657,7 +658,8 @@ commissioning supplies that evidence.
   reception as complete-window support or arm an unsupported diagnostic route.
   Test late arming and planned keyhole gaps. Depends on T3–T6; required before
   completing the agreed partial-pass behavior in T7/T8.
-- [ ] **T7 — Independent firmware execution.** Wire tracking into its own
+- [ ] **T7 — Independent firmware execution.** Software implemented; board
+  validation pending. Wire tracking into its own
   serviced task and the existing output boundary with short internal command
   leases. Keep downloads and incremental planning out of the live control
   task. Check Pico memory, execution time and watchdog behavior with prediction,
@@ -868,13 +870,10 @@ plan-update/freeze/cancel races, early preparation, manual admission and LOS.
 A test feeds cancellation through the real actuator at a queued activation's
 deadline and verifies that no pulse starts and consumed duty is retained.
 
-This is core policy, not a second live output path. The current firmware still
-uses its manual `CoordinationState` and WebSocket ownership behavior. T7/T8 must
-replace that authority/mailbox path with `TrackingRuntime`, serialize input
-updates and preparation transitions, service deadlines, and bind browser and
-executor requests to their respective generations. In particular, socket
-cleanup must use lease release instead of unconditionally stopping tracking.
-Only the device output task applies GPIOs and feeds the watchdog.
+T7 now embeds this runtime in `CoordinationState`, replacing the separate
+manual authority/mailbox. Socket cleanup releases the operator lease and leaves
+a device-owned run intact. Only the device output task applies GPIOs and feeds
+the watchdog. T8 will expose selection and arming through the browser.
 
 ### Current execution-input milestone
 
@@ -962,7 +961,7 @@ browser-independent execution, network interruption, queued-output inhibition
 and boot disarming.
 
 Firmware now uses the framed catalog publication path and quantified NTP
-samples. Live following/output ownership and UI wiring remain T7/T8 work.
+samples. Following/output ownership is integrated in T7; UI wiring remains T8.
 That integration must publish complete source revisions **before** servicing a
 simultaneous preparation deadline, use `TrackingRuntime` rather than bypassing
 it with the generic lifecycle, and provide current clock/network observations
@@ -1118,4 +1117,75 @@ Validation: 284 Rust tests (including the doctest), 50 dashboard tests, host and
 Pico Clippy, formatting and the Pico release build. Firmware remains manual
 only until the integration work; no firmware was flashed for this milestone.
 
-Next task: **T7 — Independent firmware execution**.
+The following milestone integrates this policy into firmware.
+
+## Independent firmware execution (T7)
+
+The firmware now has one device owner: `CoordinationState` contains
+`TrackingRuntime`, and both manual requests and tracking use its exclusive
+operator lease and sticky command mailbox. The old transferable manual authority
+has been removed. A viewer cannot take an unexpired five-second lease. A
+single-use, one-second WebSocket Ping/Pong challenge renews only the original
+grant; reads, repeated claims, replayed pongs and expired grants cannot renew it.
+Closing the browser releases its lease without stopping an armed pass.
+
+The existing GPIO task services preparation, measured readiness, normal
+following and bounded recovery independently of browsers. It first drains current
+inhibition/permissions, services and physically applies the actuator, then generates
+a tracking command from that coherent snapshot. A second drain uses the actual
+current time. Every intermediate output transition reaches GPIO and follower
+history. Preparation requires two seconds of distinct fresh, settled observations;
+recovery hands its physical pulse/coast history to normal following on success.
+Completion/cancellation hold the final position without parking or another pass.
+
+Idle service remains 100 ms. Armed/live tracking aims for 10 ms, shortened by
+relay, feedback, network, preparation, recovery-launch and LOS deadlines. The
+750 ms internal lease still covers the required 500 ms relay activation. A
+separate cadence gate stops normal tracking if service exceeds the plan's 20 ms
+maximum; stale commands cannot start a pending relay on drain. Recovery discards
+late work and retries within the original episode. A stopped whole executor
+cannot apply a cut until it resumes or the 500 ms hardware watchdog resets it;
+20 ms is an execution requirement, not a demonstrated physical release time.
+Only the GPIO task feeds that watchdog, after both output services.
+
+The new `tracking` task owns a statically bounded preview planner and steps both
+preview and recovery work cooperatively. Each bounded unit yields without an
+artificial millisecond sleep. Downloads yield after every bounded parsing chunk;
+forecasting retains its own cooperative task. Complete forecasts and their exact
+orbital snapshots publish atomically. Clock corrections and changed starting
+pose/duty/history invalidate preview work before it can freeze; fresh ADC
+*timestamps alone* do not restart planning. Installed calibration/motion settings
+remain compile-time revisions. Noisy changing starting positions can prevent a
+stable preview from completing; commissioning must check this with real feedback.
+All shared tracking/forecast users run on the single core-0 thread executor.
+Thread-mode borrows keep interrupts enabled and never span an await or I/O.
+
+The production coordination/execution host tests run real-orbit preparation,
+following and LOS with delayed feedback, eight viewers, incremental forecasts
+and streamed download parsing. They also cover owner-only cancellation, browser
+loss, changed-start/preparation races, stale control/drain inhibition, late
+admission, and recovery-to-following handoff. These establish ordering and
+bounded-work behavior, not Pico execution speed or RF reception.
+
+The Pico release image uses approximately 262 KiB of static RAM, including an
+approximately 82 KiB tracking worker pool and eight web sessions. Removing a
+whole-planner move reduced the worker poll's local stack allocation from about
+200 KiB to 62 KiB. Report publication has another roughly 53 KiB frame;
+`memory.x` now requires at least 192 KiB of free shared stack capacity at link
+time. This is a capacity/assembly check, not a measured stack high-water mark.
+
+A once-per-minute diagnostic reports maximum output service duration, active
+service gap, preview/recovery step times, whole worker poll time, and work count.
+**No firmware was flashed and no board timing or watchdog-release measurement
+was taken for this implementation.** The [board procedure](DEVELOPMENT.md#tracking-execution-load-check)
+must still verify the 20 ms maximum interval, two-second recovery computation
+lead, five-second late-admission lead, stack headroom and physical watchdog
+release under concurrent network/viewer load. T7 remains open for those checks.
+The next software task is **T8 — Tracking API and dashboard**; routine hardware
+tracking also remains subject to T9 acceptance and T10 commissioning.
+
+Software validation: 292 Rust tests (including the doctest), 50 dashboard tests,
+host/Pico Clippy, formatting, build-tool checks and the Pico release build pass.
+The final release has 40,792 bytes of `.data`, 226,756 bytes of `.bss` and
+1,024 bytes of `.uninit`: 268,572 bytes of static RAM and 263,908 bytes remaining
+for the shared stack. The 192 KiB linker reserve passes.

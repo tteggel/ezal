@@ -25,7 +25,7 @@ use ezal_core::passes::Report;
 use ezal_core::protocol::{
     ClientMessage, TelemetryMessage, CONTROL_STATUS_CAPACITY, TELEMETRY_CAPACITY, WS_PATH,
 };
-use ezal_core::session::{CommandFreshness, TELEMETRY_PERIOD_MS};
+use ezal_core::session::{CommandFreshness, LeaseHeartbeat, TELEMETRY_PERIOD_MS};
 
 use crate::state::{SharedState, STATE};
 
@@ -193,6 +193,7 @@ async fn send_telemetry<W: PicoserveWrite>(
     state: &'static SharedState,
     client_id: u32,
     freshness: &mut CommandFreshness,
+    heartbeat: &mut LeaseHeartbeat,
 ) -> Result<(), SocketError<W::Error>> {
     // Stamp before the state read and socket write. Slow delivery consumes the
     // original token lifetime instead of granting a fresh lease on completion.
@@ -210,7 +211,14 @@ async fn send_telemetry<W: PicoserveWrite>(
     message
         .write_json(&mut payload)
         .map_err(|_| SocketError::Encoding)?;
+    // Bind the ping before either write; buffered replies retain their age.
+    let ping = state
+        .operator(client_id, now_ms)
+        .and_then(|grant| heartbeat.issue(grant.token, now_ms));
     tx.send_text(&payload).await?;
+    if let Some(ping) = ping {
+        tx.send_ping(&ping).await?;
+    }
     Ok(())
 }
 
@@ -269,11 +277,12 @@ impl DashboardSocket {
         let session = ClientSession::register(state);
         let client_id = session.id;
         let mut freshness = CommandFreshness::new(client_id);
+        let mut heartbeat = LeaseHeartbeat::default();
         let mut read_buffer = [0; ws_receive::MESSAGE_BUFFER_SIZE];
         let telemetry_period = Duration::from_millis(TELEMETRY_PERIOD_MS);
         let mut next_telemetry = Instant::now() + telemetry_period;
 
-        send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
+        send_telemetry(&mut tx, state, client_id, &mut freshness, &mut heartbeat).await?;
 
         loop {
             let event = match ws_receive::next_message(
@@ -357,7 +366,8 @@ impl DashboardSocket {
                     }
 
                     if parsed == Some(ClientMessage::TakeControl) {
-                        send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
+                        send_telemetry(&mut tx, state, client_id, &mut freshness, &mut heartbeat)
+                            .await?;
                     } else {
                         send_control_status(&mut tx, state, client_id).await?;
                     }
@@ -368,7 +378,12 @@ impl DashboardSocket {
                         yield_now().await;
                     }
                 }
-                ReceiveEvent::Message(Message::Pong(_)) => {}
+                ReceiveEvent::Message(Message::Pong(data)) => {
+                    let now = Instant::now().as_millis();
+                    if let Some(token) = heartbeat.acknowledge(data, now) {
+                        state.renew_operator(token, now);
+                    }
+                }
                 ReceiveEvent::Message(Message::Ping(data)) => tx.send_pong(data).await?,
                 ReceiveEvent::Message(Message::Close(reason)) => {
                     // Revoke motion before awaiting the close response: a peer
@@ -378,7 +393,8 @@ impl DashboardSocket {
                     return tx.close(reason).await.map_err(SocketError::Io);
                 }
                 ReceiveEvent::Telemetry => {
-                    send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
+                    send_telemetry(&mut tx, state, client_id, &mut freshness, &mut heartbeat)
+                        .await?;
 
                     while next_telemetry <= Instant::now() {
                         next_telemetry += telemetry_period;

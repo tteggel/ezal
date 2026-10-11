@@ -18,6 +18,9 @@ use std::sync::OnceLock;
 #[path = "common/tracking_recovery.rs"]
 mod recovery;
 
+#[path = "common/tracking_execution.rs"]
+mod execution;
+
 const TLES: &str = include_str!("fixtures/weather-2026-10-07.tle");
 const EVENT: PassEvent = PassEvent {
     norad_id: 39260,

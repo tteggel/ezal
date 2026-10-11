@@ -138,3 +138,23 @@ fn network_recovery_invalidates_even_unexpired_queued_presses() {
     freshness.observe_network(2, false);
     assert_eq!(freshness.admit(movement(new.token, 4, true), 110), None);
 }
+
+#[test]
+fn lease_heartbeats_are_fresh_single_use_and_bound_to_the_original_grant() {
+    use ezal_core::operator::OperatorLease;
+    use ezal_core::session::LeaseHeartbeat;
+    let mut leases = OperatorLease::new();
+    let original = leases.claim(1, 0).unwrap().token;
+    let mut heartbeat = LeaseHeartbeat::default();
+    let timely = heartbeat.issue(original, 0).unwrap();
+    assert_eq!(heartbeat.acknowledge(&timely, 999), Some(original));
+    assert_eq!(heartbeat.acknowledge(&timely, 999), None);
+    let old = heartbeat.issue(original, 1000).unwrap();
+    assert_eq!(heartbeat.acknowledge(&old, 2000), None);
+    let delayed = heartbeat.issue(original, 4500).unwrap();
+    let successor = leases.claim(2, 5000).unwrap().token;
+    let old_token = heartbeat.acknowledge(&delayed, 5001).unwrap();
+    assert!(leases.renew(old_token, 5001).is_err());
+    assert_eq!(leases.current(5001).unwrap().token, successor);
+    assert_eq!(heartbeat.acknowledge(&[1, 2, 3], 5001), None);
+}

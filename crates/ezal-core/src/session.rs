@@ -1,6 +1,43 @@
 //! Manual-session timing and operator-intent admission, independent of transport.
 
 use crate::drive::{DriveCommand, MOVEMENT_LEASE_MS, OUTPUT_MIN_ACTIVE_MS};
+use crate::operator::OperatorToken;
+
+/// Bounded round-trip challenges for automatic WebSocket Ping/Pong ownership
+/// heartbeats. Each challenge is single-use and bound to its original grant;
+/// telemetry reads, replayed pongs and expired grants cannot renew ownership.
+#[derive(Default)]
+pub struct LeaseHeartbeat {
+    serial: u64,
+    pending: [Option<(CommandToken, OperatorToken)>; 3],
+    slot: usize,
+}
+
+impl LeaseHeartbeat {
+    /// Issue a ping payload for the currently leased connection only.
+    pub fn issue(&mut self, grant: OperatorToken, now_ms: u64) -> Option<[u8; 8]> {
+        self.serial = self.serial.checked_add(1)?;
+        let challenge = CommandToken {
+            token: self.serial,
+            expires_ms: now_ms.checked_add(COMMAND_MAX_AGE_MS)?,
+        };
+        self.pending[self.slot] = Some((challenge, grant));
+        self.slot = (self.slot + 1) % self.pending.len();
+        Some(self.serial.to_be_bytes())
+    }
+
+    /// Consume a timely pong. The owner must still validate the returned grant
+    /// against the live lease; an old heartbeat can never claim a new one.
+    pub fn acknowledge(&mut self, pong: &[u8], now_ms: u64) -> Option<OperatorToken> {
+        let serial = u64::from_be_bytes(pong.try_into().ok()?);
+        let slot = self
+            .pending
+            .iter_mut()
+            .find(|slot| slot.is_some_and(|(t, _)| t.token == serial))?;
+        let (challenge, grant) = slot.take()?;
+        (now_ms < challenge.expires_ms).then_some(grant)
+    }
+}
 
 /// How often the firmware sends a complete telemetry observation to
 /// each dashboard connection. Feedback sampling has its own faster period,

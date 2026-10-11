@@ -14,7 +14,8 @@ use crate::mailbox::{CommandEnvelope, CommandMailbox};
 use crate::motion::MotionFault;
 use crate::operator::{LeaseError, OperatorGrant, OperatorLease, OperatorToken};
 
-/// All input revisions are boot-local, monotonically increasing server counters.
+/// Input revisions are boot-local server counters, monotonic within a selection.
+/// A new satellite selection can use its own older orbital publication.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PlanRevisions {
     /// Accepted orbital data, including source/expiry metadata.
@@ -241,6 +242,8 @@ pub enum TrackingStop {
     Motion(MotionFault),
     /// Feedback is missing, stale, invalid or out of timestamp order.
     Feedback(FeedbackHealth),
+    /// The device follower missed the maximum interval evaluated by its plan.
+    ExecutionDeadline,
     /// Recovery exhausted its original 30-second episode budget.
     ReacquisitionTimeout,
     /// LOS arrived while the dish was still reacquiring.
@@ -609,6 +612,12 @@ impl<S> TrackingSession<S> {
                     original: pass,
                     current: Some(pass),
                 });
+                // Orbital publication revisions belong to a satellite. A
+                // different selection may legitimately use an older cached
+                // publication; installation/clock/start counters still follow.
+                if let Some(revisions) = self.revisions.as_mut() {
+                    revisions.orbit = 0;
+                }
             }
             TrackingAction::Arm => {
                 if self.mode != TrackingMode::Manual || !self.armable(now_ms) {

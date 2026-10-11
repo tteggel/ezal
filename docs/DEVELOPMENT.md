@@ -197,8 +197,9 @@ fresh, valid calibrated feedback at the final GPIO boundary.
 Initial calibration uses the G-5500 front-panel controls with the Pico's
 direction leads disconnected; see [CALIBRATION.md](CALIBRATION.md).
 
-The output task arms a 500 ms hardware watchdog, serviced on a fixed 100 ms
-schedule while the executor runs normally. It continues counting during a
+The output task arms a 500 ms hardware watchdog, serviced every 100 ms while
+idle and aiming for 10 ms while tracking, with earlier policy deadlines taking
+precedence. It continues counting during a
 debugger halt. A timeout resets the output hardware and boot then inhibits
 motion before ADC or network startup. Inspect the fault before clearing that
 state with a board reset, debugger reset, or power cycle. A UF2 or `picotool`
@@ -211,7 +212,8 @@ exponential backoff capped at 30 seconds. HTTP acceptors are started without
 waiting for the first address, so a late AP or DHCP recovery exposes the
 dashboard without resetting the board. Successful link/address observations
 renew a 300 ms motion permit every 100 ms; the output task expires that permit
-independently if supervision stalls. Internet access is not required.
+independently if supervision stalls. Manual control does not require Internet access; tracking needs valid cached
+orbital data and a quantified clock.
 
 ### Build a UF2 for BOOTSEL flashing
 
@@ -451,3 +453,53 @@ to `thumbv8m.main-none-eabihf` in `.vscode/settings.json`:
 ```
 
 (Not committed to keep editor preferences out of the repo.)
+
+### Tracking execution load check
+
+T7's software integration and host tests do not establish board timing. After
+T8 supplies the selection/arming API, perform this check with the direction
+leads disconnected and suitable feedback simulation first; use the existing
+commissioning procedure before powered movement. The installed calibration
+still limits azimuth/elevation to 360°/90° until measured replacements are made.
+
+1. Build the release image and inspect RAM with the pinned tools; no extra
+   `cargo-binutils` installation is needed:
+
+   ```bash
+   EZAL_TOOLS="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+   "$EZAL_TOOLS/llvm-size" -A target/thumbv8m.main-none-eabihf/release/ezal-firmware
+   "$EZAL_TOOLS/llvm-objdump" -d --demangle target/thumbv8m.main-none-eabihf/release/ezal-firmware
+   ```
+
+   Include `.data`, `.bss` and `.uninit`; Embassy task pools include all eight
+   web acceptors and the planner. The linker reserves at least 192 KiB of free
+   stack capacity. Inspect the tracking poll and plan-publication stack frames
+   after compiler/structure changes, then measure high-water use on the board.
+   The assembly check alone does not bound nested calls plus interrupt use.
+
+2. Open eight viewers and exercise forecast computation and a TLE download while
+   preparing/following an armed pass. Close/reopen the controller and pause a
+   slow viewer. Confirm the pass continues and only a currently leased controller
+   can cancel it. Confirm manual input cannot interrupt Tracking mode. No viewer
+   read or failed takeover should extend ownership.
+
+3. Record the once-per-minute `tracking timing maxima` diagnostic. It reports
+   output service time, active service gap, planner/recovery step time, complete
+   worker poll time and number of planner steps. Active control must fit the
+   frozen plan's 20 ms maximum interval with headroom; the task aims for 10 ms.
+   Test both full-window and late/partial passes. Measure total planning time:
+   recovery must finish before its fixed two-second launch lead, and a late
+   admission must finish before its five-second entry lead. Longer jobs must
+   hold/fail visibly rather than run an unchecked late trajectory.
+
+4. Suspend background planning alone; GPIO/watchdog service must continue,
+   holding during an unresolved intercept. Delay a normal control step beyond
+   20 ms and check inhibition with `ExecutionDeadline`, including a relay waiting
+   to activate. Delay a recovery launch/control step and check bounded hold/retry.
+   Drop link/address permission and confirm no automatic restart on recovery.
+
+5. Repeat the watchdog fault-injection checks above with tracking active. Only
+   the GPIO task feeds it. Measure actual pad release and the watchdog-fault
+   boot inhibition; a planned 20 ms service interval is not a guarantee of
+   20 ms output release during a whole-executor stall. Save timing, stack and
+   logic-analyzer evidence with the hardware/profile identity before closing T7.
