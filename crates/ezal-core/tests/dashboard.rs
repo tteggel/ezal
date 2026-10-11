@@ -16,11 +16,11 @@ fn dashboard_loads_firmware_configuration_before_the_client() {
 }
 
 #[test]
-fn pressed_direction_buttons_only_look_active_when_the_firmware_agrees() {
-    // The behavioural tests drive a DOM without CSS, so assert the rule that
-    // keeps a held button looking idle until telemetry reports that axis
-    // driving. Without it the operator could believe a refused command ran.
-    assert!(INDEX_HTML.contains(".dir:active:not(.active)"));
+fn held_direction_buttons_have_feedback_separate_from_applied_output() {
+    // The behavioural tests drive a DOM without CSS. Input feedback must
+    // have its own style without overriding the firmware's active output.
+    assert!(INDEX_HTML.contains(".dir.held:not(.active)"));
+    assert!(INDEX_HTML.contains(".dir.active"));
 }
 
 #[test]

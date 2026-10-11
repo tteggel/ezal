@@ -73,6 +73,7 @@ header {
   font-weight: 700;
 }
 .take {
+  cursor: pointer;
   min-height: 32px;
   padding: 0 12px;
   border: 1px solid #1d272b;
@@ -88,12 +89,17 @@ header {
   -webkit-touch-callout: none;
 }
 .take:disabled {
+  cursor: not-allowed;
   border-color: var(--line);
   background: var(--panel);
   color: var(--muted);
 }
 .take:not(:disabled):active {
   background: var(--teal-dark);
+}
+.take:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 3px;
 }
 .status::before {
   content: "";
@@ -188,6 +194,10 @@ header {
   background: var(--panel);
   box-shadow: var(--shadow);
 }
+.pad-wrap h2 { margin: 0; font-size: 1rem; }
+.control-help, .control-status { font-size: 0.82rem; line-height: 1.5; }
+.control-help { margin: 8px 0 16px; color: var(--muted); }
+.control-status { margin: 16px 0 0; font-weight: 700; }
 .pad {
   display: grid;
   grid-template-columns: repeat(3, minmax(72px, 1fr));
@@ -196,6 +206,7 @@ header {
   aspect-ratio: 1;
 }
 .dir {
+  cursor: pointer;
   width: 100%;
   height: 100%;
   border: 0;
@@ -212,10 +223,19 @@ header {
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
 }
-.dir:active:not(.active) {
-  background: #1d272b;
-  transform: none;
-  box-shadow: inset 0 -4px 0 rgba(0,0,0,0.24);
+@media (hover: hover) {
+  .dir:not(:disabled):not(.held):not(.active):hover {
+    background: #344b52;
+    transform: translateY(-1px);
+  }
+  .take:not(:disabled):hover { background: var(--teal-dark); }
+}
+/* Amber acknowledges input immediately; teal still means applied output. */
+.dir.held:not(.active) {
+  background: #fff0bf;
+  color: #634907;
+  transform: translateY(2px);
+  box-shadow: inset 0 -2px 0 rgba(99,73,7,0.24), 0 0 0 2px var(--gold);
 }
 .dir.active {
   background: #079e91;
@@ -226,7 +246,7 @@ header {
     0 13px 30px rgba(20, 122, 115, 0.38);
 }
 .dir:disabled {
-  cursor: default;
+  cursor: not-allowed;
   opacity: 0.52;
 }
 .dir:disabled.active {
@@ -311,14 +331,18 @@ header {
       <span class="detail">drive <span id="elevation-drive" class="drive-state" aria-live="polite">unknown</span></span>
     </div>
   </section>
-  <section class="pad-wrap" aria-label="Direction controls">
+  <section class="pad-wrap" aria-labelledby="controls-title">
+    <h2 id="controls-title">Manual control</h2>
+    <p id="control-help" class="control-help">Hold a direction to move; release to stop. With a keyboard, focus a button and hold Space or Enter.</p>
     <div class="pad">
-      <button class="dir up" data-cmd="up" aria-label="Move up">UP</button>
-      <button class="dir left" data-cmd="ccw" aria-label="Move counter-clockwise">CCW</button>
-      <div class="center" aria-hidden="true">idle</div>
-      <button class="dir right" data-cmd="cw" aria-label="Move clockwise">CW</button>
-      <button class="dir down" data-cmd="down" aria-label="Move down">DOWN</button>
+      <button class="dir up" type="button" data-cmd="up" aria-label="Move up" aria-describedby="control-help control-status" disabled>UP</button>
+      <button class="dir left" type="button" data-cmd="ccw" aria-label="Move counter-clockwise" aria-describedby="control-help control-status" disabled>CCW</button>
+      <div id="control-state" class="center" aria-hidden="true">waiting</div>
+      <button class="dir right" type="button" data-cmd="cw" aria-label="Move clockwise" aria-describedby="control-help control-status" disabled>CW</button>
+      <button class="dir down" type="button" data-cmd="down" aria-label="Move down" aria-describedby="control-help control-status" disabled>DOWN</button>
     </div>
+    <p id="control-status" class="control-status" role="status">Connecting to the controller…</p>
+    <noscript>Enable JavaScript to use manual controls.</noscript>
   </section>
   <section class="passes" aria-labelledby="passes-title">
     <h2 id="passes-title">HRPT passes · next 6 hours</h2>
@@ -340,12 +364,16 @@ header {
 <script>
 (() => {
   const config = window.EZAL_CONFIG;
+  const configured = config && typeof config.wsPath === "string"
+    && Number.isFinite(config.refreshMs) && config.refreshMs > 0
+    && Number.isFinite(config.telemetryTimeoutMs) && config.telemetryTimeoutMs > 0;
   const axes = { cw: "azimuth", ccw: "azimuth", up: "elevation", down: "elevation" };
   const idle = () => ({ azimuth: null, elevation: null });
   const hasDesired = (state) => Boolean(state.held.azimuth || state.held.elevation);
   const telemetryFresh = (state, now) => state.token !== null && now < state.telemetryUntil;
+  const feedbackReady = (state) => state.telemetry?.feedback.control_state === "idle";
   const canControl = (state, now) => state.connected && state.controller && state.networkReady
-    && !state.motionFault && !state.hidden && telemetryFresh(state, now);
+    && !state.motionFault && !state.hidden && telemetryFresh(state, now) && feedbackReady(state);
   const canTake = (state, now) => state.connected && !state.controller && state.networkReady
     && !state.motionFault && telemetryFresh(state, now);
   const initialControl = () => ({
@@ -367,7 +395,7 @@ header {
         && typeof message.freshness.token === "string" && /^\d+$/.test(message.freshness.token)));
   };
 
-  // This transition has no browser I/O. Each axis owns at most one pointer;
+  // This transition has no browser I/O. Each axis owns at most one input;
   // held input and the firmware's applied drive remain distinct state.
   const transition = (previous, event, now, settings) => {
     const state = { ...previous, held: { ...previous.held }, drive: { ...previous.drive } };
@@ -431,7 +459,7 @@ header {
           state.telemetryUntil = now + settings.telemetryTimeoutMs;
           control(message.control);
           state.status = state.token === null ? "telemetry lost" : "online";
-          if (state.token === null) clearHeld();
+          if (state.token === null || !feedbackReady(state)) clearHeld();
         } else if (message.type === "control") {
           // Acknowledgements update applied output, never telemetry lifetime.
           control(message);
@@ -443,14 +471,14 @@ header {
       case "press": {
         const axis = axes[event.direction];
         if (!axis || state.held[axis] || !canControl(state, now)) break;
-        state.held[axis] = { pointerId: event.pointerId, direction: event.direction };
+        state.held[axis] = { source: event.source, id: event.id, direction: event.direction };
         movement(true);
-        effects.push({ type: "capture", direction: event.direction, pointerId: event.pointerId });
+        if (event.source === "pointer") effects.push({ type: "capture", direction: event.direction, pointerId: event.id });
         break;
       }
       case "release":
         for (const axis of ["azimuth", "elevation"]) {
-          if (state.held[axis]?.pointerId !== event.pointerId) continue;
+          if (state.held[axis]?.source !== event.source || state.held[axis]?.id !== event.id) continue;
           state.held[axis] = null;
           movement(false);
           break;
@@ -485,6 +513,8 @@ header {
   const azimuth = document.getElementById("azimuth");
   const elevation = document.getElementById("elevation");
   const health = document.getElementById("health");
+  const controlState = document.getElementById("control-state");
+  const controlStatus = document.getElementById("control-status");
   const driveIndicators = {
     azimuth: document.getElementById("azimuth-drive"),
     elevation: document.getElementById("elevation-drive")
@@ -495,12 +525,41 @@ header {
   let repeat = 0;
   const degrees = (tenths) => tenths === null || tenths === undefined ? "--" : (tenths / 10).toFixed(1);
 
+  const controlView = (now) => {
+    if (!configured) return ["unavailable", "Control settings failed to load. Reload this page."];
+    if (!state.connected) return ["offline", "Controls unavailable. Reconnecting to the controller…"];
+    if (!telemetryFresh(state, now)) return ["waiting", "Controls unavailable. Waiting for fresh controller data…"];
+    if (!state.networkReady) return ["offline", "Controls unavailable. The controller's network connection is not ready."];
+    if (state.motionFault) return ["locked", `Movement locked: ${state.motionFault.replaceAll("_", " ")}.`];
+    if (!state.controller) return ["viewer", "Select Take control above to enable the direction buttons."];
+    if (state.hidden) return ["paused", "Controls paused while this page is hidden."];
+    const feedback = state.telemetry.feedback.control_state;
+    if (!feedbackReady(state)) {
+      const reason = {
+        "feedback-invalid": "Position feedback is outside the calibrated range. Check the A0/A1 readings and calibration.",
+        "calibration-invalid": "The installed position calibration is invalid.",
+        "no-feedback": "Waiting for position feedback from the controller.",
+        "feedback-stale": "Position feedback is stale. Check the feedback connection.",
+        "timestamp-invalid": "Position feedback timing is invalid.",
+      }[feedback] || `Check position feedback (${feedback.replaceAll("-", " ")}).`;
+      return ["blocked", `Movement blocked. ${reason}`];
+    }
+    const held = Object.values(state.held).filter(Boolean).map((claim) => claim.direction);
+    const applied = Object.values(state.drive).filter(Boolean);
+    const waiting = held.filter((direction) => !applied.includes(direction));
+    if (waiting.length) return ["waiting", `${waiting.join(" + ").toUpperCase()} requested. Waiting for movement confirmation; release to cancel.`];
+    if (applied.length) return held.length
+      ? ["driving", `Driving ${applied.join(" + ").toUpperCase()}. Release to stop.`]
+      : ["stopping", "Released. Waiting for the controller to confirm stop."];
+    return ["ready", "Ready. Amber means requested; green means the controller reports an active drive output."];
+  };
+
   const renderControl = () => {
     const now = performance.now();
     const known = telemetryFresh(state, now);
     const data = known ? state.telemetry : null;
     const online = known && state.networkReady;
-    setText(status, known && !state.networkReady ? "network unavailable" : state.status);
+    setText(status, !configured ? "configuration unavailable" : known && !state.networkReady ? "network unavailable" : state.status);
     status.classList.toggle("online", online);
     setText(a0, data ? data.position.a0_mv : "--");
     setText(a1, data ? data.position.a1_mv : "--");
@@ -509,9 +568,15 @@ header {
     setText(health, state.motionFault ? state.motionFault.replaceAll("_", " ") : data?.feedback.control_state ?? "unknown");
     take.disabled = !canTake(state, now);
     setText(take, state.controller ? "controller" : "take control");
+    const [summary, hint] = controlView(now);
+    setText(controlState, summary);
+    setText(controlStatus, hint);
+    take.title = canTake(state, now) ? "Take control to enable manual movement" : state.controller ? "You have control" : hint;
     buttons.forEach((button) => {
       const direction = button.dataset.cmd;
       button.disabled = !canControl(state, now);
+      button.title = button.disabled ? hint : `Hold to move ${direction.toUpperCase()}; release to stop`;
+      button.classList.toggle("held", state.held[axes[direction]]?.direction === direction);
       button.classList.toggle("active", Boolean(known && state.drive[axes[direction]] === direction));
     });
     Object.entries(driveIndicators).forEach(([axis, indicator]) => {
@@ -556,16 +621,36 @@ header {
   };
 
   take.addEventListener("click", () => dispatch({ type: "take" }));
+  const releasePointer = (event) => dispatch({ type: "release", source: "pointer", id: event.pointerId });
+  const checkPointer = (event) => { if ((event.buttons & 1) === 0) releasePointer(event); };
+  // Keep release effective outside the pad even if a browser drops capture.
+  for (const ending of ["pointerup", "pointercancel"]) window.addEventListener(ending, releasePointer);
+  window.addEventListener("pointermove", checkPointer);
   buttons.forEach((button) => {
+    const direction = button.dataset.cmd;
     button.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
-      dispatch({ type: "press", direction: button.dataset.cmd, pointerId: event.pointerId });
+      dispatch({ type: "press", direction, source: "pointer", id: event.pointerId });
     });
-    const release = (event) => dispatch({ type: "release", pointerId: event.pointerId });
-    for (const ending of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(ending, release);
+    for (const ending of ["pointerup", "pointercancel", "lostpointercapture"]) button.addEventListener(ending, releasePointer);
     // Releasing the primary button while another stays down is pointermove.
-    button.addEventListener("pointermove", (event) => { if ((event.buttons & 1) === 0) release(event); });
+    button.addEventListener("pointermove", checkPointer);
+    const keys = [" ", "Enter"];
+    const releaseKey = (key) => dispatch({ type: "release", source: "keyboard", id: `${direction}:${key}` });
+    button.addEventListener("keydown", (event) => {
+      if (!keys.includes(event.key)) return;
+      event.preventDefault();
+      // Auto-repeat must not revive a hold cleared by a fault or lost focus.
+      if (event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+      dispatch({ type: "press", direction, source: "keyboard", id: `${direction}:${event.key}` });
+    });
+    button.addEventListener("keyup", (event) => {
+      if (!keys.includes(event.key)) return;
+      event.preventDefault();
+      releaseKey(event.key);
+    });
+    button.addEventListener("blur", () => keys.forEach(releaseKey));
   });
   for (const ending of ["blur", "beforeunload", "pagehide"]) window.addEventListener(ending, () => dispatch({ type: "stop" }));
   document.addEventListener("visibilitychange", () => dispatch({ type: "visibility", hidden: document.hidden }));
@@ -684,7 +769,7 @@ header {
   setInterval(renderForecast, 1000);
   pollForecast();
   renderControl();
-  connect();
+  if (configured) connect();
 })();
 </script>
 </body>

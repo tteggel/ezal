@@ -50,6 +50,14 @@ application telemetry. Expiring server tokens prevent delayed commands from
 receiving a new unrestricted lease when they eventually arrive.
 
 Dashboard jogging requires fresh feedback inside the installed calibration.
+The direction buttons stay disabled when the controller reports unusable
+feedback, with the reason shown below the pad. `feedback-invalid` means at
+least one ADC voltage is outside the accepted calibrated range or at an ADC
+rail; being online and owning control does not clear that block. With the
+current values and the 25 mV margin, A0 must be 33–1306 mV and A1 must be
+89–2058 mV. If feedback becomes invalid during a hold, the dashboard stops
+the request; recovery requires releasing and pressing again.
+
 For initial measurements, keep the Pico's four direction leads disconnected
 and move the rotator with the G-5500 front-panel controls. The dashboard still
 reports raw ADC readings when calibration rejects them — including when the

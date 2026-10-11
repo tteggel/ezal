@@ -269,7 +269,7 @@ class Clock {
   }
 }
 
-function dashboard(protocol = "http:", autoTelemetry = true) {
+function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = configScript) {
   const ids = new Map([...html.matchAll(/\bid="([^"]+)"/g)]
     .map((match) => [match[1], new Element()]));
   const buttons = new Map([...html.matchAll(/\bdata-cmd="([^"]+)"/g)]
@@ -337,7 +337,7 @@ function dashboard(protocol = "http:", autoTelemetry = true) {
       this.dispatch("close");
     }
   }
-  runInNewContext(`${configScript}\n${scripts[0][1]}`, {
+  runInNewContext(`${clientConfig}\n${scripts[0][1]}`, {
     document,
     location: { protocol, host: "ezal.local" },
     window,
@@ -392,12 +392,16 @@ function controller(autoTelemetry = true) {
 
 test("a viewer must request and receive control before issuing motion", () => {
   const page = dashboard();
+  assert.match(page.ids.get("control-status").textContent, /Reconnecting/);
   page.press("cw", 1);
   page.socket.open();
   assert.equal(page.ids.get("status").textContent, "waiting for telemetry");
+  assert.match(page.ids.get("control-status").textContent, /Waiting for fresh controller data/);
   page.control(false);
   assert.equal(page.ids.get("status").textContent, "online");
   assert.equal(page.ids.get("take").disabled, false);
+  assert.match(page.ids.get("control-status").textContent, /Select Take control/);
+  assert.match(page.buttons.get("cw").title, /Select Take control/);
   for (const button of page.buttons.values()) assert.equal(button.disabled, true);
   page.ids.get("take").dispatch("click");
   page.press("cw", 1);
@@ -480,18 +484,193 @@ test("held commands use the served refresh interval and stop when released", () 
   ]);
 });
 
-test("button highlights and drive readouts follow applied output telemetry", () => {
+test("held inputs respond immediately while active highlights follow applied output", () => {
   const page = controller();
+  assert.equal(page.ids.get("control-state").textContent, "ready");
   page.press("cw", 1);
+  assert.equal(page.buttons.get("cw").classList.contains("held"), true);
   assert.equal(page.buttons.get("cw").classList.contains("active"), false);
+  assert.equal(page.ids.get("azimuth-drive").textContent, "IDLE");
+  assert.match(page.ids.get("control-status").textContent, /CW requested.*Waiting for movement confirmation/);
   page.control(true, "cw", null);
   assert.equal(page.buttons.get("cw").classList.contains("active"), true);
   assert.equal(page.ids.get("azimuth-drive").textContent, "CW");
+  assert.equal(page.ids.get("control-state").textContent, "driving");
   page.release("cw", 1);
+  assert.equal(page.buttons.get("cw").classList.contains("held"), false);
   assert.equal(page.buttons.get("cw").classList.contains("active"), true);
+  assert.equal(page.ids.get("control-state").textContent, "stopping");
   page.control(true, null, null);
   assert.equal(page.buttons.get("cw").classList.contains("active"), false);
   assert.equal(page.ids.get("azimuth-drive").textContent, "IDLE");
+  assert.equal(page.ids.get("control-state").textContent, "ready");
+});
+
+test("each requested axis shows waiting feedback until its own output is applied", () => {
+  const page = controller();
+  page.press("cw", 1);
+  page.press("up", 2);
+  page.control(true, "cw", null);
+  assert.match(page.ids.get("control-status").textContent, /^UP requested/);
+  assert.equal(page.buttons.get("up").classList.contains("held"), true);
+  assert.equal(page.buttons.get("up").classList.contains("active"), false);
+  page.release("up", 2, "pointercancel");
+  assert.equal(page.buttons.get("up").classList.contains("held"), false);
+  assert.match(page.ids.get("control-status").textContent, /Driving CW/);
+});
+
+for (const ending of ["pointerup", "pointercancel", "pointermove"]) {
+  test(`${ending} outside the pad releases only its pointer's axis if capture is lost`, () => {
+    const page = controller();
+    page.press("cw", 1);
+    page.press("up", 2);
+    page.window.dispatch(ending, { pointerId: 1, buttons: 2 });
+    assert.equal(page.socket.messages.at(-1), "drive:up");
+    assert.equal(page.buttons.get("cw").classList.contains("held"), false);
+    assert.equal(page.buttons.get("up").classList.contains("held"), true);
+    page.window.dispatch(ending, { pointerId: 2, buttons: 0 });
+    assert.equal(page.socket.messages.at(-1), "stop");
+    const sent = page.socket.messages.length;
+    page.window.dispatch(ending, { pointerId: 2, buttons: 0 });
+    assert.equal(page.socket.messages.length, sent);
+  });
+}
+
+for (const key of [" ", "Enter"]) {
+  test(`${JSON.stringify(key)} holds a focused direction and stops on key release`, () => {
+    const page = controller();
+    const button = page.buttons.get("up");
+    assert.equal(button.dispatch("keydown", { key }).defaultPrevented, true);
+    assert.match(page.socket.wireMessages.at(-1), /^press:\d+:\d+:drive:up$/);
+    assert.equal(button.classList.contains("held"), true);
+    assert.equal(button.classList.contains("active"), false);
+    assert.equal(button.captures.size, 0, "keyboard input does not capture a pointer");
+    button.dispatch("keydown", { key, repeat: true });
+    assert.equal(page.socket.wireMessages.length, 1, "auto-repeat is not a new press");
+    page.clock.advance(config.refreshMs);
+    assert.match(page.socket.wireMessages.at(-1), /^hold:\d+:\d+:drive:up$/);
+    assert.equal(button.dispatch("keyup", { key }).defaultPrevented, true);
+    assert.equal(page.socket.messages.at(-1), "stop");
+    assert.equal(button.classList.contains("held"), false);
+    const sent = page.socket.messages.length;
+    page.clock.advance(config.refreshMs * 2);
+    assert.equal(page.socket.messages.length, sent);
+  });
+}
+
+test("keyboard and pointer releases cannot cancel another input's axis claim", () => {
+  const page = controller();
+  const cw = page.buttons.get("cw");
+  page.press("cw", 1);
+  cw.dispatch("keydown", { key: " " });
+  cw.dispatch("keyup", { key: " " });
+  assert.deepEqual(page.socket.messages, ["drive:cw"]);
+  page.buttons.get("up").dispatch("keydown", { key: "Enter" });
+  assert.equal(page.socket.messages.at(-1), "drive:cw+up");
+  page.release("cw", 1);
+  assert.equal(page.socket.messages.at(-1), "drive:up");
+  page.release("up", 1);
+  assert.equal(page.socket.messages.at(-1), "drive:up");
+  page.buttons.get("up").dispatch("keyup", { key: "Enter" });
+  assert.equal(page.socket.messages.at(-1), "stop");
+});
+
+test("losing button focus stops keyboard motion and auto-repeat cannot restart it", () => {
+  const page = controller();
+  const button = page.buttons.get("cw");
+  button.dispatch("keydown", { key: " " });
+  button.dispatch("blur");
+  assert.equal(page.socket.messages.at(-1), "stop");
+  assert.equal(button.classList.contains("held"), false);
+  button.dispatch("keydown", { key: " ", repeat: true });
+  page.clock.advance(config.refreshMs * 2);
+  assert.deepEqual(page.socket.messages, ["drive:cw", "stop"]);
+  button.dispatch("keyup", { key: " " });
+  button.dispatch("keydown", { key: " " });
+  assert.equal(page.socket.messages.at(-1), "drive:cw");
+});
+
+test("keyboard holds expire with telemetry and require a new press after recovery", () => {
+  const page = controller(false);
+  const button = page.buttons.get("cw");
+  button.dispatch("keydown", { key: "Enter" });
+  page.clock.advance(config.telemetryTimeoutMs + 100);
+  assert.equal(page.socket.messages.at(-1), "stop");
+  assert.equal(button.classList.contains("held"), false);
+  assert.equal(button.disabled, true);
+  assert.match(page.ids.get("control-status").textContent, /Waiting for fresh controller data/);
+  page.freshness();
+  button.dispatch("keydown", { key: "Enter", repeat: true });
+  assert.equal(page.socket.messages.at(-1), "stop");
+  button.dispatch("keyup", { key: "Enter" });
+  button.dispatch("keydown", { key: "Enter" });
+  assert.match(page.socket.wireMessages.at(-1), /^press:\d+:\d+:drive:cw$/);
+});
+
+test("keyboard input respects ownership and ignores shortcuts and unrelated keys", () => {
+  const page = dashboard();
+  page.socket.open();
+  page.control(false);
+  const button = page.buttons.get("up");
+  button.dispatch("keydown", { key: "Enter" });
+  page.control();
+  button.dispatch("keydown", { key: "ArrowUp" });
+  for (const modifier of ["ctrlKey", "altKey", "metaKey"]) {
+    button.dispatch("keydown", { key: "Enter", [modifier]: true });
+  }
+  assert.deepEqual(page.socket.messages, []);
+  assert.equal(button.classList.contains("held"), false);
+});
+
+test("missing control configuration explains disabled buttons while forecasts still load", async () => {
+  const page = dashboard("http:", false, "");
+  page.clock.advance(1000);
+  assert.equal(page.sockets.length, 0);
+  assert.equal(page.ids.get("status").textContent, "configuration unavailable");
+  assert.match(page.ids.get("control-status").textContent, /settings failed to load.*Reload/);
+  for (const button of page.buttons.values()) assert.equal(button.disabled, true);
+  await page.forecast(forecastFixture());
+  assert.equal(page.ids.get("pass-rows").children.length, 1);
+});
+
+test("unusable position feedback disables directions and explains why movement cannot run", () => {
+  for (const [health, reason] of [
+    ["feedback-invalid", /outside the calibrated range.*A0\/A1/],
+    ["calibration-invalid", /calibration is invalid/],
+    ["no-feedback", /Waiting for position feedback/],
+    ["feedback-stale", /feedback is stale/],
+    ["timestamp-invalid", /timing is invalid/],
+  ]) {
+    const page = controller();
+    page.freshness({ feedback: { ...page.telemetry.feedback, control_state: health } });
+    page.press("cw", 1);
+    page.buttons.get("up").dispatch("keydown", { key: "Enter" });
+    assert.deepEqual(page.socket.messages, []);
+    for (const button of page.buttons.values()) {
+      assert.equal(button.disabled, true);
+      assert.equal(button.classList.contains("held"), false);
+      assert.match(button.title, reason);
+    }
+    assert.equal(page.ids.get("control-state").textContent, "blocked");
+    assert.match(page.ids.get("control-status").textContent, reason);
+  }
+});
+
+test("bad feedback stops held inputs and recovery requires a fresh press", () => {
+  const page = controller();
+  page.press("cw", 1);
+  page.buttons.get("up").dispatch("keydown", { key: "Enter" });
+  page.freshness({ feedback: { ...page.telemetry.feedback, control_state: "feedback-invalid" } });
+  assert.equal(page.socket.messages.at(-1), "stop");
+  for (const button of page.buttons.values()) assert.equal(button.classList.contains("held"), false);
+  page.freshness({ feedback: { ...page.telemetry.feedback, control_state: "idle" } });
+  page.buttons.get("up").dispatch("keydown", { key: "Enter", repeat: true });
+  page.clock.advance(config.refreshMs * 2);
+  assert.equal(page.socket.messages.at(-1), "stop");
+  assert.equal(page.ids.get("control-state").textContent, "ready");
+  page.release("cw", 1);
+  page.press("cw", 2);
+  assert.match(page.socket.wireMessages.at(-1), /^press:\d+:\d+:drive:cw$/);
 });
 
 test("control takeover cancels old held commands until a fresh pointer press", () => {
@@ -505,6 +684,7 @@ test("control takeover cancels old held commands until a fresh pointer press", (
   assert.deepEqual(page.socket.messages, ["drive:cw", "drive:cw+up"]);
   assert.equal(page.buttons.get("ccw").disabled, true);
   assert.equal(page.buttons.get("ccw").classList.contains("active"), true);
+  for (const button of page.buttons.values()) assert.equal(button.classList.contains("held"), false);
   page.ids.get("take").dispatch("click");
   page.control();
   page.clock.advance(1000);
@@ -739,8 +919,11 @@ test("network and motion inhibition disable movement and show the latched cause"
     network_ready: false, motion_fault: null });
   assert.equal(page.socket.messages.at(-1), "stop");
   assert.equal(page.buttons.get("up").disabled, true);
+  assert.equal(page.buttons.get("cw").classList.contains("held"), false);
+  assert.match(page.ids.get("control-status").textContent, /network connection is not ready/);
   page.socket.receive({ type: "control", controller: true, azimuth: null,
     network_ready: true, motion_fault: "azimuth_no_progress" });
   assert.equal(page.ids.get("health").textContent, "azimuth no progress");
   assert.equal(page.buttons.get("up").disabled, true);
+  assert.match(page.ids.get("control-status").textContent, /Movement locked: azimuth no progress/);
 });
