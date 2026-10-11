@@ -101,9 +101,19 @@ impl Device {
 
     fn request(&mut self, sequence: u64, action: TrackingAction) {
         let token = self.state.operator(self.owner, self.now).unwrap().token;
-        self.state.tracking_operation(self.now, |runtime, obs| {
-            super::action(runtime, token, sequence, action, obs).unwrap();
-        });
+        let mut freshness = ezal_core::session::CommandFreshness::new(self.owner);
+        let proof = freshness.issue(self.now).unwrap().token;
+        let intent = ezal_core::protocol::TrackingIntent {
+            proof,
+            lease: token.generation(),
+            sequence,
+            revision: self.state.tracking().snapshot().revision,
+            action,
+        };
+        self.state
+            .request_tracking(self.owner, intent, &freshness, self.now, |p| p == EVENT)
+            .result
+            .unwrap();
     }
 
     fn feedback(&mut self, sample: FeedbackSample, at: u64) {
@@ -434,5 +444,75 @@ fn device_waits_for_scheduled_preparation_then_slews_and_establishes_measured_re
     assert_eq!(
         device.state.tracking().snapshot().phase,
         TrackingPhase::Complete
+    );
+}
+
+#[test]
+fn tracking_dashboard_contract_uses_real_device_snapshots_and_bounded_payloads() {
+    use ezal_core::protocol::{TelemetryMessage, TELEMETRY_CAPACITY};
+    use ezal_core::session::CommandToken;
+    fn json(device: &Device, client: u32) -> String {
+        let before = device.state.tracking().snapshot();
+        let message = TelemetryMessage {
+            snapshot: device.state.telemetry(client, device.now),
+            token: Some(CommandToken {
+                token: u64::MAX,
+                expires_ms: u64::MAX,
+            }),
+            tracking: device.state.tracking_telemetry(client, device.now),
+        };
+        let mut payload: heapless::String<TELEMETRY_CAPACITY> = heapless::String::new();
+        message.write_json(&mut payload).unwrap();
+        assert_eq!(
+            device.state.tracking().snapshot(),
+            before,
+            "formatting must remain read-only"
+        );
+        assert!(
+            core::mem::size_of_val(&message.tracking) < 1024,
+            "never copy route/source data per connection"
+        );
+        payload.to_string()
+    }
+    let mut device = Device::new();
+    let mut snapshots = vec![json(&device, device.owner)];
+    let viewer = device.state.register_client(device.now);
+    snapshots.push(json(&device, viewer));
+    device.state.release_client(device.owner, device.now);
+    let prep = device
+        .state
+        .tracking()
+        .bound_plan()
+        .unwrap()
+        .plan()
+        .assessment
+        .prepare_at_ms;
+    device.until(prep + 100);
+    snapshots.push(json(&device, viewer));
+    device.until(AOS + 1000);
+    snapshots.push(json(&device, viewer));
+    // A new leased browser can observe, but connecting alone cannot interrupt.
+    let reconnect = device.state.register_client(device.now);
+    snapshots.push(json(&device, reconnect));
+    device.until(LOS);
+    snapshots.push(json(&device, reconnect));
+    assert!(snapshots[0].contains("\"phase\":\"armed\""));
+    assert!(snapshots[3].contains("\"phase\":\"following\""));
+    assert!(snapshots[5].contains("\"reason\":\"LossOfSignal\""));
+    let json = format!("[{}]", snapshots.join(","));
+    if std::env::var_os("EZAL_UPDATE_FIXTURES").is_some() {
+        std::fs::write(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/tracking-telemetry.json"
+            ),
+            format!("{json}\n"),
+        )
+        .unwrap();
+        return;
+    }
+    assert_eq!(
+        json,
+        include_str!("../fixtures/tracking-telemetry.json").trim_end()
     );
 }

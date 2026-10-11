@@ -3,17 +3,18 @@
 > A satellite-tracking antenna rotator controller, written in Rust for the
 > Raspberry Pi Pico 2 W.
 
-**Status: manual hardware control with advisory pass prediction.** The firmware
+**Status: manual control and device-owned single-pass tracking implemented;
+hardware tracking validation pending.** The firmware
 boots with all direction outputs idle, POSTs the real ADS1015, and waits for
-WiFi and DHCP. Movement requires explicit dashboard input, current calibrated
+WiFi and DHCP. Movement requires manual input or an explicitly armed pass, current calibrated
 feedback, and network permission. Movement leases, relay timing, endpoint
 checks, and motion supervision guard the physical GPIO outputs.
 
 The firmware also synchronizes UTC with NTP, downloads weather-satellite
 TLEs, and predicts the next six hours of L-band HRPT reception windows on the
 dashboard. The default station is **All Saints Church, Clevedon**. Prediction
-is advisory. Device-owned tracking execution is integrated; selecting and arming
-a pass from the dashboard is the next task (T8). See
+alone is advisory. The dashboard can select one pass, preview feasibility and
+explicitly arm it for device-owned tracking. See
 [pass prediction](docs/PASS_PREDICTION.md) for station settings, satellite coverage,
 acquisition/loss thresholds, and limitations.
 
@@ -24,8 +25,9 @@ az/el rotator to track a low-earth-orbit (LEO) satellite as it passes
 overhead. The pure core now computes satellite az/el and reception windows
 from TLEs using SGP4. Manual control drives the G-5500's direction inputs
 through transistor switches and reads calibrated position feedback via an
-Adafruit ADS1015 I²C ADC. The device executor is integrated; dashboard arming
-and hardware commissioning remain before routine automatic tracking.
+Adafruit ADS1015 I²C ADC. The device executor and dashboard arming are integrated;
+board timing checks, complete-pass acceptance and installation commissioning
+remain before routine automatic tracking.
 See [HARDWARE.md](docs/HARDWARE.md) and the [design/](design/) folder for the
 interface details and schematic.
 
@@ -121,7 +123,7 @@ direnv allow                        # one-time: load the dev shell
 # One-time: set your WiFi credentials for the station-mode POST.
 cp .env.example .env && $EDITOR .env
 
-# Build/flash manual control firmware and stream defmt logs.
+# Build/flash firmware and stream defmt logs.
 # Complete calibration before commanding the connected rotator.
 cargo run -p ezal-firmware --release
 ```
@@ -144,7 +146,7 @@ inhibited until the station link and a usable DHCP address are available; an
 outage cuts motion and recovery requires ownership and fresh operator input.
 The dashboard shows calibrated position, raw A0/A1 millivolts, feedback health,
 applied drive state, and per-axis motor allowance/rest countdown alongside the
-advisory pass forecast. Unknown duty history on boot requires 15 minutes of
+pass forecast and tracking status. Unknown duty history on boot requires 15 minutes of
 continuous rest before jogging. The default allowance is 180 seconds per axis;
 short pulse gaps and ownership changes do not reset it.
 
@@ -229,8 +231,11 @@ timestamp-matched deviation, bounded future intercepts and final pass summaries.
 Validated partial-pass admission and firmware execution are integrated. The
 [firmware milestone](docs/PASS_PREDICTION.md#independent-firmware-execution-t7)
 records host validation, Pico memory checks and remaining board measurements.
-Tracking API/dashboard work (T8), complete-pass acceptance and commissioning
-remain. The current dashboard still exposes manual control only.
+The [tracking dashboard and API](docs/PASS_PREDICTION.md#tracking-api-and-dashboard-t8)
+provide selection, full/partial feasibility, scheduled preparation, Prepare now,
+Cancel and Return to Manual. Tracking continues without a browser; live deviation,
+recovery and final metrics remain visible to viewers. T9 complete-pass acceptance,
+T10 commissioning and T7 board timing/watchdog checks remain.
 
 ## License
 

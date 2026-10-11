@@ -179,4 +179,12 @@ impl CommandFreshness {
         self.armed_until_ms = Some(deadline);
         Some(deadline)
     }
+
+    /// Check a tracking action's observation without renewing it or arming a hold.
+    pub fn proves_fresh(&self, token: u64, now_ms: u64) -> bool {
+        self.tokens
+            .iter()
+            .flatten()
+            .any(|proof| proof.token == token && now_ms < proof.expires_ms)
+    }
 }

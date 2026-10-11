@@ -222,6 +222,7 @@ fn telemetry_encodes_one_observation_with_its_proof() {
 
     let message = TelemetryMessage {
         snapshot: CoordinationState::new().telemetry(1, 0),
+        tracking: CoordinationState::new().tracking_telemetry(1, 0),
         token: Some(CommandToken {
             token: 42,
             expires_ms: 1000,
@@ -231,7 +232,7 @@ fn telemetry_encodes_one_observation_with_its_proof() {
     message.write_json(&mut json).unwrap();
     assert_eq!(
         json,
-        r#"{"type":"telemetry","position":{"type":"position","a0_mv":0,"a1_mv":0},"feedback":{"type":"feedback","azimuth_tenths":0,"elevation_tenths":0,"control_state":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]},"freshness":{"token":"42"}}"#
+        r#"{"type":"telemetry","position":{"type":"position","a0_mv":0,"a1_mv":0},"feedback":{"type":"feedback","azimuth_tenths":0,"elevation_tenths":0,"control_state":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]},"freshness":{"token":"42"},"tracking":{"revision":"0","operator":null,"mode":"manual","phase":"idle","run":null,"selection":null,"plan":{"status":"unplanned","reason":null,"preview":null},"feedback_stale":true,"feedback_age_ms":null,"deviation":{"run":null,"warning":false,"maximum_deg":null,"outside_ms":0,"current":null},"recovery":null,"termination":null,"summary":null}}"#
     );
 }
 
@@ -268,6 +269,7 @@ fn telemetry_fits_its_fixed_buffer_and_reports_formatting_failure() {
     snapshot.control.write_json(&mut control).unwrap();
     let mut message = TelemetryMessage {
         snapshot,
+        tracking: CoordinationState::new().tracking_telemetry(1, 0),
         token: Some(CommandToken {
             token: u64::MAX,
             expires_ms: u64::MAX,
@@ -275,11 +277,11 @@ fn telemetry_fits_its_fixed_buffer_and_reports_formatting_failure() {
     };
     let mut payload: heapless::String<TELEMETRY_CAPACITY> = heapless::String::new();
     message.write_json(&mut payload).unwrap();
-    assert!(payload.ends_with(r#""18446744073709551615"}}"#));
+    assert!(payload.contains(r#""token":"18446744073709551615"}"#));
     let mut undersized: heapless::String<16> = heapless::String::new();
     assert!(message.write_json(&mut undersized).is_err());
     payload.clear();
     message.token = None;
     message.write_json(&mut payload).unwrap();
-    assert!(payload.ends_with(r#""freshness":null}"#));
+    assert!(payload.contains(r#""freshness":null,"tracking":"#));
 }

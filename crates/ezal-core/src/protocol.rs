@@ -9,6 +9,9 @@
 use crate::coordination::TelemetrySnapshot;
 use core::fmt;
 
+mod tracking;
+pub use tracking::{TrackingIntent, TrackingRejection, TrackingReply, TrackingTelemetry};
+
 use crate::coordination::ControlStatus;
 use crate::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
 use crate::feedback::{FeedbackHealth, FeedbackSnapshot};
@@ -65,6 +68,8 @@ pub enum ClientMessage {
     Stop,
     /// Movement requires both a recent server token and ordered operator input.
     Movement(MovementRequest),
+    /// Single-pass intent; the server supplies connection identity and inputs.
+    Tracking(TrackingIntent),
 }
 
 impl ClientMessage {
@@ -74,6 +79,8 @@ impl ClientMessage {
             Some(Self::TakeControl)
         } else if message == "stop" {
             Some(Self::Stop)
+        } else if let Some(message) = message.strip_prefix("track:") {
+            TrackingIntent::parse(message).map(Self::Tracking)
         } else {
             let mut fields = message.splitn(4, ':');
             let pressed = match fields.next()? {
@@ -227,7 +234,7 @@ fn degrees_to_tenths(degrees: f32) -> i32 {
 }
 
 /// Fixed maximum payload allocation for one periodic observation.
-pub const TELEMETRY_CAPACITY: usize = 640;
+pub const TELEMETRY_CAPACITY: usize = 4096;
 
 /// One coherent domain observation and its original freshness proof.
 pub struct TelemetryMessage {
@@ -235,6 +242,8 @@ pub struct TelemetryMessage {
     pub snapshot: TelemetrySnapshot,
     /// Proof stamped before formatting and any socket write.
     pub token: Option<CommandToken>,
+    /// Small projection of the same device observation, never a route copy.
+    pub tracking: TrackingTelemetry,
 }
 
 impl TelemetryMessage {
@@ -251,6 +260,8 @@ impl TelemetryMessage {
             Some(token) => token.write_json(out)?,
             None => out.write_str("null")?,
         }
+        out.write_str(",\"tracking\":")?;
+        self.tracking.write_json(out)?;
         out.write_str("}")
     }
 }

@@ -16,11 +16,10 @@ use ezal_core::session::TELEMETRY_PERIOD_MS;
 /// covers the remaining frame header, payload, and every continuation frame.
 pub const MESSAGE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Per-connection message capacity. Commands are shorter, but RFC 6455 §5.5
-/// permits 125-byte Ping, Pong, and Close payloads. The receive buffer must
-/// also accommodate those transport frames or a legal keepalive can evict a
-/// controller. Keep this shared with the parser integration tests.
-pub const MESSAGE_BUFFER_SIZE: usize = 128;
+/// Per-connection capacity includes a tracking selection with maximum-width
+/// identifiers and RFC 6455 §5.5's 125-byte control frames. Keep this shared
+/// with the parser integration tests; fragments have one combined bound.
+pub const MESSAGE_BUFFER_SIZE: usize = 256;
 
 // An idle connection must reach its telemetry tick inside this deadline.
 // Otherwise every dashboard would drop and reconnect on the telemetry period,

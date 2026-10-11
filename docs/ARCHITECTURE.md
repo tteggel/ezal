@@ -3,7 +3,8 @@
 ezal separates deterministic control policy from the RP2350 peripherals that
 observe and apply it. Firmware boots idle. Manual movement and explicitly armed
 tracking use one device owner and physical output boundary. The tracking executor
-is integrated; its selection/arming dashboard API remains T8 work.
+and its selection/arming dashboard API are integrated. Board timing and
+installation commissioning remain separate validation.
 
 The [manual control contract](CONTROL_CONTRACT.md) defines the safeguard owner,
 effect, recovery condition and timing boundaries. It is the reference for
@@ -43,7 +44,7 @@ returns values. It has no peripherals, global runtime state or Embassy tasks.
 | Source admission | `session::CommandFreshness` | Bound source age and sequence; distinguish a new press from a continued hold |
 | Coordination | `coordination::CoordinationState` | Exclusive operator lease, tracking runtime, input revisions and coherent command delivery |
 | Output decision | `actuator::Actuator` | Apply all final permissions, physical supervision, leases and relay timing in one step |
-| Representation | `protocol`, `dashboard` | Decode manual messages, encode telemetry, provide the browser asset and shared timing configuration |
+| Representation | `protocol`, `dashboard` | Decode manual/tracking intent, encode telemetry, provide the browser asset and shared timing configuration |
 
 The actuator uses `interlock` for current feedback and endpoint assessments,
 `motion` for applied-output progress and plausibility, `duty` for per-axis
@@ -193,10 +194,12 @@ The detailed timing and recovery rules live in [CONTROL_CONTRACT.md](CONTROL_CON
 ## Transport and dashboard
 
 Each periodic WebSocket message carries one coherent snapshot: raw position,
-calibrated feedback health, ownership, applied output, per-axis duty and a
-freshness proof.
+calibrated feedback health, ownership, applied output, per-axis duty, a small
+tracking projection and a freshness proof. Tracking includes the selected event,
+revision, lease generation, preview, phase, matched deviation, recovery and final
+summary. It copies no route or orbital source and never propagates while reading.
 The proof is stamped before the state read and socket write, so a slow write
-consumes its one-second lifetime. Encoding uses a fixed 640-byte buffer; an
+consumes its one-second lifetime. Encoding uses a fixed 4096-byte buffer; an
 encoding failure closes the session and releases ownership explicitly.
 Control acknowledgements carry no proof and never renew telemetry lifetime.
 
@@ -206,7 +209,12 @@ Tokens are decimal strings to preserve all `u64` values in JavaScript. Admission
 binds proofs to the connection and network generation, checks increasing input
 sequence, and bounds expiry by the earlier of token expiry and receipt plus
 750 ms. Invalid movement abandons held intent and invalidates issued tokens.
-Stops need no freshness proof but still require ownership.
+Manual stops need no freshness proof but still require ownership and Manual mode.
+Tracking actions carry a separate intent sequence, the observed lease generation
+and state revision. Select/Arm/Prepare also require the recent telemetry proof;
+Cancel/Manual can use stale observations while retaining current-lease and
+ordering checks. New selections must match a currently offered device forecast
+row, identified by NORAD and AOS/LOS, never a browser table index.
 
 The browser uses explicit control-state transitions that return requested effects.
 One adapter performs socket sends, pointer capture, timers and DOM rendering.
@@ -217,10 +225,13 @@ its rest countdown; allowance recovery requires a new press.
 Recovery requires a fresh physical press. `/dashboard-config.js` is generated
 from the firmware's timing constants, and the Node tests execute that exact
 configuration with the served script. Forecast fetching and presentation remain
-independent of command freshness.
+independent of command freshness. The UI hides manual controls in Tracking,
+waits for device acknowledgement/state, and never replays intent on reconnect.
+A stale measured sample is shown as unavailable, with final metrics kept separate.
 
 Receive outcomes distinguish a complete message, telemetry tick, I/O error,
-protocol error and timeout. The 2 s whole-message deadline covers fragmented
+protocol error and timeout. The 256-byte receive bound accommodates tracking
+intent with full-width identifiers and legal control frames. The 2 s whole-message deadline covers fragmented
 messages and interleaved control replies. Cancellation ends the connection;
 it never resumes a partially consumed parser. The bounded assembler uses the
 pinned picoserve frame decoder because its message assembler rejects legal

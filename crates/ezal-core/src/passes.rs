@@ -683,6 +683,15 @@ pub struct Report {
 }
 
 impl Report {
+    /// Only a current device-offered row can become a new tracking selection.
+    pub fn offers(&self, event: crate::tracking::PassEvent) -> bool {
+        self.status == Status::Ready
+            && self
+                .passes
+                .iter()
+                .any(|pass| crate::tracking::PassEvent::from_pass(*pass) == event)
+    }
+
     /// Select what may be shown at `now`. A candidate is available when its
     /// elements are fresh for the next window, independently of whether a
     /// forecast is current. Rows are served only when the forecast covers
@@ -808,8 +817,9 @@ impl fmt::Display for Report {
         for pass in &self.passes {
             write!(
                 out,
-                "{separator}{{\"name\":\"{}\",\"frequency_mhz\":\"{}\",\"experimental\":{},\
+                "{separator}{{\"norad_id\":\"{}\",\"name\":\"{}\",\"frequency_mhz\":\"{}\",\"experimental\":{},\
                  \"aos_unix_s\":{},\"los_unix_s\":{},\"peak_elevation_deg\":{:.1}}}",
+                pass.satellite.norad_id,
                 pass.satellite.name,
                 pass.satellite.frequency_mhz,
                 pass.satellite.experimental,

@@ -198,7 +198,7 @@ async fn send_telemetry<W: PicoserveWrite>(
     // Stamp before the state read and socket write. Slow delivery consumes the
     // original token lifetime instead of granting a fresh lease on completion.
     let now_ms = Instant::now().as_millis();
-    let snapshot = state.telemetry(client_id, now_ms);
+    let (snapshot, tracking) = state.dashboard_telemetry(client_id, now_ms);
     freshness.observe_network(
         snapshot.network.generation(),
         snapshot.control.network_ready,
@@ -206,6 +206,7 @@ async fn send_telemetry<W: PicoserveWrite>(
     let message = TelemetryMessage {
         snapshot,
         token: freshness.issue(now_ms),
+        tracking,
     };
     let mut payload: String<TELEMETRY_CAPACITY> = String::new();
     message
@@ -332,6 +333,18 @@ impl DashboardSocket {
                             freshness.disarm();
                             state.accept_command(client_id, CommandEnvelope::INHIBIT)
                         }
+                        Some(ClientMessage::Tracking(intent)) => {
+                            freshness.disarm();
+                            let reply = state.request_tracking(client_id, intent, &freshness);
+                            // Release the executor before formatting or waiting on a reader.
+                            yield_now().await;
+                            let mut payload: String<320> = String::new();
+                            reply
+                                .write_json(&mut payload)
+                                .map_err(|_| SocketError::Encoding)?;
+                            tx.send_text(&payload).await?;
+                            true
+                        }
                         Some(ClientMessage::Movement(request)) => {
                             let now_ms = Instant::now().as_millis();
                             if let Some(deadline) = freshness.admit(request, now_ms) {
@@ -365,7 +378,10 @@ impl DashboardSocket {
                         yield_now().await;
                     }
 
-                    if parsed == Some(ClientMessage::TakeControl) {
+                    if matches!(
+                        parsed,
+                        Some(ClientMessage::TakeControl | ClientMessage::Tracking(_))
+                    ) {
                         send_telemetry(&mut tx, state, client_id, &mut freshness, &mut heartbeat)
                             .await?;
                     } else {

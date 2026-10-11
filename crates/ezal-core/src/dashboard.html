@@ -303,6 +303,19 @@ header {
     gap: 8px;
   }
 }
+
+  [hidden] { display: none !important; }
+  .tracking { padding: 24px 0; border-top: 1px solid var(--line, #344045); }
+  .tracking h2 { margin-top: 0; }
+  .tracking-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+  .tracking button, .passes button { padding: 10px 14px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+  .tracking button:disabled, .passes button:disabled { opacity: .45; cursor: default; }
+  .tracking button:focus-visible, .passes button:focus-visible { outline: 3px solid #83e3b1; outline-offset: 3px; }
+  .tracking .warning { color: #f9bc65; }
+  tr.selected { box-shadow: inset 3px 0 #83e3b1; }
+  .tracking p { line-height: 1.55; }
+  .tracking p:empty { display: none; }
+  .tracking small { opacity: .75; }
 </style>
 </head>
 <body>
@@ -333,7 +346,27 @@ header {
       <span id="elevation-duty" class="detail">Motor allowance unknown</span>
     </div>
   </section>
-  <section class="pad-wrap" aria-labelledby="controls-title">
+  <section class="tracking" aria-labelledby="tracking-title">
+    <h2 id="tracking-title">Pass tracking</h2>
+    <p id="tracking-state" role="status">Waiting for device status…</p>
+    <p id="tracking-selection">Select one predicted pass below to assess tracking.</p>
+    <p id="tracking-plan"></p>
+    <p id="tracking-reception"></p>
+    <p id="tracking-schedule"></p>
+    <div class="tracking-actions">
+      <button id="tracking-arm" type="button" disabled>Enter Tracking</button>
+      <button id="tracking-manual" type="button" disabled>Return to Manual</button>
+      <button id="tracking-prepare" type="button" disabled>Prepare now</button>
+      <button id="tracking-cancel" type="button" disabled>Cancel tracking</button>
+    </div>
+    <p id="tracking-message" role="status"></p>
+    <p id="tracking-deviation"></p>
+    <p id="tracking-pointing"></p>
+    <p id="tracking-recovery"></p>
+    <p id="tracking-summary"></p>
+    <small>Selection previews one pass. Enter Tracking arms it on the device and hides manual controls. Closing this page does not cancel tracking. The dish stays at its final position after the pass or cancellation. Motor and pointing estimates remain provisional until installation commissioning.</small>
+  </section>
+  <section id="manual-controls" class="pad-wrap" aria-labelledby="controls-title">
     <h2 id="controls-title">Manual control</h2>
     <p id="control-help" class="control-help">Hold a direction to move; release to stop. With a keyboard, focus a button and hold Space or Enter.</p>
     <div class="pad">
@@ -353,13 +386,13 @@ header {
     <p id="pass-status" aria-live="polite">Loading predictions…</p>
     <div class="passes-scroll">
       <table>
-        <thead><tr><th>Satellite / MHz</th><th>Acquisition · UTC</th><th>Loss · UTC</th><th>Peak</th></tr></thead>
+        <thead><tr><th>Satellite / MHz</th><th>Acquisition · UTC</th><th>Loss · UTC</th><th>Peak</th><th>Tracking</th></tr></thead>
         <tbody id="pass-rows"></tbody>
       </table>
     </div>
     <p id="pass-coverage"></p>
     <p id="tle-status"></p>
-    <p>Times mark the elevation cutoff. Reception also depends on terrain, antenna, receiver and the satellite’s broadcast. These predictions do not start tracking.</p>
+    <p>Times mark the elevation cutoff. Select a pass for a device feasibility check, then enter Tracking to arm it. Reception also depends on terrain, antenna, receiver and the satellite’s broadcast.</p>
   </section>
 </main>
 <script src="/dashboard-config.js"></script>
@@ -368,7 +401,8 @@ header {
   const config = window.EZAL_CONFIG;
   const configured = config && typeof config.wsPath === "string"
     && Number.isFinite(config.refreshMs) && config.refreshMs > 0
-    && Number.isFinite(config.telemetryTimeoutMs) && config.telemetryTimeoutMs > 0;
+    && Number.isFinite(config.telemetryTimeoutMs) && config.telemetryTimeoutMs > 0
+    && Number.isFinite(config.feedbackMaxAgeMs) && config.feedbackMaxAgeMs > 0;
   const axes = { cw: "azimuth", ccw: "azimuth", up: "elevation", down: "elevation" };
   const idle = () => ({ azimuth: null, elevation: null });
   const hasDesired = (state) => Boolean(state.held.azimuth || state.held.elevation);
@@ -376,20 +410,62 @@ header {
   const feedbackReady = (state) => state.telemetry?.feedback.control_state === "idle";
   const axisReady = (state, axis) => state.duty?.[axis]?.cooldown === 0;
   const canControl = (state, now) => state.connected && state.controller && state.networkReady
-    && !state.motionFault && !state.hidden && telemetryFresh(state, now) && feedbackReady(state);
+    && !state.motionFault && !state.hidden && telemetryFresh(state, now) && feedbackReady(state)
+    && state.tracking?.mode === "manual" && !state.pending && !state.awaitingTracking;
+  const canTrack = (state, now) => state.connected && state.controller && state.networkReady
+    && !state.hidden && telemetryFresh(state, now) && state.tracking?.operator !== null
+    && Boolean(state.tracking) && !state.pending && !state.awaitingTracking;
+  // Stopping does not require a current plan/observation or healthy feedback.
+  const canCancel = (state) => state.connected && state.controller && !state.hidden
+    && Boolean(state.tracking?.operator);
   const canTake = (state, now) => state.connected && !state.controller && state.networkReady
     && !state.motionFault && telemetryFresh(state, now);
   const initialControl = () => ({
     connected: false, controller: false, networkReady: false, motionFault: null,
     hidden: false, token: null, telemetryUntil: -Infinity, sequence: 0,
     held: idle(), drive: idle(), duty: null, telemetry: null, status: "offline", retryMs: 400,
+    tracking: null, trackingAt: -Infinity, trackSequence: 0n, pending: null,
+    awaitingTracking: false, trackingMessage: "",
   });
+
+  const identity = (value) => typeof value === "string" && /^\d{1,20}$/.test(value);
+  const optionalIdentity = (value) => value === null || identity(value);
+  const pair = (value) => Array.isArray(value) && value.length === 2 && value.every(Number.isFinite);
+  const validReception = (r) => r && Number.isFinite(r.aos_unix_s) && Number.isFinite(r.duration_ms)
+    && Array.isArray(r.windows) && r.windows.length <= 2 && r.windows.every(pair)
+    && (r.missed === null || pair(r.missed));
+  const validDeviation = (d) => d && optionalIdentity(d.run) && typeof d.warning === "boolean"
+    && (d.maximum_deg === null || Number.isFinite(d.maximum_deg)) && Number.isFinite(d.outside_ms)
+    && (d.current === null || (d.current && pair(d.current.desired) && pair(d.current.measured)
+      && [d.current.age_ms, d.current.degrees, d.current.uncertainty_deg].every(Number.isFinite)));
+  const validTermination = (t) => t === null || (t && typeof t.reason === "string"
+    && optionalIdentity(t.event) && optionalIdentity(t.run));
+  const validTracking = (t) => t && identity(t.revision) && optionalIdentity(t.operator)
+    && ["manual", "tracking"].includes(t.mode)
+    && ["idle", "armed", "preparing", "ready", "following", "reacquiring", "complete", "cancelled", "stopped"].includes(t.phase)
+    && optionalIdentity(t.run) && typeof t.feedback_stale === "boolean"
+    && (t.feedback_age_ms === null || Number.isFinite(t.feedback_age_ms))
+    && (t.selection === null || (t.selection && identity(t.selection.id) && identity(t.selection.norad_id)
+      && [t.selection.aos_unix_s, t.selection.los_unix_s].every(Number.isFinite) && typeof t.selection.associated === "boolean"))
+    && t.plan && ["unplanned", "planning", "supported", "partial", "frozen", "blocked"].includes(t.plan.status)
+    && (t.plan.reason === null || typeof t.plan.reason === "string")
+    && (t.plan.preview === null || (t.plan.preview && typeof t.plan.preview.route === "string"
+      && [t.plan.preview.azimuth_turns, t.plan.preview.prepare_unix_s, t.plan.preview.preparation_lead_ms,
+        t.plan.preview.bound_deg, t.plan.preview.tolerance_deg, t.plan.preview.reserve_deg].every(Number.isFinite)
+      && validReception(t.plan.preview.reception)))
+    && validDeviation(t.deviation) && validTermination(t.termination)
+    && (t.recovery === null || (t.recovery && identity(t.recovery.episode) && typeof t.recovery.cause === "string"
+      && typeof t.recovery.planning === "boolean" && [t.recovery.attempts, t.recovery.work_steps, t.recovery.remaining_ms].every(Number.isFinite)
+      && [t.recovery.launch_in_ms, t.recovery.intercept_in_ms].every((v) => v === null || Number.isFinite(v))
+      && (t.recovery.hold === null || typeof t.recovery.hold === "string")))
+    && (t.summary === null || (t.summary && t.summary.termination && validTermination(t.summary.termination)
+      && validReception(t.summary.reception) && validDeviation(t.summary.deviation)));
 
   const dutyPair = (value) => Array.isArray(value) && value.length === 2
     && value.every((ms) => Number.isSafeInteger(ms) && ms >= 0);
   const validTelemetry = (message) => {
     const optionalNumber = (value) => value === null || Number.isFinite(value);
-    return message.position && message.feedback && message.control
+    return message.position && message.feedback && message.control && validTracking(message.tracking)
       && Number.isFinite(message.position.a0_mv) && Number.isFinite(message.position.a1_mv)
       && optionalNumber(message.feedback.azimuth_tenths)
       && optionalNumber(message.feedback.elevation_tenths)
@@ -469,6 +545,9 @@ header {
         state.telemetry = null;
         state.drive = idle();
         state.status = "offline";
+        state.pending = null;
+        state.awaitingTracking = false;
+        state.trackingMessage = "Connection lost. Device status will be restored on reconnect; no action will be resent.";
         effects.push({ type: "reconnect", delay: state.retryMs });
         state.retryMs = Math.min(state.retryMs * 1.6, 5000);
         break;
@@ -476,11 +555,19 @@ header {
         const message = event.message;
         if (message.type === "telemetry" && validTelemetry(message)) {
           state.telemetry = message;
+          state.tracking = message.tracking;
+          state.trackingAt = now;
+          state.awaitingTracking = false;
           state.token = message.freshness?.token ?? null;
           state.telemetryUntil = now + settings.telemetryTimeoutMs;
           control(message.control);
           state.status = state.token === null ? "telemetry lost" : "online";
-          if (state.token === null || !feedbackReady(state)) clearHeld();
+          if (state.token === null || !feedbackReady(state) || state.tracking.mode !== "manual") clearHeld();
+        } else if (message.type === "tracking_result" && message.sequence === state.pending?.sequence
+          && typeof message.ok === "boolean" && (message.ok || typeof message.error === "string")) {
+          state.pending = null;
+          state.awaitingTracking = message.ok;
+          state.trackingMessage = message.ok ? "Accepted by the device." : `Request rejected: ${trackingReason(message.error)}. Review the current device status before trying again.`;
         } else if (message.type === "control") {
           // Acknowledgements update applied output, never telemetry lifetime.
           control(message);
@@ -518,6 +605,28 @@ header {
       case "take":
         if (canTake(state, now)) send("control:take");
         break;
+      case "tracking": {
+        const stopping = ["cancel", "manual"].includes(event.action);
+        if (stopping ? !canCancel(state) : !canTrack(state, now)) break;
+        const t = state.tracking;
+        if (event.action === "arm" && (t.mode !== "manual" || !["supported", "partial"].includes(t.plan.status)
+          || state.motionFault || !feedbackReady(state) || t.feedback_stale)) break;
+        if (event.action === "prepare" && (t.phase !== "armed" || !["supported", "partial"].includes(t.plan.status))) break;
+        if (event.action === "select" && (t.mode !== "manual" || !event.pass || !identity(event.pass.norad))) break;
+        if (!["select", "arm", "prepare", "cancel", "manual"].includes(event.action)) break;
+        clearHeld();
+        state.trackSequence += 1n;
+        const sequence = state.trackSequence.toString();
+        const suffix = event.action === "select" ? `:${event.pass.norad}:${event.pass.aos}:${event.pass.los}` : "";
+        send(`track:${state.token ?? "0"}:${t.operator}:${sequence}:${t.revision}:${event.action}${suffix}`);
+        state.pending = { sequence, at: now, action: event.action };
+        state.trackingMessage = "Waiting for device acknowledgement…";
+        break;
+      }
+    }
+    if (state.pending && now - state.pending.at >= 5000) {
+      state.pending = null;
+      state.trackingMessage = "No acknowledgement received. Check the device status before trying again; the request will not be resent.";
     }
     return { state, effects };
   };
@@ -555,11 +664,85 @@ header {
   };
   const restHint = (axis) => `${axis === "azimuth" ? "Azimuth" : "Elevation"} motor needs ${duration(state.duty[axis].cooldown)} of continuous rest.`;
 
+  const trackingReason = (reason) => {
+    const explanations = {
+      LossOfSignal: "Pass finished", Cancelled: "Cancelled by controller", ManualMode: "Returned to Manual",
+      Replaced: "Replaced by another selection", NetworkUnavailable: "Device network unavailable",
+      ExecutionDeadline: "Device missed the tracking control deadline", ReacquisitionTimeout: "Recovery deadline reached",
+      ReacquisitionLossOfSignal: "Pass ended during recovery", InstallationChanged: "Installation settings changed",
+      SourceInvalid: "Frozen orbital or clock data is no longer valid", ClockOrCounter: "Device clock or counter fault",
+      Lease: "Control lease expired or belongs to another connection", StaleObservation: "Observation expired",
+      ForecastChanged: "That pass is no longer in the current forecast", Settling: "Waiting for the motors to settle",
+      NoIntercept: "No reachable intercept found; holding and retrying", WorkLimit: "Search reached its work limit",
+      MissedLaunch: "Intercept launch was missed; holding and retrying", ChangedStart: "Starting position changed; replanning",
+      MissedIntercept: "Intercept did not establish recovery; retrying", MissedControlDeadline: "Recovery control was delayed; replanning",
+      TooLate: "Too late for this preparation schedule", Expired: "Plan validity expired",
+    };
+    if (explanations[reason]) return explanations[reason];
+    if (reason.includes("StateRevision")) return "Plan changed; review the refreshed preview";
+    if (reason.includes("NotReady")) return "No current supported plan for this action";
+    if (reason.includes("Uncertainty")) return "Clock uncertainty exceeds the pointing allowance";
+    if (reason.includes("PointingBudget")) return "Predicted pointing error exceeds the allowance";
+    if (reason.includes("NoRecovery")) return "No supported route with a reachable recovery";
+    if (reason.includes("Missing")) return "The selected pass or its orbital data is missing";
+    if (reason.includes("Ambiguous")) return "The forecast cannot uniquely identify the selected pass";
+    return reason.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[()_]+/g, " ").trim();
+  };
+  const trackElements = Object.fromEntries(["state", "selection", "plan", "reception", "schedule", "message", "deviation", "pointing", "recovery", "summary", "arm", "manual", "prepare", "cancel"]
+    .map((name) => [name, document.getElementById(`tracking-${name}`)]));
+  const receptionText = (r) => {
+    const interval = ([start, end]) => `${utc(r.aos_unix_s + start / 1000)}–${utc(r.aos_unix_s + end / 1000)} UTC`;
+    return `Predicted reception: ${r.windows.map(interval).join("; ") || "none"}.${r.missed ? ` Missed interval: ${interval(r.missed)} (${duration(r.missed[1] - r.missed[0])}).` : " Full pass."}`;
+  };
+  const renderTracking = (now) => {
+    const t = state.tracking;
+    const known = Boolean(t && telemetryFresh(state, now) && state.connected);
+    document.getElementById("manual-controls").hidden = t?.mode === "tracking";
+    const writable = canTrack(state, now);
+    trackElements.arm.disabled = !writable || t.mode !== "manual" || !["supported", "partial"].includes(t.plan.status)
+      || state.motionFault || !feedbackReady(state) || t.feedback_stale;
+    trackElements.prepare.disabled = !writable || t.phase !== "armed" || !["supported", "partial"].includes(t.plan.status);
+    trackElements.cancel.disabled = !canCancel(state) || !t?.selection;
+    trackElements.manual.disabled = !canCancel(state) || t?.mode !== "tracking";
+    setText(trackElements.message, state.trackingMessage);
+    setText(trackElements.arm, t?.plan.status === "partial" ? "Enter Tracking · partial pass" : "Enter Tracking");
+    if (!t) return;
+    const elapsed = Math.max(0, now - state.trackingAt);
+    const ended = ["complete", "cancelled", "stopped"].includes(t.phase) && t.termination;
+    setText(trackElements.state, known ? `${t.mode === "tracking" ? "Tracking" : "Manual"} · ${t.phase}${state.controller ? " · you have control" : " · viewer"}${ended ? ` · ${trackingReason(t.termination.reason)}` : ""}`
+      : `Device status unavailable · last known: ${t.mode}, ${t.phase}. Closing this page does not cancel tracking.`);
+    const selection = t.selection;
+    const name = forecast?.passes.find((p) => p.norad_id === selection?.norad_id)?.name;
+    setText(trackElements.selection, selection ? `${name || `NORAD ${selection.norad_id}`} · ${utc(selection.aos_unix_s)}–${utc(selection.los_unix_s)} UTC${selection.associated ? "" : " · association lost"}`
+      : "Select one predicted pass below to assess tracking.");
+    const preview = t.plan.preview;
+    const statusText = { unplanned: "Waiting for current inputs", planning: "Evaluating routes and motor limits; waiting for settled feedback if needed", supported: "Full pass supported by the current model", partial: "Partial reception supported by the current model", frozen: "Plan frozen for this run", blocked: `Tracking blocked: ${trackingReason(t.plan.reason || "Unavailable")}` }[t.plan.status];
+    setText(trackElements.plan, selection ? `${statusText}.${preview ? ` Route: ${preview.route}, azimuth offset ${preview.azimuth_turns * 360}°. Predicted bound ${preview.bound_deg.toFixed(2)}°; tolerance ${preview.tolerance_deg.toFixed(1)}°, reserved uncertainty ${preview.reserve_deg.toFixed(1)}°.` : ""}` : "");
+    setText(trackElements.reception, preview ? receptionText(preview.reception) : "");
+    setText(trackElements.schedule, preview ? `${t.mode === "manual" ? "If armed, preparation" : "Preparation"} at ${utc(preview.prepare_unix_s)} UTC · planned lead ${duration(preview.preparation_lead_ms)}. ${t.phase === "armed" ? "Prepare now requests a new feasibility check before moving." : ""}` : "");
+    const d = t.deviation;
+    const reading = d.current;
+    const stale = t.feedback_stale || t.feedback_age_ms === null || t.feedback_age_ms + elapsed >= config.feedbackMaxAgeMs;
+    const current = known && !stale && reading && reading.age_ms + elapsed < config.feedbackMaxAgeMs;
+    setText(trackElements.deviation, current ? `${d.warning ? "Pointing warning · " : ""}Spherical deviation ${reading.degrees.toFixed(2)}° · uncertainty allowance ${reading.uncertainty_deg.toFixed(2)}° · sample ${Math.floor(reading.age_ms + elapsed)} ms old`
+      : !known ? "Current deviation unavailable: device status is stale." : stale ? "Current deviation unavailable: position feedback is stale or invalid." : "Current deviation unavailable until tracking supplies a matched sample.");
+    trackElements.deviation.classList.toggle("warning", Boolean(known && (d.warning || stale)));
+    const pointing = (p) => `${p[0].toFixed(2)}° az / ${p[1].toFixed(2)}° el`;
+    setText(trackElements.pointing, current ? `At the same sample time: desired sky ${pointing(reading.desired)}; measured dish ${pointing(reading.measured)}. Peak error ${d.maximum_deg?.toFixed(2) ?? "—"}°; observed outside tolerance ${duration(d.outside_ms)}.` : "");
+    const r = t.recovery;
+    setText(trackElements.recovery, r ? `${known ? "Reacquiring" : "Last reported recovery"} · attempt ${r.attempts} · ${r.planning ? "searching" : r.hold ? trackingReason(r.hold) : "moving to intercept"} · ${duration(Math.max(0, r.remaining_ms - (known ? elapsed : 0)))} until fixed deadline.${r.intercept_in_ms === null ? " No validated intercept yet." : ` Predicted join in ${duration(Math.max(0, r.intercept_in_ms - (known ? elapsed : 0)))}; measured recovery still required.`}` : "");
+    const summary = t.summary;
+    setText(trackElements.summary, summary ? `Last finished run ${summary.termination.run}: ${trackingReason(summary.termination.reason)}. Peak measured error ${summary.deviation.maximum_deg?.toFixed(2) ?? "—"}°; observed outside tolerance ${duration(summary.deviation.outside_ms)}. ${receptionText(summary.reception)} These windows are predictions, not receiver-lock measurements.`
+      : t.termination ? `${trackingReason(t.termination.reason)}. Holding final position.` : "");
+  };
+
   const controlView = (now) => {
     if (!configured) return ["unavailable", "Control settings failed to load. Reload this page."];
     if (!state.connected) return ["offline", "Controls unavailable. Reconnecting to the controller…"];
     if (!telemetryFresh(state, now)) return ["waiting", "Controls unavailable. Waiting for fresh controller data…"];
     if (!state.networkReady) return ["offline", "Controls unavailable. The controller's network connection is not ready."];
+    if (state.tracking?.mode === "tracking") return ["tracking", "The device is tracking the selected pass. Return to Manual to use direction controls."];
+    if (state.pending || state.awaitingTracking) return ["waiting", "Waiting for the device to confirm the tracking action."];
     if (state.motionFault) return ["locked", `Movement locked: ${state.motionFault.replaceAll("_", " ")}.`];
     if (!state.controller) return ["viewer", "Select Take control above to enable the direction buttons."];
     if (state.hidden) return ["paused", "Controls paused while this page is hidden."];
@@ -622,6 +805,8 @@ header {
         ? `Rest required · ${duration(duty.cooldown)} remaining`
         : `Motor allowance · ${duration(duty.remaining)} on-time`);
     });
+    renderTracking(now);
+    renderForecast();
   };
 
   // Browser effects are kept here: transitions request sends/capture/reconnect;
@@ -660,6 +845,9 @@ header {
   };
 
   take.addEventListener("click", () => dispatch({ type: "take" }));
+  for (const action of ["arm", "manual", "prepare", "cancel"]) {
+    trackElements[action].addEventListener("click", () => dispatch({ type: "tracking", action }));
+  }
   const releasePointer = (event) => dispatch({ type: "release", source: "pointer", id: event.pointerId });
   const checkPointer = (event) => { if ((event.buttons & 1) === 0) releasePointer(event); };
   // Keep release effective outside the pad even if a browser drops capture.
@@ -718,7 +906,9 @@ header {
     row.appendChild(element);
   };
   const showRows = (rows) => {
-    const key = JSON.stringify(rows);
+    const selection = state.tracking?.selection;
+    const selectable = canTrack(state, performance.now()) && state.tracking.mode === "manual";
+    const key = JSON.stringify([rows, selection, selectable]);
     if (key === renderedRows) return;
     renderedRows = key;
     passRows.replaceChildren(...rows.map((pass) => {
@@ -728,6 +918,19 @@ header {
       cell(row, utc(pass.aos), pass.underway ? "In progress" : "");
       cell(row, utc(pass.los));
       cell(row, pass.peak);
+      const selected = selection?.associated && selection.norad_id === pass.norad
+        && selection.aos_unix_s === pass.aos && selection.los_unix_s === pass.los;
+      row.classList.toggle("selected", Boolean(selected));
+      const action = document.createElement("td");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = selected ? "Selected" : "Select";
+      button.setAttribute("aria-pressed", String(Boolean(selected)));
+      button.disabled = !selectable || Boolean(selected);
+      button.title = selected ? "This is the only selected pass" : "Select this pass for a tracking feasibility preview";
+      button.addEventListener("click", () => { if (!button.disabled) dispatch({ type: "tracking", action: "select", pass }); });
+      action.appendChild(button);
+      row.appendChild(action);
       return row;
     }));
   };
@@ -758,6 +961,7 @@ header {
       clock,
       status: `${passes.length ? `${passes.length} reception window${passes.length === 1 ? "" : "s"}` : "No qualifying passes in the next 6 hours"}${incomplete ? " · incomplete coverage" : ""}`,
       rows: passes.map((pass) => ({
+        norad: pass.norad_id,
         name: pass.name,
         channel: `${pass.frequency_mhz} MHz${pass.experimental ? " · experimental / unconfirmed" : ""}`,
         aos: pass.aos_unix_s,
@@ -783,7 +987,7 @@ header {
       const optional = (value) => value === null || Number.isFinite(value);
       if (typeof data.status !== "string" || !Array.isArray(data.passes) || !Array.isArray(data.satellites) || !data.observer
         || ![data.observer.latitude_deg, data.observer.longitude_deg, data.observer.altitude_m, data.window_s].every(Number.isFinite)
-        || !data.passes.every((pass) => pass && [pass.aos_unix_s, pass.los_unix_s, pass.peak_elevation_deg].every(Number.isFinite))
+        || !data.passes.every((pass) => pass && identity(pass.norad_id) && [pass.aos_unix_s, pass.los_unix_s, pass.peak_elevation_deg].every(Number.isFinite))
         || !data.satellites.every((satellite) => satellite && typeof satellite.name === "string")
         || ![data.now_unix_s, data.valid_until_unix_s, data.tle_updated_unix_s].every(optional)) throw new Error("invalid forecast");
       forecast = data;

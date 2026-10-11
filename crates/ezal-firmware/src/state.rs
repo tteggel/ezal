@@ -18,6 +18,8 @@ use ezal_core::network::NetworkGate;
 use ezal_core::ntp::UtcClock;
 use ezal_core::operator::{OperatorGrant, OperatorToken};
 use ezal_core::position::FeedbackVoltages;
+use ezal_core::protocol::{TrackingIntent, TrackingReply, TrackingTelemetry};
+use ezal_core::session::CommandFreshness;
 
 pub static STATE: SharedState = SharedState::new();
 
@@ -77,6 +79,38 @@ impl SharedState {
 
     pub fn telemetry(&self, client_id: u32, now_ms: u64) -> TelemetrySnapshot {
         self.with(|state| state.telemetry(client_id, now_ms))
+    }
+
+    pub fn dashboard_telemetry(
+        &self,
+        client_id: u32,
+        now_ms: u64,
+    ) -> (TelemetrySnapshot, TrackingTelemetry) {
+        self.with(|state| {
+            (
+                state.telemetry(client_id, now_ms),
+                state.tracking_telemetry(client_id, now_ms),
+            )
+        })
+    }
+
+    pub fn request_tracking(
+        &self,
+        client_id: u32,
+        intent: TrackingIntent,
+        freshness: &CommandFreshness,
+    ) -> TrackingReply {
+        let reply = self.with(|state| {
+            state.request_tracking(
+                client_id,
+                intent,
+                freshness,
+                Instant::now().as_millis(),
+                |pass| crate::prediction::report().offers(pass),
+            )
+        });
+        self.changed.signal(());
+        reply
     }
 
     pub fn control_status(&self, client_id: u32) -> ControlStatus {

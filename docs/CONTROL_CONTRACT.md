@@ -79,3 +79,21 @@ page suspension, and applied-output indicators.
 Host tests do not establish physical output-release or stopping time. The board
 checks in [DEVELOPMENT.md](DEVELOPMENT.md) cover GPIO release, relay timing,
 watchdog reset and mechanical coast.
+
+## Tracking browser admission
+
+Only the current leased connection can select, arm, prepare early, cancel or
+return to Manual. Start/change actions carry a current device observation,
+lease generation, ordered intent number and expected state revision. Selection
+must match a currently offered forecast row. Cancellation tolerates stale
+observations and changing revisions while still enforcing the current lease
+and request order. Browser callbacks never supply trajectory points or motor
+outputs. Manual direction and stop messages are rejected in Tracking mode.
+
+The dashboard waits for acknowledged device state, hides manual controls while
+tracking, and never resends tracking intent after a reconnect. Closing or
+hiding the browser cannot stop device-owned tracking. Viewers get the phase,
+feasibility, timestamp-matched deviation, feedback age, recovery deadline/ETA and
+retained final metrics without renewing any permission. A stale sample is never
+shown as a current error measurement. See the
+[tracking wire contract](PASS_PREDICTION.md#wire-contract) for message fields.

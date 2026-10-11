@@ -28,8 +28,8 @@ impl fmt::Display for ClientConfig {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             out,
-            "window.EZAL_CONFIG = {{\"wsPath\":\"{}\",\"refreshMs\":{},\"telemetryTimeoutMs\":{}}};",
-            WS_PATH, COMMAND_REFRESH_MS, COMMAND_MAX_AGE_MS
+            "window.EZAL_CONFIG = {{\"wsPath\":\"{}\",\"refreshMs\":{},\"telemetryTimeoutMs\":{},\"feedbackMaxAgeMs\":{}}};",
+            WS_PATH, COMMAND_REFRESH_MS, COMMAND_MAX_AGE_MS, crate::feedback::FEEDBACK_MAX_AGE_MS
         )
     }
 }

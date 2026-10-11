@@ -3,14 +3,14 @@
 The firmware displays a rolling six-hour forecast at `/api/passes` and
 in the dashboard. NTP synchronization starts after DHCP. TLE download waits
 for valid UTC, then the firmware computes SGP4 reception windows independently
-of dashboard connections. These windows are advisory and never authorize
-movement. The firmware boots idle. Device-owned tracking execution is integrated
-in T7; the dashboard currently exposes manual control, with selection/arming
-API work scheduled for T8.
+of dashboard connections. Forecast rows alone never authorize movement. The
+firmware boots idle. T7/T8 integrate device-owned execution and a dashboard for
+selecting, previewing and explicitly arming one pass. Board timing, complete-pass
+acceptance and installation commissioning remain pending.
 
 The [planned tracking behavior](#planned-tracking) below records the agreed
 workflow and provisional commissioning values. Milestone sections below
-distinguish implemented policy/integration from remaining UI and board validation.
+distinguish implemented policy/integration from remaining acceptance and board validation.
 
 ## Station configuration
 
@@ -664,7 +664,7 @@ commissioning supplies that evidence.
   leases. Keep downloads and incremental planning out of the live control
   task. Check Pico memory, execution time and watchdog behavior with prediction,
   downloads and multiple viewers active. Depends on T2–T6a.
-- [ ] **T8 — Tracking API and dashboard.** Add selection, feasibility preview,
+- [x] **T8 — Tracking API and dashboard.** Add selection, feasibility preview,
   Manual/Tracking mode, scheduled preparation/Prepare now and Cancel. Hide
   manual controls while tracking and reject their commands on the device.
   Show phase, desired/measured pointing, timestamp-matched spherical deviation,
@@ -788,8 +788,8 @@ physics, noisy/skewed feedback, relay timing and pulse hysteresis.
 post-release coast can prove progress without forgiving stalls, reversed
 feedback or movement first observed after a long idle.
 
-The planner and follower remain offline. The lifecycle below uses their plan
-contract; the dashboard does not yet expose pass selection or execution.
+This milestone established the offline planner/follower contract used by the
+lifecycle below. T7/T8 subsequently integrated execution and the dashboard.
 
 ### Current lifecycle milestone
 
@@ -873,7 +873,7 @@ deadline and verifies that no pulse starts and consumed duty is retained.
 T7 now embeds this runtime in `CoordinationState`, replacing the separate
 manual authority/mailbox. Socket cleanup releases the operator lease and leaves
 a device-owned run intact. Only the device output task applies GPIOs and feeds
-the watchdog. T8 will expose selection and arming through the browser.
+the watchdog. T8 exposes selection and arming through the browser.
 
 ### Current execution-input milestone
 
@@ -961,7 +961,7 @@ browser-independent execution, network interruption, queued-output inhibition
 and boot disarming.
 
 Firmware now uses the framed catalog publication path and quantified NTP
-samples. Following/output ownership is integrated in T7; UI wiring remains T8.
+samples. Following/output ownership is integrated in T7 and UI wiring in T8.
 That integration must publish complete source revisions **before** servicing a
 simultaneous preparation deadline, use `TrackingRuntime` rather than bypassing
 it with the generic lifecycle, and provide current clock/network observations
@@ -972,8 +972,8 @@ same `ExecutionInputs` snapshot that accompanies its completed result.
 
 T6 adds [timestamp-matched deviation](../crates/ezal-core/src/tracking/deviation.rs)
 and a [bounded intercept search](../crates/ezal-core/src/tracking/recovery.rs) to
-the existing `TrackingRuntime`. It remains core policy; firmware still exposes
-only manual movement and advisory predictions.
+the existing `TrackingRuntime`. T7/T8 subsequently connect this core policy to
+firmware execution and the dashboard.
 
 Fresh paired feedback is compared with the frozen ephemeris at the oldest
 channel's acquisition timestamp. The spherical estimate handles azimuth
@@ -1114,8 +1114,8 @@ scenarios: 13.65 s missed and 76.35 s usable in the original 90 s window, with
 a fixed 30 s recovery episode. These are model results, not RF measurements.
 
 Validation: 284 Rust tests (including the doctest), 50 dashboard tests, host and
-Pico Clippy, formatting and the Pico release build. Firmware remains manual
-only until the integration work; no firmware was flashed for this milestone.
+Pico Clippy, formatting and the Pico release build. Firmware was manual-only
+at this milestone; no firmware was flashed.
 
 The following milestone integrates this policy into firmware.
 
@@ -1181,11 +1181,114 @@ was taken for this implementation.** The [board procedure](DEVELOPMENT.md#tracki
 must still verify the 20 ms maximum interval, two-second recovery computation
 lead, five-second late-admission lead, stack headroom and physical watchdog
 release under concurrent network/viewer load. T7 remains open for those checks.
-The next software task is **T8 — Tracking API and dashboard**; routine hardware
-tracking also remains subject to T9 acceptance and T10 commissioning.
+T8 below supplies the tracking API/dashboard; routine hardware tracking also
+remains subject to T9 acceptance and T10 commissioning.
 
 Software validation: 292 Rust tests (including the doctest), 50 dashboard tests,
 host/Pico Clippy, formatting, build-tool checks and the Pico release build pass.
 The final release has 40,792 bytes of `.data`, 226,756 bytes of `.bss` and
 1,024 bytes of `.uninit`: 268,572 bytes of static RAM and 263,908 bytes remaining
 for the shared stack. The 192 KiB linker reserve passes.
+
+## Tracking API and dashboard (T8)
+
+The dashboard selects exactly one device-offered pass by NORAD and its complete
+AOS/LOS window. Selection stops any held manual input and previews feasibility;
+it does not arm or reposition the dish. **Enter Tracking** explicitly arms the
+supported full or partial plan. The preview identifies the route, modeled error
+bound, provisional pointing allowance, predicted reception/missed intervals and
+UTC preparation time. Partial reception is also named on the arming button.
+
+While Armed, forecasts and input changes automatically replace the preview.
+**Prepare now** requests a separately evaluated earlier schedule. Preparation
+freezes the accepted route and source as before; the UI follows the device phase
+and hides manual controls throughout Tracking mode. The device independently
+rejects manual commands, including the old manual `stop` message. **Cancel
+tracking** or **Return to Manual** uses the current controller's lease to inhibit
+tracking; completion and cancellation hold the final position. A selection is
+retained for inspection, and never automatically rearmed.
+
+All viewers receive the same selection, preview, phase, measured/desired
+pointing at the same ADC sample time, spherical error, uncertainty allowance,
+peak error and observed time outside tolerance. Feedback/sample expiry removes
+the current numeric deviation. Reacquisition shows attempt count, search/hold
+reason, the original episode's remaining time and a predicted intercept ETA;
+a predicted join is explicitly distinguished from measured recovery. The last
+finished run's summary survives subsequent previews and runs. Reception windows
+remain model predictions; receiver lock and recording are external.
+
+Only the currently leased connection can mutate tracking. Disconnect, page
+hiding and telemetry loss never generate an automatic tracking cancellation;
+reconnect restores the device's state and never resends an earlier intent.
+Selection remains visible even if its forecast row disappears or HTTP polling
+fails. A rejected or unacknowledged action is visible, and the operator can
+cancel across changing plan revisions, stale observations or a pending action.
+
+### Wire contract
+
+The existing `/ws` connection carries manual and tracking traffic. `/api/passes`
+now includes each row's `norad_id` as a decimal string. New intent is bounded to
+256 bytes including full-width identities:
+
+```text
+track:<proof>:<lease>:<sequence>:<revision>:select:<norad>:<aos_unix_s>:<los_unix_s>
+track:<proof>:<lease>:<sequence>:<revision>:arm
+track:<proof>:<lease>:<sequence>:<revision>:prepare
+track:<proof>:<lease>:<sequence>:<revision>:cancel
+track:<proof>:<lease>:<sequence>:<revision>:manual
+```
+
+`proof` comes from `telemetry.freshness.token`; `lease` and `revision` come from
+`telemetry.tracking.operator` and `.revision`. All identities remain decimal
+strings in JavaScript; intent sequences use `BigInt`. The server derives the
+connection identity from the socket and checks the live lease generation.
+Select, Arm and Prepare require a still-valid one-second observation and the
+current revision. Select also checks the current device forecast before replacing
+anything. Cancel/Manual ignore observation age and revision but still enforce
+lease ownership and ordered, nonzero sequence numbers. Exact retries within the
+valid admission boundary are idempotent; the dashboard never retries actions
+automatically. Network recovery invalidates prior observation proofs.
+
+A `tracking_result` acknowledgement contains `sequence`, `ok`, `revision` and
+`error`. It carries no freshness proof. The subsequent coherent telemetry frame
+is authoritative for mode, selection and execution state; the browser waits for
+it before admitting further movement. The `tracking` projection includes:
+
+- `revision`, `operator`, `mode`, `phase`, `run` and at most one `selection`;
+- `plan.status`, an explicit blocked `reason`, and a small supported `preview`;
+- `feedback_stale`, `feedback_age_ms`, `deviation`, `recovery`, `termination`
+  and the retained `summary`.
+
+Reception windows and missed intervals are milliseconds relative to their own
+`aos_unix_s`. Recovery times are remaining milliseconds at the device observation.
+Diagnostic reasons are closed Rust enum representations, rendered as text in the
+browser. No browser-provided string is inserted into server JSON or HTML.
+
+The projection copies less than 1 KiB, performs no propagation or transitions,
+and cannot renew a lease. It is captured with feedback/output telemetry under one
+thread-mode borrow, then encoded outside the borrow in a bounded 4096-byte buffer.
+No route or orbital snapshot is copied per web client. Failed encoding closes the
+session; it cannot revoke an independently running tracking execution.
+
+Validation covers wire bounds and fragmentation, full-width identities, owner/
+viewer and expired-generation rejection, stale proof/revision refusal, cancellation,
+forecast-row validation, read-only observations, and reconnect behavior. The
+production execution tests now select and arm through the browser mutation
+boundary. A shared JSON fixture carries actual Armed, Preparing, Following and
+Complete observations into dashboard tests, alongside partial, recovery, stale
+feedback, failure and no-replay cases. No firmware was flashed for T8.
+
+The next software task is **T9 — Complete-pass acceptance**. T7's board timing,
+watchdog and stack measurements and **T10 — Installation commissioning** remain
+open; the current installed calibration still limits travel to 360°/90°. Follow
+[CALIBRATION.md](CALIBRATION.md) before powered movement or enabling measured
+over-the-top travel.
+
+T8 software validation: **298 Rust tests (including the doctest), 61 dashboard
+tests, host/Pico Clippy, formatting, build-tool checks and the Pico release
+build pass**. The release uses 40,792 bytes of `.data`, 262,788 bytes of `.bss`
+and 1,024 bytes of `.uninit`: 304,604 bytes of static RAM, leaving 227,876 bytes
+for the shared stack. The 192 KiB linker reserve passes. Assembly inspection
+still shows roughly 62 KiB for the tracking worker poll and 53 KiB for plan
+publication; the web task poll has a small local frame with its buffers in the
+task pool. These are capacity checks, not measured board high-water or timing.

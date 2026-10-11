@@ -10,8 +10,8 @@
 //! snapshots independently of browser connections.
 //! [`TrackingRuntime`] adds validated input publication and execution gating;
 //! firmware uses it to supervise the frozen timeline and device network through
-//! the same coordination/actuator boundary as manual commands. The dashboard's
-//! selection/arming API is separate work.
+//! the same coordination/actuator boundary as manual commands. The dashboard
+//! exposes leased selection/arming and a bounded read-only status projection.
 
 mod clock;
 mod controller;

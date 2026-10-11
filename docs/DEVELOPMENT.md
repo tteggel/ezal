@@ -192,8 +192,11 @@ the four direction outputs and invalidates pending commands. Recovery requires
 control ownership and fresh input. Existing ADC and motion fault latches
 survive network recovery.
 
-The dashboard exposes leased manual direction controls. Movement requires
-fresh, valid calibrated feedback at the final GPIO boundary.
+The dashboard exposes leased manual direction controls and single-pass tracking.
+Select a forecast row to preview, then Enter Tracking to arm; Prepare now
+re-evaluates an earlier start. Cancel or Return to Manual interrupts the run.
+Manual controls are hidden while tracking, and browser closure does not cancel it.
+Movement requires fresh, valid calibrated feedback at the final GPIO boundary.
 Initial calibration uses the G-5500 front-panel controls with the Pico's
 direction leads disconnected; see [CALIBRATION.md](CALIBRATION.md).
 
@@ -205,7 +208,7 @@ motion before ADC or network startup. Inspect the fault before clearing that
 state with a board reset, debugger reset, or power cycle. A UF2 or `picotool`
 reboot also goes through the watchdog; boot distinguishes it from a
 firmware-armed timeout. A freshly flashed board starts idle and waits for
-manual input.
+manual input or explicit tracking arming.
 
 Network supervision retries association and 30-second DHCP attempts with
 exponential backoff capped at 30 seconds. HTTP acceptors are started without
@@ -456,8 +459,8 @@ to `thumbv8m.main-none-eabihf` in `.vscode/settings.json`:
 
 ### Tracking execution load check
 
-T7's software integration and host tests do not establish board timing. After
-T8 supplies the selection/arming API, perform this check with the direction
+T7/T8 software integration and host tests do not establish board timing. The
+dashboard now supplies selection and arming. Perform this check with the direction
 leads disconnected and suitable feedback simulation first; use the existing
 commissioning procedure before powered movement. The installed calibration
 still limits azimuth/elevation to 360°/90° until measured replacements are made.
@@ -477,7 +480,11 @@ still limits azimuth/elevation to 360°/90° until measured replacements are mad
    after compiler/structure changes, then measure high-water use on the board.
    The assembly check alone does not bound nested calls plus interrupt use.
 
-2. Open eight viewers and exercise forecast computation and a TLE download while
+2. Select one predicted pass in the dashboard, inspect its feasibility and
+   reception windows, then use Enter Tracking. Confirm selection alone does not
+   move, scheduled preparation starts at the displayed time, and Prepare now
+   evaluates its own schedule before moving. Test full and partial support.
+   Open eight viewers and exercise forecast computation and a TLE download while
    preparing/following an armed pass. Close/reopen the controller and pause a
    slow viewer. Confirm the pass continues and only a currently leased controller
    can cancel it. Confirm manual input cannot interrupt Tracking mode. No viewer
