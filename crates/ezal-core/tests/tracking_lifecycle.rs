@@ -760,14 +760,21 @@ fn cancellation_and_safety_interruptions_invalidate_pending_worker_and_executor_
 }
 
 #[test]
-fn readiness_must_arrive_before_aos_and_stale_input_publications_cannot_roll_back() {
+fn late_readiness_enters_bounded_acquisition_and_stale_inputs_cannot_roll_back() {
     let (mut session, _) = armed();
     session.tick(PREP).unwrap();
     let run = session.snapshot().run.unwrap();
     assert!(!session.preparation_ready(run, AOS).unwrap());
+    assert_eq!(session.snapshot().phase, TrackingPhase::Reacquiring);
+    let episode = session.snapshot().recovery.unwrap();
+    assert_eq!(episode.cause(), RecoveryCause::LatePreparation);
+    assert_eq!(episode.started_at_ms(), AOS);
+    assert_eq!(episode.deadline_ms(), LOS);
+    assert!(!session.tracking_command(run, output(AOS, Command::Drive(CW)), AOS));
+    session.tick(LOS).unwrap();
     assert_eq!(
         session.snapshot().termination.unwrap().reason,
-        TrackingStop::LatePreparation
+        TrackingStop::ReacquisitionLossOfSignal
     );
     let (mut session, _) = armed();
     session

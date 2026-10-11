@@ -220,8 +220,10 @@ operator leases, one selected pass, plan freezing and browser-independent execut
 state. The [execution-input boundary](docs/PASS_PREDICTION.md#current-execution-input-milestone)
 binds validated orbital snapshots and fractional UTC to each plan, checks timing
 uncertainty through LOS, and stops on device network loss. HTTP orbital downloads
-are an explicit installation decision. Firmware/UI integration, reacquisition
-and commissioning remain future work.
+are an explicit installation decision. The
+[recovery core](docs/PASS_PREDICTION.md#current-reacquisition-milestone) adds
+timestamp-matched deviation, bounded future intercepts and final pass summaries.
+Partial-pass admission, firmware/UI integration and commissioning remain future work.
 Predictions never authorize movement in the current firmware.
 
 ## License

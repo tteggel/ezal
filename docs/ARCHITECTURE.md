@@ -75,6 +75,16 @@ publish element sets and their revisions. The installation explicitly accepts
 HTTP orbital data; these types establish framing/validation and identity, not
 cryptographic authenticity. NTP also remains unauthenticated.
 
+The same runtime owns deviation monitoring and recovery. One episode retains
+its original deadline across settling and intercept retries. Incremental search
+borrows the frozen route/source and simulates the remaining pass from a copy of
+the serviced actuator, preserving duty and relay history. Recovery commands
+come only from the validated intercept and existing feedback follower; ordinary
+following commands are refused during recovery. Late work, stale feedback,
+faults and cancellation cannot revive an old intercept. See the
+[reacquisition milestone](PASS_PREDICTION.md#current-reacquisition-milestone)
+for the output cadence and integration contract.
+
 `ezal-firmware` owns the asynchronous shell:
 
 | Module | Resources and effects |

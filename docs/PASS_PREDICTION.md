@@ -644,23 +644,30 @@ commissioning supplies that evidence.
   Freeze execution inputs, enforce source validity through LOS and account
   for timing uncertainty. Test clock steps, stale sources, failed refreshes,
   boot disarming and the initial stop-on-device-network-loss policy.
-- [ ] **T6 — Bounded reacquisition.** Apply deviation warning/hysteresis,
+- [x] **T6 — Bounded reacquisition.** Apply deviation warning/hysteresis,
   search reachable future intercepts on the frozen pass and enforce the
   original 30 s episode deadline/LOS. Retain fault inhibition, cancellation
   and duty state; report recovery ETA and terminal reasons. Test recoverable
   lag, impossible intercepts, repeated replans and feedback failure. Depends
   on T2–T5.
+- [ ] **T6a — Partial-pass admission.** Extend the planner/publication contract
+  to permit a selection with validated late acquisition or predicted gaps,
+  including gap duration, a bounded recovery opportunity and the remaining
+  reception window. Reuse T6's intercept validation; never label partial
+  reception as complete-window support or arm an unsupported diagnostic route.
+  Test late arming and planned keyhole gaps. Depends on T3–T6; required before
+  completing the agreed partial-pass behavior in T7/T8.
 - [ ] **T7 — Independent firmware execution.** Wire tracking into its own
   serviced task and the existing output boundary with short internal command
   leases. Keep downloads and incremental planning out of the live control
   task. Check Pico memory, execution time and watchdog behavior with prediction,
-  downloads and multiple viewers active. Depends on T2–T6.
+  downloads and multiple viewers active. Depends on T2–T6a.
 - [ ] **T8 — Tracking API and dashboard.** Add selection, feasibility preview,
   Manual/Tracking mode, scheduled preparation/Prepare now and Cancel. Hide
   manual controls while tracking and reject their commands on the device.
   Show phase, desired/measured pointing, timestamp-matched spherical deviation,
   stale feedback, recovery progress and the final summary. Test owner/viewer
-  permissions and reconnects. Depends on T4, T6 and T7.
+  permissions and reconnects. Depends on T4, T6/T6a and T7.
 - [ ] **T9 — Complete-pass acceptance.** Run recorded and synthetic exact-
   zenith/near-zenith passes, azimuth wraps, extreme preparation positions,
   slow/fast motor profiles, cancellations, faults, duty exhaustion and LOS.
@@ -732,8 +739,10 @@ the separate timing reserve and whole-window source-validity checks.
 Any interval not established within budget is a predicted gap. The report
 retains the worst scenario's total gap time and up to 16 intervals, explicitly
 flagging truncation. Unsupported attempts cannot become a `TrackingPlan`.
-No-gap support requires every scenario to complete through final coast. Gap
-acceptance and late intercepts remain deferred to T6's bounded reacquisition.
+No-gap support requires every scenario to complete through final coast. T6
+recovers a frozen run and handles preparation that misses AOS. Admitting a
+selection already predicted to have gaps or acquire late remains T6a work;
+unsupported diagnostic attempts still cannot authorize movement.
 Cancellation or a source/work/storage failure invalidates the entire job,
 including earlier candidates. Exhausting this finite search means no supported
 route was found, not that every possible physical route is impossible.
@@ -826,7 +835,8 @@ an installed calibration or motion-policy change stops the run.
 | Prepare now | Request a new `Immediate` plan; start only after that schedule passes evaluation |
 | Executor confirms measured readiness | Enter Ready; retain the same frozen route and inputs |
 | AOS while Ready | Enter Following independently of operator presence |
-| AOS without preparation/readiness | Stop with a late-preparation reason; late interception remains T6 work |
+| AOS during frozen preparation without readiness | Enter bounded late acquisition, with its deadline counted from AOS |
+| AOS without a valid frozen plan | Stop with a late-preparation reason; never execute an older/unsupported route |
 | LOS while Following | Inhibit, return to Manual and retain the result/selection; no park or next pass |
 | Cancel, replacement or interruption | Invalidate old jobs/callbacks/commands and preserve an unconsumed stop |
 
@@ -955,4 +965,82 @@ it with the generic lifecycle, and provide current clock/network observations
 on every output drain. Planning remains device-internal and must consume the
 same `ExecutionInputs` snapshot that accompanies its completed result.
 
-Next task: **T6 — Bounded reacquisition**.
+### Current reacquisition milestone
+
+T6 adds [timestamp-matched deviation](../crates/ezal-core/src/tracking/deviation.rs)
+and a [bounded intercept search](../crates/ezal-core/src/tracking/recovery.rs) to
+the existing `TrackingRuntime`. It remains core policy; firmware still exposes
+only manual movement and advisory predictions.
+
+Fresh paired feedback is compared with the frozen ephemeris at the oldest
+channel's acquisition timestamp. The spherical estimate handles azimuth
+overlap and over-the-top equivalence. Telemetry includes an explicit uncertainty
+estimate: the plan's source/alignment/time reserve, calibration-derived ADC
+resolution, and worst-case azimuth travel during the 150 ms paired-read bound.
+The warning/recovery thresholds apply to the estimated separation, not a claim
+of measured RF pointing accuracy. Missing/stale/failed feedback makes the current
+reading unavailable and stops execution; the last maximum remains in the summary.
+
+Distinct fresh samples must establish more than the plan's warning tolerance
+(default 3°) for one second before recovery begins. Recovery requires at most
+2° for two seconds of fresh samples after the validated route join. Repeated
+reads of one sample do not accumulate dwell, and unobserved intervals break it.
+The runtime also retains observed time outside tolerance and a final summary
+bound to the exact run, event and termination reason. Selecting or executing
+another pass does not relabel the preceding final summary.
+
+Each episode owns `min(entry + 30 s, LOS)`. Preparation that was frozen but
+did not establish readiness at AOS enters a late-acquisition episode counted
+from AOS, even if service occurs later. Retries and browser lease expiry never
+move these deadlines. The lifecycle distinguishes recovery timeout, LOS during
+recovery, feedback failure, motion fault, cancellation and input invalidation.
+
+The intercept procedure is deliberately finite:
+
+1. Inhibit and wait for coast to end and a post-coast feedback pair. Copy the
+   coherently serviced actuator, retaining relay holds, supervision and duty.
+2. Set a launch two seconds ahead while incremental computation runs. Search
+   future joins at one-second intervals on the **same frozen mechanical route**.
+   Slew toward each future point, then rejoin the route at its original time.
+3. Evaluate every configured motor/feedback scenario through the remaining
+   pass and final coast. Each step performs at most one propagation and one
+   simulation service, with the existing 20-million-step ceiling. From the
+   join onward, intersample pointing bounds must fit the smaller of 2° and the
+   plan's modeled allocation. Leave time for the fresh-feedback recovery dwell.
+4. Accept the earliest qualifying grid candidate. At launch, require the same
+   measured pose, policy, network generation and uninterrupted idle history.
+   A changed start, missed launch or missed control deadline discards the path.
+5. Follow only that validated target using the existing follower and actuator.
+   If measured recovery misses the predicted join plus two-second dwell and
+   feedback allowance, inhibit and retry. Unsuccessful searches retry after
+   one second within the original episode; they never reset duty or faults.
+
+“Earliest” means earliest in this finite search. These results remain conditional
+on the provisional scenarios; they do not prove every intermediate motor
+response or exclude a better trajectory. Known-gap and initially late selections
+still need T6a's partial-pass admission contract before they can be armed.
+
+Firmware integration must publish feedback/motion health before issuing or
+draining commands, including during preparation. `observe_tracking` supervises
+following; `reacquisition_command` generates recovery commands; the independently
+yielding worker calls `step_reacquisition`. A validated launch must be generated
+and drained at its scheduled millisecond, and subsequent recovery control must
+meet the frozen cadence (currently at most 20 ms). Late work holds/retries;
+it never blocks the physical output task or applies an obsolete intercept.
+The output owner must also report every actual relay transition to the active
+follower. On return to Following, clear the normal follower's target-velocity
+history while retaining its observed relay/coast history. GPIO, live planning
+latency, memory, watchdog behavior and the feasibility of the two-second
+computation lead must be measured in T7 before enabling tracking.
+
+[Core recovery tests](../crates/ezal-core/src/tracking/recovery/tests.rs) exercise
+all nine scenarios, remaining-pass source failure, impossible/duty-limited
+intercepts, preserved overlap/over-the-top routes, changed starting history and
+immutable episode deadlines. [Runtime tests](../crates/ezal-core/tests/common/tracking_recovery.rs)
+use the recorded TLE fixture, a separate motor model and delayed feedback to
+exercise successful recovery, late preparation, missed measured intercepts,
+late computation/output, repeated retries, cancellation, feedback/network/motion
+failure and retained final summaries.
+
+Next task: **T6a — Partial-pass admission**, followed by **T7 — Independent
+firmware execution**.

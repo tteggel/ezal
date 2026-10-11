@@ -15,6 +15,9 @@ use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, Posit
 use ezal_core::tracking::*;
 use std::sync::OnceLock;
 
+#[path = "common/tracking_recovery.rs"]
+mod recovery;
+
 const TLES: &str = include_str!("fixtures/weather-2026-10-07.tle");
 const EVENT: PassEvent = PassEvent {
     norad_id: 39260,

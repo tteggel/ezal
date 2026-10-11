@@ -5,9 +5,10 @@
 
 use super::{
     reconcile_event, CandidateFailure, EventError, EventId, InputError, PassEvent, PlanningError,
-    PlanningReport, PreparationTiming, TimingError, TrackingPlan,
+    PlanningReport, PreparationTiming, TimingError, TrackingPlan, REACQUISITION_LIMIT_MS,
 };
 use crate::drive::{Command, MOVEMENT_LEASE_MS};
+use crate::feedback::FeedbackHealth;
 use crate::mailbox::{CommandEnvelope, CommandMailbox};
 use crate::motion::MotionFault;
 use crate::operator::{LeaseError, OperatorGrant, OperatorLease, OperatorToken};
@@ -98,6 +99,48 @@ impl RunToken {
     }
 }
 
+/// One bounded episode. Replanning never changes this identity or deadline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryToken {
+    run: RunToken,
+    serial: u64,
+    started_at_ms: u64,
+    deadline_ms: u64,
+    cause: RecoveryCause,
+}
+
+/// Why the selected frozen pass entered bounded acquisition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryCause {
+    /// Fresh observations established excessive pointing error.
+    Deviation,
+    /// The frozen preparation had not established readiness at AOS.
+    LatePreparation,
+}
+
+impl RecoveryToken {
+    /// Frozen pass being recovered.
+    pub const fn run(self) -> RunToken {
+        self.run
+    }
+    /// Boot-local episode identity, distinct from intercept attempts.
+    pub const fn serial(self) -> u64 {
+        self.serial
+    }
+    /// Entry instant, including all settling, planning and retry time.
+    pub const fn started_at_ms(self) -> u64 {
+        self.started_at_ms
+    }
+    /// Exclusive deadline, the earlier of 30 seconds after entry and LOS.
+    pub const fn deadline_ms(self) -> u64 {
+        self.deadline_ms
+    }
+    /// Distinguishes a missed start from loss of following during the pass.
+    pub const fn cause(self) -> RecoveryCause {
+        self.cause
+    }
+}
+
 /// Mode controls command-source admission as well as eventual UI visibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackingMode {
@@ -107,7 +150,7 @@ pub enum TrackingMode {
     Tracking,
 }
 
-/// Device-owned phases. Reacquisition is added separately by T6.
+/// Device-owned phases, independent of browser presence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackingPhase {
     /// No armed run; an optional selection may be previewed.
@@ -120,6 +163,8 @@ pub enum TrackingPhase {
     Ready,
     /// Follow the frozen route until LOS.
     Following,
+    /// Hold or follow a validated future intercept within one bounded episode.
+    Reacquiring,
     /// LOS serviced; outputs inhibited and mode returned to Manual.
     Complete,
     /// Explicit operator cancellation or switch to Manual.
@@ -143,7 +188,7 @@ pub enum PlanProblem {
     InvalidResult,
     /// Admission validity expired before preparation could freeze the plan.
     Expired,
-    /// No complete-window arrival before AOS; bounded late intercepts are T6 work.
+    /// No complete-window arrival before AOS; partial-pass admission is separate.
     TooLate,
 }
 
@@ -187,6 +232,12 @@ pub enum TrackingStop {
     Inputs(InputError),
     /// A physical output fault, independently enforced by the actuator.
     Motion(MotionFault),
+    /// Feedback is missing, stale, invalid or out of timestamp order.
+    Feedback(FeedbackHealth),
+    /// Recovery exhausted its original 30-second episode budget.
+    ReacquisitionTimeout,
+    /// LOS arrived while the dish was still reacquiring.
+    ReacquisitionLossOfSignal,
     /// Monotonic clock/counter failure; cannot safely continue or reuse identities.
     ClockOrCounter,
 }
@@ -198,6 +249,8 @@ pub struct TrackingTermination {
     pub event: Option<EventId>,
     /// Frozen run that was stopped, when any.
     pub run: Option<RunToken>,
+    /// Current recovery episode, unchanged by intercept retries.
+    pub recovery: Option<RecoveryToken>,
     /// Explicit cause, independent of operator presence.
     pub reason: TrackingStop,
     /// Service instant when inhibition was requested.
@@ -219,6 +272,8 @@ pub struct TrackingSnapshot {
     pub plan: PlanStatus,
     /// Current execution generation, if frozen.
     pub run: Option<RunToken>,
+    /// Current recovery episode, unchanged by intercept retries.
+    pub recovery: Option<RecoveryToken>,
     /// Retained completion/cancellation/failure reason.
     pub termination: Option<TrackingTermination>,
 }
@@ -321,6 +376,7 @@ pub struct TrackingSession<S> {
     plan: Option<BoundTrackingPlan<S>>,
     plan_status: PlanStatus,
     run: Option<RunToken>,
+    recovery: Option<RecoveryToken>,
     armed_deadline_ms: Option<u64>,
     termination: Option<TrackingTermination>,
     receipt: Option<Receipt>,
@@ -350,6 +406,7 @@ impl<S> TrackingSession<S> {
             plan: None,
             plan_status: PlanStatus::Unplanned,
             run: None,
+            recovery: None,
             armed_deadline_ms: None,
             termination: None,
             receipt: None,
@@ -366,6 +423,7 @@ impl<S> TrackingSession<S> {
             selection: self.selection,
             plan: self.plan_status,
             run: self.run,
+            recovery: self.recovery,
             termination: self.termination,
         }
     }
@@ -469,12 +527,14 @@ impl<S> TrackingSession<S> {
         self.termination = Some(TrackingTermination {
             event: self.selection.map(|s| s.id),
             run: self.run,
+            recovery: self.recovery,
             reason,
             at_ms: now_ms,
         });
         self.mode = TrackingMode::Manual;
         self.phase = phase;
         self.run = None;
+        self.recovery = None;
         self.armed_deadline_ms = None;
         self.ticket = None;
         self.plan = None;
@@ -772,7 +832,26 @@ impl<S> TrackingSession<S> {
         if self.run.is_some() {
             let window = self.plan.as_ref().unwrap().plan.window;
             let los = window.aos_at_ms + u64::from(window.duration_ms);
-            if now_ms >= los {
+            if self.phase == TrackingPhase::Preparing && now_ms >= window.aos_at_ms {
+                self.enter_reacquisition(
+                    self.run.unwrap(),
+                    RecoveryCause::LatePreparation,
+                    window.aos_at_ms,
+                    now_ms,
+                )?;
+            }
+            if let Some(recovery) = self.recovery.filter(|r| now_ms >= r.deadline_ms) {
+                self.bump(now_ms)?;
+                self.stop(
+                    if recovery.deadline_ms == los {
+                        TrackingStop::ReacquisitionLossOfSignal
+                    } else {
+                        TrackingStop::ReacquisitionTimeout
+                    },
+                    TrackingPhase::Stopped,
+                    now_ms,
+                );
+            } else if now_ms >= los {
                 self.bump(now_ms)?;
                 let complete = self.phase == TrackingPhase::Following;
                 self.stop(
@@ -788,18 +867,9 @@ impl<S> TrackingSession<S> {
                     },
                     now_ms,
                 );
-            } else if now_ms >= window.aos_at_ms {
-                if self.phase == TrackingPhase::Preparing {
-                    self.bump(now_ms)?;
-                    self.stop(
-                        TrackingStop::LatePreparation,
-                        TrackingPhase::Stopped,
-                        now_ms,
-                    );
-                } else if self.phase == TrackingPhase::Ready {
-                    self.bump(now_ms)?;
-                    self.phase = TrackingPhase::Following;
-                }
+            } else if now_ms >= window.aos_at_ms && self.phase == TrackingPhase::Ready {
+                self.bump(now_ms)?;
+                self.phase = TrackingPhase::Following;
             }
         } else if let Some(bound) = self.plan.as_ref() {
             if now_ms >= bound.freeze_before_ms {
@@ -850,6 +920,87 @@ impl<S> TrackingSession<S> {
         Ok(true)
     }
 
+    /// Trusted deviation monitor enters recovery once; repeated calls retain
+    /// the same absolute deadline. Old following commands are inhibited first.
+    pub(super) fn begin_reacquisition(
+        &mut self,
+        run: RunToken,
+        now_ms: u64,
+    ) -> Result<Option<RecoveryToken>, LifecycleError> {
+        self.tick(now_ms)?;
+        if self.run != Some(run) {
+            return Ok(None);
+        }
+        if self.recovery.is_some() {
+            return Ok(self.recovery);
+        }
+        if self.phase != TrackingPhase::Following {
+            return Ok(None);
+        }
+        self.enter_reacquisition(run, RecoveryCause::Deviation, now_ms, now_ms)
+            .map(Some)
+    }
+
+    fn enter_reacquisition(
+        &mut self,
+        run: RunToken,
+        cause: RecoveryCause,
+        started_at_ms: u64,
+        now_ms: u64,
+    ) -> Result<RecoveryToken, LifecycleError> {
+        let window = self.plan.as_ref().unwrap().plan.window;
+        let deadline_ms = started_at_ms
+            .saturating_add(REACQUISITION_LIMIT_MS)
+            .min(window.aos_at_ms + u64::from(window.duration_ms));
+        let recovery = RecoveryToken {
+            run,
+            serial: self.serial(now_ms)?,
+            started_at_ms,
+            deadline_ms,
+            cause,
+        };
+        self.bump(now_ms)?;
+        self.recovery = Some(recovery);
+        self.phase = TrackingPhase::Reacquiring;
+        self.commands.submit(CommandEnvelope::INHIBIT);
+        Ok(recovery)
+    }
+
+    /// Only the monitor may confirm fresh recovery on the validated intercept.
+    pub(super) fn finish_reacquisition(
+        &mut self,
+        recovery: RecoveryToken,
+        now_ms: u64,
+    ) -> Result<bool, LifecycleError> {
+        self.tick(now_ms)?;
+        if self.recovery != Some(recovery) {
+            return Ok(false);
+        }
+        self.bump(now_ms)?;
+        self.phase = TrackingPhase::Following;
+        self.recovery = None;
+        self.commands.submit(CommandEnvelope::INHIBIT);
+        Ok(true)
+    }
+
+    /// Recovery commands are generated from a validated intercept by the runtime.
+    pub(super) fn recovery_command(
+        &mut self,
+        recovery: RecoveryToken,
+        command: CommandEnvelope,
+        now_ms: u64,
+    ) -> bool {
+        if self.tick(now_ms).is_err()
+            || self.recovery != Some(recovery)
+            || !matches!(command.command, Command::Drive(_) | Command::Inhibit)
+            || !fresh(command, now_ms)
+        {
+            return false;
+        }
+        self.commands.submit(command);
+        true
+    }
+
     /// Physical/network/source interruption is independent of operator authority.
     pub fn interrupt(&mut self, reason: TrackingStop, now_ms: u64) -> Result<(), LifecycleError> {
         self.advance(now_ms)?;
@@ -898,6 +1049,7 @@ impl<S> TrackingSession<S> {
         if self.tick(now_ms).is_err()
             || self.run != Some(run)
             || self.mode != TrackingMode::Tracking
+            || self.phase == TrackingPhase::Reacquiring
             || !matches!(command.command, Command::Drive(_) | Command::Inhibit)
             || !fresh(command, now_ms)
         {

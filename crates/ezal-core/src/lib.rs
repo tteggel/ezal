@@ -33,6 +33,9 @@
 // Unit and integration tests share the same calibrated observation fixtures.
 #[cfg(test)]
 extern crate self as ezal_core;
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod test_support;
 
 pub mod actuator;
 pub mod ads1015;

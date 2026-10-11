@@ -6,8 +6,7 @@ use crate::interlock::FeedbackInterlock;
 use crate::mailbox::CommandEnvelope;
 use crate::network::NetworkGate;
 
-#[path = "../../tests/common/mod.rs"]
-mod common;
+use crate::test_support as common;
 mod interlock;
 mod motion;
 
