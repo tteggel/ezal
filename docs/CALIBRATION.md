@@ -6,6 +6,14 @@ with the real ADS1015. For now the four installed-system endpoints are
 deliberately hard-coded; this document is the procedure for replacing them
 with measurements from your unit.
 
+The planned tracking installation has an 80 cm parabolic dish with a custom
+helical feed and permits over-the-top movement. Its full-travel calibration
+and pointing tolerance remain unmeasured. Follow this procedure before using
+that extra travel; the existing firmware still provides manual control and
+advisory prediction. The [tracking design](PASS_PREDICTION.md#planned-tracking)
+and [provisional motor profile](HARDWARE.md#provisional-tracking-profile)
+describe assumptions for future tracking, not measured installation values.
+
 ## Current hard-coded values
 
 The single source of truth is `HARD_CODED_CALIBRATION` in
@@ -67,16 +75,19 @@ dashboard jogging only after installing and verifying the new calibration.
 
 ## 1. Trim the G-5500 controller
 
-First follow the G-5500 service procedure for its rear-panel **FULL SCALE
-ADJ** controls, which align the controller's own meters. Consult the procedure
-for your controller model before adjusting anything:
+First record the rotator and controller model, serial numbers and supply
+frequency. Use the matching
+[G-5500](https://www.yaesu.com/Files/4CB6273C-1018-01AF-FA4D504B591F641A/G-5500_IM_ENG_E12901004.pdf)
+or [G-5500DC](https://www.yaesu.com/Files/4CB6273C-1018-01AF-FA4D504B591F641A/G-5500DC_IM_ENG_EBB70X101_1906V-BS.pdf)
+manual for the rear-panel **FULL SCALE ADJ** controls, which align the
+controller's own meters:
 
 1. Slew azimuth to the left end, mark the housing, then drive right through one
-   complete turn back to the mark. Adjust azimuth **VR0004** for 360° on the
-   controller meter. Confirm the clockwise end reads the additional 90°
+   complete turn back to the mark. Adjust the rear azimuth **FULL SCALE ADJ**
+   control for 360° on the meter. Confirm the clockwise end reads the additional 90°
    (450° continuous travel).
-2. Slew elevation to its 180° mark and adjust elevation **VR0003** for 180° on
-   the controller meter.
+2. Slew elevation to its 180° mark and adjust the rear elevation **FULL SCALE
+   ADJ** control for 180° on the meter.
 3. Recheck both zero ends.
 
 This trim sets what the controller's meters read. It does not establish ezal's
@@ -97,6 +108,20 @@ both the physical angle and its ADC reading. The current configuration uses
 0°–360° azimuth and 0°–90° elevation; a full-travel G-5500 installation may use
 0°–450° and 0°–180°. Do not measure at one range's endpoints and label those
 voltages with another range's angles.
+
+For over-the-top use, measure permitted elevation travel through 90° and
+towards 180°. Record intermediate values at 45°, 90° and 135° as well as the
+endpoints. Preserve continuous mechanical angles: elevation 135° is a
+different motor position from 45°, although an azimuth shift of 180° can make
+them point in the same sky direction. Similarly, keep azimuth 360°–450° as
+continuous travel if that overlap is available on this installation.
+
+Do not obtain the new calibration by changing the current `90.0` endpoint
+to `180.0` while retaining its voltage. In particular, the current 58 mV
+reading at 90° cannot be extrapolated to infer the far endpoint. Measure the
+entire feedback chain at the actual angles. If the readings reach a rail
+before the allowed mechanical endpoint, investigate the feedback interface
+and controller setup before extending the calibration.
 
 | measurement | physical angle to record | dashboard reading to record |
 |-------------|--------------------------|-----------------------------|
@@ -174,15 +199,69 @@ failure here means the calibration needs another look, not the tests.
 
 Then stop at 0%, 25%, 50%, 75%, and 100% of
 each scale. Compare the dashboard angle with the G-5500 meter or a trusted
-mechanical reference. Record the four endpoint readings, date, controller
-serial number, and resulting error table with the installation maintenance
-log.
+mechanical reference. Repeat the intermediate checks approaching from both
+directions to distinguish a mapping error from backlash. Verify the entire
+permitted elevation range, including both sides of zenith, while the Pico
+direction leads remain disconnected. After this check, reconnect the leads
+and verify small commanded movements inside the measured range before
+approaching its boundaries. Record the four endpoint readings, date,
+controller serial number, and resulting error table with the installation
+maintenance log.
 
 Recalibrate after replacing the controller, ADC/interface board, divider
 resistors, rotator position potentiometers, or after any persistent position
 offset. Flash persistence and an authenticated calibration UI are intentionally
 future work; until those exist, the checked-in constant and installation log
 are the authoritative record.
+
+## 5. Verify sky pointing
+
+Electrical calibration establishes motor angles. Tracking also needs the
+dish's radio beam to agree with the predicted sky direction:
+
+- Check azimuth zero against true north and elevation zero against a known
+  horizontal reference. Record any dish mounting or feed offset; the face
+  angle of an offset reflector need not equal its beam direction.
+- Compare reference directions at several azimuths and elevations, including
+  permitted over-the-top positions. Record approach direction and residual
+  error. A controller meter alone cannot establish RF boresight alignment.
+- With the external receiver, record received level or decoding quality as
+  the dish is moved by small known angular offsets around a stable reference
+  or a time-corrected satellite direction. Keep receiver settings fixed and
+  distinguish signal variation from pointing loss. Record frequency and
+  weather/load conditions with the measurements.
+- Establish the acceptable pointing deviation and the allocation between
+  alignment uncertainty, orbital/time uncertainty and controller following.
+  The initial 3° tracking target and estimated beamwidth in the plan remain
+  provisional until these checks support them.
+
+## Motion-profile worksheet
+
+Measurements can follow initial tracking development; use the documented
+provisional profile for simulation meanwhile. Record actual loaded behavior
+when commissioning hardware, keeping each value separate from its assumption.
+Position endpoints must be measured before extending permitted travel.
+
+| Measurement | CW | CCW | Up | Down |
+|---|---|---|---|---|
+| Steady travel: angle change / elapsed seconds | TBD | TBD | TBD | TBD |
+| Startup delay and shortest repeatably useful pulse | TBD | TBD | TBD | TBD |
+| Angular travel after output release and time to rest | TBD | TBD | TBD | TBD |
+| Reversal delay and backlash/take-up angle | TBD | TBD | TBD | TBD |
+| Feedback noise at rest and position residual | TBD | TBD | TBD | TBD |
+
+Time travel over a known span away from the endpoints, in both directions
+and at several elevations under the normal dish load. Record slow and fast
+runs, not only their average. Repeat pulses with progressively shorter
+intervals, starting from the implemented 500 ms on / 2 s off behavior.
+The proposed shorter off/reversal intervals are commissioning candidates;
+observe useful movement, stopping and supervision before applying them.
+
+Use the measured slow rates for preparation/intercept estimates and the
+measured fast rates plus stopping travel for endpoint margins. Separate the
+motor's release/coasting distance from movement caused by an old feedback
+sample. Record powered time and rest intervals against the model-specific
+duty specification in [HARDWARE.md](HARDWARE.md#published-specifications).
 
 ## Motion-supervision commissioning
 
@@ -203,3 +282,12 @@ frozen midrange feedback, wrong-direction feedback after settling, and abrupt
 implausible movement produce the named dashboard motion fault. Each fault
 latches both outputs off until the board is reset after investigation; a new
 command, feedback recovery, or network reconnection cannot clear it.
+
+Tracking pulse trains need an additional check: `startup_settle_ms` restarts
+on every activation, so pulses shorter than the current 1 s allowance can
+avoid all direction/speed observations. Accumulated no-progress detection
+alone does not detect useful-looking movement in the wrong direction.
+Implement and test supervision across short runs and their stopping intervals
+before enabling the relaxed tracking timings. Include wrong-direction and
+implausible feedback in repeated short-pulse tests, alongside genuine backlash
+and coasting, rather than testing only long continuous runs.

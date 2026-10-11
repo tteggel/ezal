@@ -271,48 +271,75 @@ source of truth for the firmware.
 
 ## Motor switching budget
 
-> **Rough notes.** Numbers below are paraphrased datasheet / typical
-> figures, not bench-measured operating guarantees. The implemented firmware
-> limits are listed separately below; verify motor and relay behavior on the
-> installed hardware.
+### Published specifications
 
-### Three constraints
+Sources checked on 2026-10-11. The original G-5500 and G-5500DC require
+different profiles; identify the installed units during calibration.
 
-**Relay (PL6102 = Fujitsu FTR-B4 series, DC 12 V coil)**
+| Model / supply | Azimuth, 360° | Elevation, 180° | Derived nominal rates, az / el |
+|---|---:|---:|---:|
+| G-5500, 50 Hz | 70 s | 80 s | 5.14 / 2.25°/s |
+| G-5500, 60 Hz | 58 s | 67 s | 6.21 / 2.69°/s |
+| G-5500DC | 60 s ±20% | 65 s ±20% | 6.00 / 2.77°/s at nominal times |
 
-- Operate / release time: ~5 ms each (≈ 10 ms round trip).
-- Mechanical life: ~10⁸ operations.
-- Electrical life at rated load: ~5 × 10⁵ operations.
-- Datasheet switching ceiling: ~60 operations/min = **1 Hz** for the
-  electrical-life figure. Above that, contact wear and weld risk climb
-  faster than spec.
+The AC figures are from [Yaesu's rotator brochure, PDF page 3](https://www.yaesu.com/jp/en/products/pdf/AMR/Rotator-EXP.pdf),
+which also lists 1° backlash on each G-5500 axis. The
+[G-5500 manual, printed pages 2 and 4](https://www.yaesu.com/Files/4CB6273C-1018-01AF-FA4D504B591F641A/G-5500_IM_ENG_E12901004.pdf)
+specifies five minutes of operation followed by at least fifteen minutes of
+rest. The [G-5500DC manual, printed pages 1 and 5](https://www.yaesu.com/Files/4CB6273C-1018-01AF-FA4D504B591F641A/G-5500DC_IM_ENG_EBB70X101_1906V-BS.pdf)
+supplies the DC times and a three-minute operating limit with fifteen minutes
+of rest. These are source specifications, not loaded measurements of this dish.
 
-**Motor mechanical settling**
+The installed relay type, motor transient response and snubber thermal limits
+have not been verified. The [FCL FTR-B4 datasheet](https://www.fcl-components.com/downloads/MICRO/fcai/relays/ftr-b4.pdf)
+specifies 3 ms maximum operate/release times without bounce and electrical
+life under stated resistive loads; it does not establish this rotator's
+minimum useful motor pulse or an installed-system 1 Hz switching ceiling.
 
-The G-5500 runs an AC induction motor, the G-5500DC a brushed DC motor;
-both have a holding brake that engages when power is cut. Rough:
+### Provisional tracking profile
 
-- Start-up (apply power → full slew speed): **100–200 ms**.
-- Stop / brake (cut power → fully stopped): **100–300 ms**.
-- Minimum useful on-pulse: ~300 ms. Below this the relay clicks but the
-  rotator doesn't actually move — just judders.
-- Minimum useful cycle period: ~500 ms = **2 Hz absolute mechanical
-  ceiling**.
+Use the original AC G-5500 at 50 Hz as the planning assumption for Clevedon
+until the installation record identifies a different model. Apply the same
+initial values in both directions, replacing them separately when measured.
+This profile is for the [tracking design](PASS_PREDICTION.md#planned-tracking);
+the firmware's current output timing is documented below.
 
-**Snubber thermals (D6038 / D6039 + C6057 = 4.7 nF / 1 kV)**
+| Planning parameter | Initial value | Basis |
+|---|---:|---|
+| Nominal energized azimuth / elevation rates | 5.14 / 2.25°/s | Brochure times |
+| Slower rates for preparation and intercept estimates | 4.0 / 1.8°/s | Engineering allowance of approximately 20% for load and supply variation |
+| Upper rates for simulated travel and stopping margins | 7.0 / 3.0°/s | Existing AC firmware assumptions, to be measured |
+| Backlash at a direction reversal | 1° per axis | Brochure value; model take-up before useful travel |
+| Startup allowance | 300 ms | Unmeasured engineering assumption |
+| Release/coasting allowance | 500 ms | Unmeasured engineering assumption |
+| Minimum ordinary on-time | 500 ms | Initial useful-pulse assumption |
+| Minimum off-time before the same direction | 500 ms | Proposed relaxation for simulation and commissioning |
+| Minimum off-time before the opposite direction | 1,000 ms | Proposed reversal allowance |
 
-Sized for the relay's nominal duty. Not binding below ~1 Hz; listed for
-completeness.
+Startup, coast and pulse values are selected budgets, not guarantees from
+Yaesu. Simulate the slower and faster cases with the same controller and
+actuator timing that will run on the device; if timing relaxation cannot
+maintain useful movement and supervision on the bench, retain the longer
+intervals. A maximum-rate-times-coast-time bound initially reserves 3.5°
+azimuth and 1.5° elevation for post-release travel, in addition to feedback
+age and quantization. It is deliberately conservative and should be replaced
+with measured stopping travel. The present endpoint gate does not yet include
+that coast allowance.
 
-### Operating envelope
+The DC time tolerance implies possible rates up to 7.5°/s azimuth and about
+3.46°/s elevation. The current 7/3°/s bounds therefore cannot be assumed to
+cover a G-5500DC; selecting that model requires matching planner, interlock
+and motion-supervision limits.
 
-| condition                     | rate                          |
-|-------------------------------|-------------------------------|
-| absolute mechanical ceiling   | ~2 Hz (500 ms period)         |
-| relay datasheet ceiling       | 1 Hz                          |
-| **target operating maximum**  | **0.5 Hz (≥ 2 s period)**     |
-| typical during a LEO pass     | 0.05 – 0.2 Hz                 |
-| idle / no satellite           | 0                             |
+For the planned duty guard, accumulate each axis's actual energized time
+across manual control, preparation, following and reacquisition. Start with
+a conservative 300 s allowance for confirmed AC hardware, or 180 s for DC
+or unidentified hardware, replenished only after 900 s continuously idle on
+that axis. Brief pulse gaps do not reset it. This accounting is an engineering
+interpretation of the operating/rest specifications, not a published thermal
+model. Include it in feasibility checks and retain it across mode/owner
+changes; a reboot with unknown prior duty starts with a rest requirement.
+The current firmware has no duty accumulator.
 
 ### Implemented output timing
 
@@ -365,14 +392,15 @@ motor-enable interlock. See the
 
 ### To verify on the bench
 
-- Actual motor start-up and brake-stop times for each axis (the 100–
-  300 ms ranges above are typicals, not measured).
-- Whether the Yaesu relay has any extra contact protection beyond the
-  snubber we see, which might extend the electrical-life rating.
-- The installed slew rates under the expected antenna load. The G-5500 manual
-  gives approximately 58 s per 360° azimuth and 67 s per 180° elevation at
-  60 Hz; measure the installed
-  system before changing the motion-supervision limits.
+- Record the model and supply frequency; measure loaded slew rate, startup,
+  useful pulse duration, stopping travel and reversal take-up in each direction.
+  Use the worksheet in [CALIBRATION.md](CALIBRATION.md#motion-profile-worksheet).
+- Verify the installed relay and load before interpreting component endurance
+  figures as a system switching budget.
+- Exercise short pulse trains as well as continuous motion. The current
+  one-second settling window restarts on every activation and can exclude
+  all direction/speed checks during shorter pulses; tracking needs supervision
+  that remains effective across those pulse trains.
 - Whether an energised direction pin stays high through a watchdog reset.
   Capture the pin across the reset itself, not just after the reboot: the pad
   isolation latch can hold the last output state until boot claims the pin.

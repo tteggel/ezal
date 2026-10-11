@@ -7,6 +7,10 @@ of dashboard connections. These windows are advisory and never authorize
 movement. The firmware boots idle and moves only in response to manual
 dashboard input; real tracking is deferred.
 
+The [planned tracking behavior](#planned-tracking) below records the agreed
+workflow and provisional commissioning values. It is a design for future
+firmware, separate from the advisory behavior described in the other sections.
+
 ## Station configuration
 
 Set these values in the workspace `.env` (or process environment) and rebuild.
@@ -392,3 +396,335 @@ execution timing still require validation on the installed Pico/receiver.
 ./scripts/test-build-tools.sh
 cargo build --locked -p ezal-firmware --release
 ```
+
+## Planned tracking
+
+Design decisions updated on 2026-10-11. The installation has an 80 cm
+parabolic dish with a custom helical feed and can track over the top.
+Calibration, loaded motor behavior and acceptable RF pointing loss remain
+unmeasured. The numerical choices below are provisional engineering defaults;
+they do not change the manual firmware's constants or establish measured
+tracking performance.
+
+### Selection, ownership and modes
+
+- Keep one device-owned selected pass. Manual mode may have no selection;
+  Tracking mode requires exactly one. Selecting a row previews its plan;
+  entering Tracking arms it. There is no queue or automatic next-pass choice.
+- Only the holder of the current exclusive controller lease may select,
+  replace, arm, cancel, prepare immediately, or change mode. Other clients
+  may observe position, deviation and tracking state. A valid lease cannot
+  be displaced by another client's take-control request.
+- Separate this operator lease from the tracking run. Browser disconnection,
+  page suspension or lease expiry releases operator authority but leaves an
+  armed or executing pass on the Pico. A new lease holder manages the existing
+  run; obtaining that lease does not stop it or alter the selection. Manual
+  movement still stops when its browser source expires.
+- The local tracking task refreshes its own short actuator command leases.
+  It must not depend on browser heartbeats to move. Source deadlines and
+  hardware inhibition remain independently enforceable if that task stalls.
+- Hide manual direction controls in Tracking mode and reject manual direction
+  commands on the device as well. Keep Cancel and Switch to Manual available
+  to the controller throughout planning, preparation and execution. Either
+  action inhibits pending and active output and returns to idle Manual mode;
+  the last selection/result may remain visible for inspection. A fresh arm
+  action is required for another run.
+- Bind commands to the operator lease generation; arm/replace requests also
+  require the expected state revision. Cancel and Switch to Manual require
+  the current controller lease but remain effective across plan revisions.
+  Duplicate requests are idempotent. Replacing a pass cancels the old run
+  before admitting its replacement; delayed work cannot revive an old run.
+  Fault handling and physical power removal do not require an operator lease.
+
+The initial interruption policy retains the existing network gate for a
+device Wi-Fi/DHCP outage and boots disarmed after reset. Browser independence
+is agreed; continuing through a device network outage is a separate policy
+that remains to be decided. A failed internet refresh can use still-valid
+cached orbital/time data while the local network remains available.
+
+### Updating and freezing the plan
+
+Automatically update the selected pass's plan at any point before preparation
+starts, including while it is armed. Re-evaluate new TLEs, clock updates,
+station/profile/calibration revisions and the latest measured starting
+position. Show changes to acquisition time, feasibility and preparation time
+without requiring the operator to select the same pass again.
+
+Use a stable event identity associated with a satellite and pass, rather than
+a table index or exact rounded AOS timestamp. Reconcile a refreshed forecast
+with that event. If the event cannot be uniquely identified or its replacement
+plan is invalid, prevent preparation and show the reason; never silently
+select a different satellite or orbit.
+
+Preparation begins only after atomically accepting the latest complete,
+valid plan revision. This transition freezes its orbital elements, observer,
+motion/calibration profile and chosen nominal mechanical route. Results from
+older planning jobs are discarded. Subsequent TLE refreshes continue for the
+forecast but do not replace this executing plan. Reacquisition computes a
+reachable intercept using those same frozen inputs and permitted travel.
+Changing installed calibration or mechanical limits during execution aborts
+the run rather than applying incompatible coordinates.
+
+Use fractional orbital time anchored to monotonic uptime for execution.
+Account for UTC uncertainty in the pointing budget. A new clock sample must
+not make the target jump: keep the execution anchor when the discrepancy
+fits the reserved uncertainty, and stop with a timing reason when it does not.
+Source age limits still apply through LOS even though the plan is frozen.
+
+### Preparation and completion
+
+Use scheduled pre-positioning, with an optional Prepare now action for an
+armed pass from the leased controller:
+
+```text
+preparation_lead_s = max(60, estimated_movement_s + 20)
+preparation_start = acquisition_time - preparation_lead_s
+```
+
+The 60 s floor and 20 s arrival margin are the initial choices. Estimate the
+movement using the slower rates in the [motor profile](HARDWARE.md#provisional-tracking-profile),
+current position, chosen azimuth route, backlash, startup, coast and relay
+state. Account for concurrent axes and any sequential movement segments.
+Recalculate the schedule with every valid pre-preparation plan update.
+Selecting a pass by itself does not move the dish.
+
+If the calculated start is already past, begin preparation when armed and
+the path is valid. If arrival before AOS is no longer possible, show late
+acquisition and apply the bounded intercept policy below. Do not report a
+complete reception window when its start has been missed. Arriving at the
+starting pose enters Ready; the simulation must include the relay availability
+needed to start following at AOS, as well as the pose itself.
+
+Normal phases are Armed, Preparing, Ready, Following, Reacquiring and Complete.
+Cancellation and faults have explicit terminal reasons. At LOS, remove drive,
+disarm and stay at the final position, allowing for normal mechanical coast.
+There is no automatic park move. A cancellation holds the position reached
+when it is serviced. Recording is always external; receiver tuning and
+recording integration are outside this tracking change. Use the configured
+elevation cutoff with no terrain/building obstruction model.
+
+### Pointing tolerance and over-the-top planning
+
+For initial estimates, `70 * wavelength / diameter` gives about 15.4° full
+half-power beamwidth at 1.7 GHz for an 80 cm dish. The coefficient depends on
+feed illumination; this is a model, not a measurement of the custom feed.
+The corresponding simple main-lobe model gives about 0.45 dB loss at 3°
+offset. Both approximations are described in
+[JPL IPN report 42-216C, PDF page 9](https://www.nasa.gov/wp-content/uploads/2026/02/42-216c.pdf).
+
+Start with a configurable 3° operational pointing-deviation target. Reserve
+1° provisionally for alignment, orbital and clock uncertainty, and require
+the combined modeled path offset and controller following error to fit within
+the remaining 2°. Include feedback latency, quantization, backlash and
+coasting in that controller simulation. Commissioning must establish whether
+the uncertainty allocation is sufficient; mark predictions as provisional
+while the relevant measurements are unknown. The budget is not a claim of
+receiver lock or RF alignment inferred from motor feedback alone.
+
+Compare complete conventional and over-the-top routes, including equivalent
+azimuth positions within measured travel. Keep continuous mechanical angles
+separate from sky bearings. The direction represented by `(A, E)` is also
+represented by `(A + 180°, 180° - E)` when those motor positions are permitted.
+Changing representation alone does not reduce the azimuth rate of a near
+miss of zenith. An over-the-top transition must be a physically continuous
+path whose actual sky error fits the available budget, including between
+sample points. Refine sampling around zenith, reversals and travel limits;
+do not decide feasibility from peak elevation alone. The keyhole rate
+relationship is documented in [JPL antenna positioning, section 2.2](https://deepspace.jpl.nasa.gov/dsndocs/810-005/302/302E.pdf).
+
+Evaluate the full preparation/following path using the same feedback
+controller and actuator timing as execution, with bounded motion uncertainty
+and duty accounting. Prefer smaller peak pointing error, then fewer reversals
+and output transitions. A bounded planner that finds no supported trajectory
+reports that result without claiming that every possible trajectory is
+physically impossible. The firmware can develop this simulation using the
+provisional motor profile while installation measurements are pending.
+
+### Reacquisition and visible deviation
+
+Attempt reacquisition when the measured dish direction departs from the
+selected pass. The initial thresholds are engineering defaults:
+
+| Condition | Behavior |
+|---|---|
+| Estimated pointing deviation exceeds 3° | Show the deviation warning immediately |
+| Deviation remains above 3° for 1 s | Enter Reacquiring |
+| Deviation is at most 2° for 2 s with fresh feedback | Return from Reacquiring to Following |
+| An episode reaches 30 s without recovery, or LOS arrives | Stop/disarm and retain the reason |
+| Feedback, motion supervision, time validity or another output permission fails | Inhibit and stop the run; reacquisition does not clear faults |
+
+Search for the earliest reachable future pointing along the frozen pass,
+within the earlier of the episode deadline and LOS, using current position,
+relay state, remaining duty and the same travel constraints. Follow only a
+validated intercept path; if no intercept is currently available, hold and
+retry within that original deadline. Replanning an intercept does not extend
+the episode deadline. Never chase an obsolete position or change to a
+different pass. Planned gaps must be labelled with their predicted duration
+and reacquisition opportunity before arming.
+
+Always show the selected satellite/pass, phase, desired sky az/el, measured
+mechanical az/el, current estimated pointing deviation in degrees and the
+maximum recorded deviation. Derive sky deviation from the angle between
+the measured boresight vector and the satellite direction, timestamp-matched
+to the feedback sample; include paired-channel sampling skew in its uncertainty.
+This remains meaningful through 360° azimuth wrapping and elevation above
+90°. An optional secondary readout may show error against the planned motor
+position so intentional keyhole offsets can be distinguished from lag.
+
+During recovery, display Reacquiring, the intercept ETA and time spent outside
+the deviation target. Use text as well as colour, and keep Cancel available
+to the leased controller. Stale feedback shows an unavailable/stale deviation,
+not a retained value presented as current. Preserve a final pass summary with
+maximum deviation, time outside tolerance and completion/cancellation/fault
+reason for every viewer. These values report pointing, not receiver lock.
+
+### Implementation and verification
+
+Keep planning, following control and the mode/lease state machine in the pure
+core. Run live following on an independently serviced firmware task, separate
+from TLE downloads and incremental planning. Bound planning memory and work
+per step so it cannot delay actuator/feedback servicing. Add an authenticated
+orbital-data path as required by the current advisory-data contract above.
+
+Before enabling shorter pulse timings, extend direction/speed supervision to
+cover pulse trains shorter than its current startup settling window, and add
+measured or explicitly assumed coast margins to travel checks. Keep the
+existing stop ordering, short movement leases and hardware watchdog path.
+
+Exercise actual controller/actuator behavior with synthetic and recorded
+passes: exact zenith and near misses, azimuth overlap, pre-positioning from
+both extremes, slower/faster motors, backlash, pulse supervision and stalls.
+Cover bounded reacquisition success/failure and UI deviation, automatic plan
+updates racing preparation/cancellation, stale client commands, exclusive
+lease expiry/transfer with tracking continuing, clock steps, duty exhaustion
+and LOS. Test with downloads, prediction and multiple viewers active. Compare
+simulated and measured trajectories during commissioning using
+[CALIBRATION.md](CALIBRATION.md).
+
+## Tracking implementation tasks
+
+These tasks implement the decisions above. A completed simulation task does
+not enable automatic movement in firmware. Each task includes the tests or
+measurements needed to close it; hardware-dependent tasks remain open until
+commissioning supplies that evidence.
+
+- [x] **T1 — Controller and simulation foundation.** Add checked
+  motor profiles, continuous mechanical coordinates, spherical pointing
+  deviation, a feedback-following controller and an incremental, allocation-free
+  simulator using the production actuator. Model startup, coast, backlash,
+  quantized/delayed feedback and energized duty. Exercise complete synthetic
+  and recorded passes and report deviation, relay activity and explicit
+  failures. Keep simulation assumptions visible and separate from a feasibility
+  guarantee.
+- [ ] **T2 — Tracking-capable output supervision.** Extend direction/speed
+  checks across short pulse trains; add coast-aware endpoints, configurable
+  same-direction/reversal timing and shared per-axis duty accounting. Preserve
+  existing manual stop ordering, leases and watchdog behavior. Test pulses,
+  reversals, stale feedback, interrupted preparation and unknown duty on boot.
+  Depends on T1; relaxed live timing also requires T10 measurements.
+- [ ] **T3 — Bounded trajectory planner.** Generate continuous conventional,
+  azimuth-overlap and over-the-top candidates; refine near zenith and limits.
+  Evaluate preparation and the entire pass with the shared controller across
+  motion uncertainty. Report supported feasibility, peak deviation, gaps and
+  preparation time. Include relay availability at AOS; bound memory/work per
+  step and check between trajectory samples, including feedback noise/channel
+  skew in the uncertainty budget. Tune follower hysteresis/lead
+  against the slow/nominal/fast scenarios to reduce the baseline controller's
+  reversals without hiding sky error. Depends on T1 and T2.
+- [ ] **T4 — Single-pass lifecycle and exclusive operator lease.** Implement
+  device-owned selection, arm/prepare/follow/complete, stable pass identity,
+  revisioned updates until preparation, atomic plan freeze and idempotent
+  cancellation. Tracking survives browser/lease expiry; only the current
+  lease holder can mutate it. Test takeover refusal, transfer, stale commands
+  and update/cancel/preparation races. Depends on T3's plan contract.
+- [ ] **T5 — Execution clock and trusted orbital inputs.** Add an authenticated
+  orbital-data path and a fractional UTC anchor tied to monotonic uptime.
+  Freeze execution inputs, enforce source validity through LOS and account
+  for timing uncertainty. Test clock steps, stale sources, failed refreshes,
+  boot disarming and the initial stop-on-device-network-loss policy.
+- [ ] **T6 — Bounded reacquisition.** Apply deviation warning/hysteresis,
+  search reachable future intercepts on the frozen pass and enforce the
+  original 30 s episode deadline/LOS. Retain fault inhibition, cancellation
+  and duty state; report recovery ETA and terminal reasons. Test recoverable
+  lag, impossible intercepts, repeated replans and feedback failure. Depends
+  on T2–T5.
+- [ ] **T7 — Independent firmware execution.** Wire tracking into its own
+  serviced task and the existing output boundary with short internal command
+  leases. Keep downloads and incremental planning out of the live control
+  task. Check Pico memory, execution time and watchdog behavior with prediction,
+  downloads and multiple viewers active. Depends on T2–T6.
+- [ ] **T8 — Tracking API and dashboard.** Add selection, feasibility preview,
+  Manual/Tracking mode, scheduled preparation/Prepare now and Cancel. Hide
+  manual controls while tracking and reject their commands on the device.
+  Show phase, desired/measured pointing, timestamp-matched spherical deviation,
+  stale feedback, recovery progress and the final summary. Test owner/viewer
+  permissions and reconnects. Depends on T4, T6 and T7.
+- [ ] **T9 — Complete-pass acceptance.** Run recorded and synthetic exact-
+  zenith/near-zenith passes, azimuth wraps, extreme preparation positions,
+  slow/fast motor profiles, cancellations, faults, duty exhaustion and LOS.
+  Confirm holding the final position, no automatic next pass, and external
+  recording only. Compare the planner's predictions with the execution path.
+  Depends on T3–T8.
+- [ ] **T10 — Installation commissioning.** Follow [CALIBRATION.md](CALIBRATION.md)
+  to identify hardware, calibrate full travel/sky pointing and measure loaded
+  rates, useful pulses, coast, backlash and RF pointing tolerance. Replace
+  provisional values, validate GPIO/watchdog release and perform supervised
+  passes before enabling routine automatic tracking. Measurement work can
+  start alongside T1; final acceptance depends on T9.
+
+### Current simulation milestone
+
+[`tracking`](../crates/ezal-core/src/tracking.rs) now supplies a pure-core
+feedback follower and a bounded simulator. The simulator feeds quantized,
+delayed observations through the production feedback validator and actuator;
+it uses the current 500 ms minimum on-time and 2 s off-time. It records actual
+energized time, relay transitions, reversals, sampled peak sky deviation and
+time outside the modeled allowance. Invalid inputs, duty exhaustion, physical
+travel violations and actuator motion faults stop a run with explicit reasons.
+Cancellation inhibits pending as well as active output; further idle steps
+model coast to the final position.
+
+Run the offline [replay example](../crates/ezal-core/examples/tracking-sim.rs)
+inside the development shell:
+
+```bash
+TRACKING_HOST=$(rustc -vV | sed -n 's/host: //p')
+cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim
+```
+
+The example compares slow/nominal/fast AC profiles on synthetic exact-zenith
+and 88° peak passes, then replays orbital geometry from the recorded TLE
+fixture. It starts at the first target with a synthetic full-travel calibration
+and rested duty allowance. The first motor direction is assumed engaged;
+reversals consume explicit backlash, including across short pulses. Motor
+startup is a dead time, and coast is constant-rate travel for the assumed
+release duration. Paired feedback is quantized directly to ADC codes and
+delayed by 100 ms; channel skew, electrical noise and alignment uncertainty
+are not yet modeled. The baseline follower uses a 0.5° mechanical deadband
+and estimates release travel from feedback age and the assumed coast rate.
+It keeps its nominal reference profile while the simulated motor rates vary.
+
+Route position and satellite direction are separate inputs. An intentional
+keyhole offset therefore contributes to sky deviation even when the motor
+route is followed exactly. The default simulation threshold is the 2° modeled
+allocation, leaving the agreed 1° uncertainty reserve within the 3° total
+target. Samples are at most 20 ms apart, with earlier actuator/acquisition
+deadlines honored. This milestone does not bound unsampled pointing error,
+plan preparation or reacquisition, or certify a pass as feasible.
+
+The initial nominal-profile replay produces approximately 0.91° sampled peak
+deviation for the synthetic over-the-top zenith pass, versus 7.12° for the
+conventional zenith route. The recorded 70.75° peak pass reaches 3.11°, exceeding
+the modeled allocation. Faster scenarios show frequent reversals, and the
+fast conventional zenith case detects coast beyond an azimuth endpoint. These
+are results from provisional models, not measured antenna performance; they
+provide concrete cases for T2's coast protection and T3's controller/planner
+tuning. A fixed 2° keyhole offset also consumes the entire modeled allocation
+before following error is added, so it is not automatically an acceptable route.
+
+The [tracking tests](../crates/ezal-core/tests/tracking.rs) cover geometry,
+startup/coast, partial backlash take-up, duty/rest, delayed quantized feedback,
+invalid inputs, ordinary relay timing, cancellation racing a pending activation,
+stall/speed faults, full synthetic/recorded passes and intentional sky offsets.
+The simulation code is not wired to firmware GPIOs. Next implementation task:
+**T2 — Tracking-capable output supervision**.

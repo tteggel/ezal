@@ -59,6 +59,7 @@ embedded Rust.
 │   │       ├── http.rs            # streamed HTTP framing for TLE downloads
 │   │       ├── orbit.rs           # TLE validation, catalog, SGP4 look angles
 │   │       ├── passes.rs          # pass search, forecasts, /api/passes JSON
+│   │       ├── tracking.rs        # following controller + offline motor simulation
 │   │       ├── protocol.rs        # wire parsing and coherent telemetry
 │   │       ├── dashboard.rs       # browser asset and shared timing configuration
 │   │       └── drive.rs           # vocabulary and private relay timing
@@ -156,7 +157,7 @@ such a timeout, boot holds
 outputs low until an explicit reset or power cycle, while a flashing tool's
 reboot through the same watchdog is not mistaken for it. These safeguards still
 require on-board verification of output release and motor stopping behavior. The
-[architecture](docs/ARCHITECTURE.md#safety-layers-and-their-limits) describes the
+[control contract](docs/CONTROL_CONTRACT.md) describes the
 timing rules and their limits.
 
 The dashboard assumes a trusted local network. Controller ownership coordinates
@@ -181,7 +182,10 @@ successful check. Manual control requires the dashboard but not internet access.
 - **[HARDWARE.md](docs/HARDWARE.md)** — the Pico 2, the G-5500 rotator,
   the debug probe, expected wiring.
 - **[CALIBRATION.md](docs/CALIBRATION.md)** — safe endpoint measurement,
-  hard-coded value location, replacement, and verification.
+  full-travel and sky-pointing checks, replacement, and motion measurements.
+- **[PASS_PREDICTION.md](docs/PASS_PREDICTION.md)** — current advisory forecasts
+  and the [planned single-pass tracking behavior](docs/PASS_PREDICTION.md#planned-tracking),
+  with [implementation tasks](docs/PASS_PREDICTION.md#tracking-implementation-tasks).
 - **[DEVELOPMENT.md](docs/DEVELOPMENT.md)** — setting up a working
   development environment from scratch.
 
@@ -197,11 +201,16 @@ successful check. Manual control requires the dashboard but not internet access.
 | 6    | NTP time, TLE download, advisory HRPT pass prediction           | ✅ done  |
 | 7    | Persisted calibration + authenticated calibration UI           | planned  |
 | 8    | Production target transport (authenticated TLEs → controller)   | planned  |
+| 9    | Single-pass tracking, over-the-top planning and reacquisition   | in progress |
 
-The firmware propagates current TLEs only to list upcoming passes. Real tracking
-is deferred: it needs an explicit arming and stop policy plus an authenticated
-data path (see [pass prediction](docs/PASS_PREDICTION.md)). Predictions never
-authorize movement.
+The firmware propagates current TLEs only to list upcoming passes. The
+[tracking design](docs/PASS_PREDICTION.md#planned-tracking) specifies controller
+ownership, automatic updates before preparation, local execution, visible
+deviation and reacquisition. The [first simulation milestone](docs/PASS_PREDICTION.md#current-simulation-milestone)
+exercises a feedback follower against the production actuator with provisional
+motor profiles and recorded passes. Trajectory planning, firmware/UI integration
+and commissioning, including an authenticated data path, remain future work.
+Predictions never authorize movement in the current firmware.
 
 ## License
 

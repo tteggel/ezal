@@ -19,6 +19,8 @@
 //! validation and reconnect timing. Advisory prediction is separate: [`ntp`]
 //! supplies an expiring UTC anchor, [`http`] frames streamed downloads, and
 //! [`orbit`]/[`passes`] validate elements and calculate reception windows.
+//! [`tracking`] develops automatic following with an offline motor simulator;
+//! it is not yet connected to the firmware's output requests.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
@@ -47,4 +49,5 @@ pub mod passes;
 pub mod position;
 pub mod protocol;
 pub mod session;
+pub mod tracking;
 pub mod wifi;
