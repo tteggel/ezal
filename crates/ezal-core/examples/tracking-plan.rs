@@ -1,4 +1,4 @@
-//! Offline preparation and complete-pass planning with explicit uncertainty.
+//! Offline preparation and complete/partial reception with explicit uncertainty.
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::RelayConfig;
@@ -83,16 +83,29 @@ fn plan(name: &str, source: impl Ephemeris, window: PlanningWindow, relays: Rela
     let report = planner.into_report().unwrap();
     println!(
         "{name}: {} ({} candidates, {} geometry rejections, {} steps, {:.2}s host)",
-        if report.plan.is_some() {
-            "supported under assumptions"
-        } else {
-            "no supported route found"
+        match report.plan.as_ref() {
+            Some(plan) if plan.reception().is_complete() => "COMPLETE under assumptions",
+            Some(_) => "PARTIAL under assumptions",
+            None => "UNSUPPORTED in this search",
         },
         report.evaluated_candidates,
         report.geometry_rejections,
         report.work_steps,
         begin.elapsed().as_secs_f64()
     );
+    if let Some(plan) = &report.plan {
+        println!(
+            "  reception windows after original AOS: {:?}; usable {:.2}s",
+            plan.reception().windows(window.duration_ms),
+            plan.reception().received_ms(window.duration_ms) as f64 / 1000.0
+        );
+        if let Some(gap) = plan.reception().gap() {
+            println!("  {}: miss {:.2}–{:.2}s; recovery entry/deadline {}/{}ms uptime; validated joins {}–{}ms uptime",
+                if gap.late_acquisition { "late acquisition" } else { "planned gap" },
+                gap.missed.start_ms as f64 / 1000.0, gap.missed.end_ms as f64 / 1000.0,
+                gap.recovery_at_ms, gap.deadline_ms, gap.earliest_join_at_ms, gap.latest_join_at_ms);
+        }
+    }
     if let Some(attempt) = report.closest_attempt {
         println!(
             "  {:?}; {}/9 scenarios complete; failure {:?} in {:?}, scenario {:?}",
@@ -126,6 +139,10 @@ fn main() {
     println!("Offline planner: synthetic full travel, assumed AC profiles, nine motor/feedback scenarios.");
     println!("3° target with 1° uncertainty reserve; assumed true sky rate <=2°/s. Not hardware validation.");
     println!("Relay policy {relays:?}; initial pose 180°/10°, two minutes before AOS.\n");
+    println!(
+        "Host planner storage: {} bytes.\n",
+        std::mem::size_of::<Planner<fn(f64) -> Option<LookAngle>>>()
+    );
     let window = PlanningWindow {
         aos_unix_s: 0.0,
         aos_at_ms: 122_000,
@@ -150,6 +167,21 @@ fn main() {
             relays,
         );
     }
+    plan(
+        "Late acquisition (one second after original AOS)",
+        |_| {
+            Some(LookAngle {
+                azimuth_deg: 180.0,
+                elevation_deg: 15.0,
+            })
+        },
+        PlanningWindow {
+            aos_at_ms: 1000,
+            duration_ms: 90_000,
+            ..window
+        },
+        relays,
+    );
     let epoch = 1_791_385_200;
     let mut catalog = Catalog::new();
     catalog.update(

@@ -650,7 +650,7 @@ commissioning supplies that evidence.
   and duty state; report recovery ETA and terminal reasons. Test recoverable
   lag, impossible intercepts, repeated replans and feedback failure. Depends
   on T2–T5.
-- [ ] **T6a — Partial-pass admission.** Extend the planner/publication contract
+- [x] **T6a — Partial-pass admission.** Extend the planner/publication contract
   to permit a selection with validated late acquisition or predicted gaps,
   including gap duration, a bounded recovery opportunity and the remaining
   reception window. Reuse T6's intercept validation; never label partial
@@ -740,9 +740,10 @@ Any interval not established within budget is a predicted gap. The report
 retains the worst scenario's total gap time and up to 16 intervals, explicitly
 flagging truncation. Unsupported attempts cannot become a `TrackingPlan`.
 No-gap support requires every scenario to complete through final coast. T6
-recovers a frozen run and handles preparation that misses AOS. Admitting a
-selection already predicted to have gaps or acquire late remains T6a work;
-unsupported diagnostic attempts still cannot authorize movement.
+recovers a frozen run and handles preparation that misses AOS. T6a adds a
+separate partial-reception claim only after validating a bounded recovery and
+the remaining window; unsupported diagnostic attempts still cannot authorize
+movement. Complete reception is preferred whenever this search finds it.
 Cancellation or a source/work/storage failure invalidates the entire job,
 including earlier candidates. Exhausting this finite search means no supported
 route was found, not that every possible physical route is impossible.
@@ -751,9 +752,12 @@ The planner stores at most 2,048 route points, nine scenarios and 16 gap
 intervals. One step performs at most one propagation and one simulator service,
 or bounded route bookkeeping; the whole job stops at 20 million steps.
 Preparation probes are limited to 300 s and reception windows to 30 minutes.
-A planner occupies about 77 KiB on the host; the default synthetic zenith job
-takes about 2.75 million steps. Embedded memory placement and execution time
-under concurrent firmware load must be checked in T7 before integration.
+T6a adds a second simulation state for prefix-to-recovery validation; the
+`tracking-plan` example prints current host planner storage (82,464 bytes
+on x86-64 at T6a). The default synthetic zenith job takes about 2.75 million
+steps. Embedded memory placement
+and execution time under concurrent firmware load must be checked in T7
+before integration.
 
 Current development results, using synthetic full travel and confirmed-AC duty:
 
@@ -1017,8 +1021,8 @@ The intercept procedure is deliberately finite:
 
 “Earliest” means earliest in this finite search. These results remain conditional
 on the provisional scenarios; they do not prove every intermediate motor
-response or exclude a better trajectory. Known-gap and initially late selections
-still need T6a's partial-pass admission contract before they can be armed.
+response or exclude a better trajectory. T6a uses the same validator to admit
+explicitly partial reception before arming, as described below.
 
 Firmware integration must publish feedback/motion health before issuing or
 draining commands, including during preparation. `observe_tracking` supervises
@@ -1042,5 +1046,76 @@ exercise successful recovery, late preparation, missed measured intercepts,
 late computation/output, repeated retries, cancellation, feedback/network/motion
 failure and retained final summaries.
 
-Next task: **T6a — Partial-pass admission**, followed by **T7 — Independent
-firmware execution**.
+## Implemented partial-pass admission (T6a)
+
+The [reception contract](../crates/ezal-core/src/tracking/reception.rs) separates
+`Complete` from `Partial`. A partial plan retains the original pass identity,
+AOS, LOS and mechanical route, and exposes:
+
+- The predicted missed interval and its duration, relative to original AOS.
+- A fixed recovery entry, its earlier-of-30-seconds-or-LOS deadline, and the
+  earliest/latest validated route joins across the evaluated starting cases.
+- A usable prefix when available, the remaining usable suffix, and total
+  predicted reception time. The missed interval includes the two-second
+  recovery dwell and 500 ms feedback allowance after the latest route join.
+
+`AllowPartial` is the default admission policy; `CompleteOnly` preserves the
+complete-window requirement. The [planner's second search](../crates/ezal-core/src/tracking/planner/partial.rs)
+runs only after no complete route qualifies (or selection is already past
+AOS). A nominal failed route does not become supported by changing its label.
+For every starting scenario, the planner replays preparation and the supported
+prefix, inhibits and waits for coast plus settled feedback, then copies that
+actuator into T6's intercept search. Every recovery scenario must meet travel,
+relay, duty, motion-supervision and pointing constraints through original LOS
+and final coast. Prefix duty and relay history carry into recovery. A fault
+in the nominal continuation can only be avoided if this different recovery
+trajectory passes the unchanged checks.
+
+This finite search admits **one consolidated missed interval**: initial late
+acquisition, or a supported prefix followed by a bounded planned gap and a
+supported suffix. Several nominal gaps may fit within that interval. Separate
+gaps needing additional planned episodes remain unsupported. All complete
+routes are preferred to partial reception; within the partial round the first
+qualifying route wins. The nested work shares the original 20-million-step
+job limit; each step still performs at most one propagation and one simulation
+service. Cancellation and source/work/storage failure discard the whole job.
+
+For initial late acquisition, the fixed entry is `max(original AOS, snapshot
+time + 5 s)`. Selection only previews it. Explicit arming allows the device to
+freeze and begin recovery at that entry; no preparation movement occurs first.
+A missed entry expires the plan rather than shifting its validated schedule.
+Automatic input/forecast revisions may replace it before freezing. The input
+boundary now permits previews after AOS, but still checks source and timing
+validity through original LOS. The five-second admission lead, like T6's
+two-second intercept computation lead, needs Pico timing validation in T7.
+
+Publication distinguishes `SupportedPartial`, validates the gap/reception
+metadata and rejects stale or inconsistent results. Planned gaps enter
+`Reacquiring` and clear queued following commands at their fixed entry. The
+executor then revalidates a live intercept from actual settled feedback and
+actuator history. An earlier unexpected recovery keeps its original token and
+deadline when the planned gap arrives. Only the leased controller can cancel;
+browser/lease loss does not end a run. Final summaries retain the original
+window and complete/partial prediction alongside measured deviation and the
+actual termination reason. Reaching LOS does not turn a partial forecast into
+a complete-reception claim.
+
+[Admission tests](../crates/ezal-core/tests/common/tracking_partial.rs) cover
+late starts before/after AOS across all nine default cases, an explicitly
+nominal-profile keyhole gap, complete OTT preference, insufficient remaining
+time/duty, separated gaps, expired/invalid publication, fixed episode deadlines,
+cancellation and one-propagation-per-step yielding. The same keyhole fixture
+remains unsupported with all nine default cases because a noisy fast-axis
+case trips motion supervision. Partial admission does not relax that policy.
+The [real-orbit runtime test](../crates/ezal-core/tests/common/tracking_recovery.rs)
+executes an admitted late plan through recovery to LOS with delayed feedback
+and verifies that the final summary retains its partial prediction.
+The offline example's static late-acquisition case qualifies across all nine
+scenarios: 13.65 s missed and 76.35 s usable in the original 90 s window, with
+a fixed 30 s recovery episode. These are model results, not RF measurements.
+
+Validation: 284 Rust tests (including the doctest), 50 dashboard tests, host and
+Pico Clippy, formatting and the Pico release build. Firmware remains manual
+only until the integration work; no firmware was flashed for this milestone.
+
+Next task: **T7 — Independent firmware execution**.

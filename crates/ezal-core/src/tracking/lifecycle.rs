@@ -4,8 +4,9 @@
 //! never supplies those inputs or planning results directly.
 
 use super::{
-    reconcile_event, CandidateFailure, EventError, EventId, InputError, PassEvent, PlanningError,
-    PlanningReport, PreparationTiming, TimingError, TrackingPlan, REACQUISITION_LIMIT_MS,
+    reconcile_event, AdmissionPolicy, CandidateFailure, EventError, EventId, InputError, PassEvent,
+    PlanningError, PlanningReport, PreparationTiming, ReceptionCoverage, TimingError, TrackingPlan,
+    REACQUISITION_LIMIT_MS,
 };
 use crate::drive::{Command, MOVEMENT_LEASE_MS};
 use crate::feedback::FeedbackHealth;
@@ -116,6 +117,10 @@ pub enum RecoveryCause {
     Deviation,
     /// The frozen preparation had not established readiness at AOS.
     LatePreparation,
+    /// The admitted partial plan starts with a validated late intercept.
+    LateAcquisition,
+    /// The frozen plan scheduled a bounded interruption in reception.
+    PlannedGap,
 }
 
 impl RecoveryToken {
@@ -184,11 +189,11 @@ pub enum PlanProblem {
     Unsupported(Option<CandidateFailure>),
     /// Incremental planning itself failed.
     Planning(PlanningError),
-    /// Result disagreed with its event, schedule or complete-window support contract.
+    /// Result disagreed with its event, schedule or explicit reception contract.
     InvalidResult,
     /// Admission validity expired before preparation could freeze the plan.
     Expired,
-    /// No complete-window arrival before AOS; partial-pass admission is separate.
+    /// Insufficient preparation time or a missed fixed partial-acquisition entry.
     TooLate,
 }
 
@@ -201,6 +206,8 @@ pub enum PlanStatus {
     Planning,
     /// Complete, supported result available for preparation.
     Supported,
+    /// Validated partial reception, with an explicit missed interval and suffix.
+    SupportedPartial,
     /// Frozen result belongs to the running executor.
     Frozen,
     /// Explicit reason no preparation is permitted.
@@ -377,6 +384,7 @@ pub struct TrackingSession<S> {
     plan_status: PlanStatus,
     run: Option<RunToken>,
     recovery: Option<RecoveryToken>,
+    planned_recovery_handled: bool,
     armed_deadline_ms: Option<u64>,
     termination: Option<TrackingTermination>,
     receipt: Option<Receipt>,
@@ -407,6 +415,7 @@ impl<S> TrackingSession<S> {
             plan_status: PlanStatus::Unplanned,
             run: None,
             recovery: None,
+            planned_recovery_handled: false,
             armed_deadline_ms: None,
             termination: None,
             receipt: None,
@@ -535,6 +544,7 @@ impl<S> TrackingSession<S> {
         self.phase = phase;
         self.run = None;
         self.recovery = None;
+        self.planned_recovery_handled = false;
         self.armed_deadline_ms = None;
         self.ticket = None;
         self.plan = None;
@@ -607,7 +617,8 @@ impl<S> TrackingSession<S> {
                 self.bump(now_ms)?;
                 self.mode = TrackingMode::Tracking;
                 self.phase = TrackingPhase::Armed;
-                self.armed_deadline_ms = Some(self.plan.as_ref().unwrap().plan.window.aos_at_ms);
+                self.armed_deadline_ms =
+                    Some(admission_deadline(&self.plan.as_ref().unwrap().plan));
                 self.commands.submit(CommandEnvelope::INHIBIT);
             }
             TrackingAction::PrepareNow => {
@@ -636,14 +647,14 @@ impl<S> TrackingSession<S> {
     }
 
     fn armable(&self, now_ms: u64) -> bool {
-        self.plan_status == PlanStatus::Supported
-            && self.plan.as_ref().is_some_and(|bound| {
-                self.ticket == Some(bound.ticket)
-                    && now_ms < bound.freeze_before_ms
-                    && now_ms
-                        .checked_add(bound.plan.assessment.preparation_ms)
-                        .is_some_and(|ready| ready < bound.plan.window.aos_at_ms)
-            })
+        matches!(
+            self.plan_status,
+            PlanStatus::Supported | PlanStatus::SupportedPartial
+        ) && self.plan.as_ref().is_some_and(|bound| {
+            self.ticket == Some(bound.ticket)
+                && now_ms < bound.freeze_before_ms
+                && has_preparation_time(&bound.plan, now_ms)
+        })
     }
 
     fn start_job(&mut self, now_ms: u64) -> Result<(), LifecycleError> {
@@ -783,14 +794,12 @@ impl<S> TrackingSession<S> {
             ));
             return Ok(());
         };
+        let freeze_before_ms = freeze_before_ms.min(admission_deadline(&plan));
         let problem = if !valid_plan(&plan, ticket) {
             Some(PlanProblem::InvalidResult)
         } else if now_ms >= freeze_before_ms {
             Some(PlanProblem::Expired)
-        } else if now_ms
-            .checked_add(plan.assessment.preparation_ms)
-            .is_none_or(|ready| ready >= plan.window.aos_at_ms)
-        {
+        } else if !has_preparation_time(&plan, now_ms) {
             Some(PlanProblem::TooLate)
         } else {
             None
@@ -800,15 +809,19 @@ impl<S> TrackingSession<S> {
             return Ok(());
         }
         if self.phase == TrackingPhase::Armed {
-            self.armed_deadline_ms = Some(plan.window.aos_at_ms);
+            self.armed_deadline_ms = Some(admission_deadline(&plan));
         }
+        self.plan_status = if plan.reception().is_complete() {
+            PlanStatus::Supported
+        } else {
+            PlanStatus::SupportedPartial
+        };
         self.plan = Some(BoundTrackingPlan {
             plan,
             inputs,
             ticket,
             freeze_before_ms,
         });
-        self.plan_status = PlanStatus::Supported;
         Ok(())
     }
 
@@ -839,6 +852,26 @@ impl<S> TrackingSession<S> {
                     window.aos_at_ms,
                     now_ms,
                 )?;
+            }
+            if let Some(gap) = self
+                .plan
+                .as_ref()
+                .unwrap()
+                .plan
+                .reception()
+                .gap()
+                .filter(|gap| !self.planned_recovery_handled && now_ms >= gap.recovery_at_ms)
+            {
+                self.planned_recovery_handled = true;
+                // An unexpected earlier episode keeps its original deadline.
+                if self.recovery.is_none() {
+                    self.enter_reacquisition(
+                        self.run.unwrap(),
+                        RecoveryCause::PlannedGap,
+                        gap.recovery_at_ms,
+                        now_ms,
+                    )?;
+                }
             }
             if let Some(recovery) = self.recovery.filter(|r| now_ms >= r.deadline_ms) {
                 self.bump(now_ms)?;
@@ -892,6 +925,23 @@ impl<S> TrackingSession<S> {
                     self.run = Some(token);
                     self.phase = TrackingPhase::Preparing;
                     self.plan_status = PlanStatus::Frozen;
+                    if let Some(gap) = self
+                        .plan
+                        .as_ref()
+                        .unwrap()
+                        .plan
+                        .reception()
+                        .gap()
+                        .filter(|gap| gap.late_acquisition)
+                    {
+                        self.planned_recovery_handled = true;
+                        self.enter_reacquisition(
+                            token,
+                            RecoveryCause::LateAcquisition,
+                            gap.recovery_at_ms,
+                            now_ms,
+                        )?;
+                    }
                 }
             }
         }
@@ -1078,6 +1128,25 @@ fn fresh(command: CommandEnvelope, now_ms: u64) -> bool {
         || (command.valid_until_ms > now_ms && command.valid_until_ms - now_ms <= MOVEMENT_LEASE_MS)
 }
 
+fn admission_deadline(plan: &TrackingPlan) -> u64 {
+    plan.reception()
+        .gap()
+        .filter(|gap| gap.late_acquisition)
+        .map_or(plan.window.aos_at_ms, |gap| {
+            gap.recovery_at_ms.saturating_add(1)
+        })
+}
+
+fn has_preparation_time(plan: &TrackingPlan, now_ms: u64) -> bool {
+    if let Some(gap) = plan.reception().gap().filter(|gap| gap.late_acquisition) {
+        now_ms <= gap.recovery_at_ms
+    } else {
+        now_ms
+            .checked_add(plan.assessment.preparation_ms)
+            .is_some_and(|ready| ready < plan.window.aos_at_ms)
+    }
+}
+
 fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
     let window = plan.window;
     let assessment = &plan.assessment;
@@ -1110,7 +1179,30 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
         && plan.config.uncertainty_deg.is_finite()
         && plan.config.uncertainty_deg >= 0.0
         && assessment.choice == plan.route.choice()
-        && assessment.prepare_at_ms <= window.aos_at_ms
+        && match plan.reception() {
+            ReceptionCoverage::Complete => {
+                assessment.prepare_at_ms <= window.aos_at_ms
+                    && assessment.bounded_peak_deg <= allocation
+                    && assessment.gap_time_ms == 0
+                    && assessment.gaps.is_empty()
+            }
+            ReceptionCoverage::Partial(gap) => {
+                plan.config.admission == AdmissionPolicy::AllowPartial
+                    && plan.reception().valid(window)
+                    && assessment.gaps.as_slice()
+                        == [super::PlannedGap {
+                            start_ms: gap.missed.start_ms,
+                            end_ms: gap.missed.end_ms,
+                        }]
+                    && assessment.gap_time_ms == u64::from(gap.missed.end_ms - gap.missed.start_ms)
+                    && if gap.late_acquisition {
+                        assessment.prepare_at_ms == gap.recovery_at_ms
+                            && assessment.preparation_ms == 0
+                    } else {
+                        assessment.prepare_at_ms <= window.aos_at_ms
+                    }
+            }
+        }
         && assessment.failure.is_none()
         && assessment.failure_scenario.is_none()
         && assessment.failure_phase.is_none()
@@ -1120,11 +1212,8 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
         && allocation > 0.0
         && assessment.bounded_peak_deg.is_finite()
         && assessment.bounded_peak_deg >= 0.0
-        && assessment.bounded_peak_deg <= allocation
         && assessment.sampled_peak_deg.is_finite()
         && assessment.sampled_peak_deg >= 0.0
         && assessment.sampled_peak_deg <= assessment.bounded_peak_deg
-        && assessment.gap_time_ms == 0
-        && assessment.gaps.is_empty()
         && !assessment.gaps_truncated
 }

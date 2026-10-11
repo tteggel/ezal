@@ -10,7 +10,39 @@ use super::{
 };
 use crate::feedback::FEEDBACK_MAX_AGE_MS;
 use crate::passes::Ephemeris;
-use crate::position::Pointing;
+use crate::position::{Pointing, PositionCalibration};
+
+/// Borrows either a frozen plan or a planner candidate. Constructing this does
+/// not certify a candidate: only a completed search establishes recovery.
+#[derive(Clone, Copy)]
+pub(super) struct SearchRoute<'a> {
+    pub route: &'a super::Route,
+    pub window: super::PlanningWindow,
+    pub config: &'a super::PlanningConfig,
+    pub calibration: PositionCalibration,
+    pub actuator: crate::actuator::ActuatorConfig,
+}
+
+impl<'a> From<&'a TrackingPlan> for SearchRoute<'a> {
+    fn from(plan: &'a TrackingPlan) -> Self {
+        Self {
+            route: &plan.route,
+            window: plan.window,
+            config: &plan.config,
+            calibration: plan.calibration,
+            actuator: plan.actuator,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct RecoveryMetrics {
+    pub peak: f32,
+    pub bound: f32,
+    pub energized_ms: [u64; 2],
+    pub reversals: u64,
+    pub transitions: u64,
+}
 
 /// Initial lead for incremental planning while the dish remains inhibited.
 pub const INTERCEPT_PLANNING_LEAD_MS: u64 = 2_000;
@@ -167,10 +199,16 @@ pub(super) struct InterceptSearch {
     pub result: Option<Intercept>,
     pub finished: bool,
     pub hold: RecoveryHold,
+    pub metrics: RecoveryMetrics,
 }
 
 impl InterceptSearch {
-    pub fn new(plan: &TrackingPlan, start: RestingStart, deadline_ms: u64) -> Option<Self> {
+    pub fn new<'a>(
+        plan: impl Into<SearchRoute<'a>>,
+        start: RestingStart,
+        deadline_ms: u64,
+    ) -> Option<Self> {
+        let plan = plan.into();
         let launch_at_ms = start.at_ms.checked_add(INTERCEPT_PLANNING_LEAD_MS)?;
         let join_at_ms = launch_at_ms.checked_add(INTERCEPT_GRID_MS)?;
         let follower = FollowingController::with_timing(
@@ -210,6 +248,7 @@ impl InterceptSearch {
             result: None,
             finished: false,
             hold: RecoveryHold::NoIntercept,
+            metrics: RecoveryMetrics::default(),
         })
     }
 
@@ -219,7 +258,12 @@ impl InterceptSearch {
 
     /// At most one propagation and one simulation step. `Err(())` denotes a
     /// frozen-source/rate failure, which stops the run rather than retrying it.
-    pub fn step<E: Ephemeris>(&mut self, plan: &TrackingPlan, source: &E) -> Result<(), ()> {
+    pub fn step<'a, E: Ephemeris>(
+        &mut self,
+        plan: impl Into<SearchRoute<'a>>,
+        source: &E,
+    ) -> Result<(), ()> {
+        let plan = plan.into();
         if self.finished {
             return Ok(());
         }
@@ -296,6 +340,7 @@ impl InterceptSearch {
         if let Some(sky) = sky {
             let error = pointing_deviation_deg(sample.position, sky).ok_or(())?;
             let mut bound = error + 0.002;
+            let mut whole_bound = bound;
             if let Some((previous_ms, previous_error, previous_sky)) = self.previous {
                 let dt = (now - previous_ms) as f32 / 1000.0;
                 if pointing_deviation_deg(previous_sky, sky).ok_or(())?
@@ -303,17 +348,19 @@ impl InterceptSearch {
                 {
                     return Err(());
                 }
+                let az = case.motor.azimuth.rate_deg_per_s;
+                let el = case.motor.elevation.rate_deg_per_s;
+                whole_bound = error.max(previous_error)
+                    + (libm::sqrtf(az * az + el * el) + plan.config.sky_rate_bound_deg_per_s) * dt
+                        / 2.0
+                    + 0.002;
                 if previous_ms >= self.join_at_ms {
-                    let az = case.motor.azimuth.rate_deg_per_s;
-                    let el = case.motor.elevation.rate_deg_per_s;
-                    bound = error.max(previous_error)
-                        + (libm::sqrtf(az * az + el * el) + plan.config.sky_rate_bound_deg_per_s)
-                            * dt
-                            / 2.0
-                        + 0.002;
+                    bound = whole_bound;
                 }
             }
             self.previous = Some((now, error, sky));
+            self.metrics.peak = self.metrics.peak.max(error);
+            self.metrics.bound = self.metrics.bound.max(whole_bound);
             let allocation = (plan.config.tolerance_deg - plan.config.uncertainty_deg)
                 .min(REACQUISITION_TOLERANCE_DEG);
             if now >= self.join_at_ms && bound > allocation {
@@ -322,6 +369,16 @@ impl InterceptSearch {
             }
         }
         if now >= los && sim.is_settled() {
+            let summary = sim.summary();
+            for axis in 0..2 {
+                self.metrics.energized_ms[axis] =
+                    self.metrics.energized_ms[axis].max(summary.energized_ms[axis]);
+            }
+            self.metrics.reversals = self.metrics.reversals.max(summary.reversals.iter().sum());
+            self.metrics.transitions = self
+                .metrics
+                .transitions
+                .max(summary.transitions.iter().sum());
             self.scenario += 1;
             self.sim = None;
             self.previous = None;
@@ -353,10 +410,11 @@ impl InterceptSearch {
         self.scenario = 0;
         self.sim = None;
         self.previous = None;
+        self.metrics = RecoveryMetrics::default();
     }
 }
 
-fn settings(plan: &TrackingPlan, case: super::Scenario) -> SimulationSettings {
+fn settings(plan: SearchRoute<'_>, case: super::Scenario) -> SimulationSettings {
     SimulationSettings {
         step_ms: plan.config.step_ms,
         feedback_latency_ms: case.latency_ms,
@@ -371,7 +429,8 @@ fn settings(plan: &TrackingPlan, case: super::Scenario) -> SimulationSettings {
     }
 }
 
-pub(super) fn route_at(plan: &TrackingPlan, now: u64) -> Option<Pointing> {
+pub(super) fn route_at<'a>(plan: impl Into<SearchRoute<'a>>, now: u64) -> Option<Pointing> {
+    let plan = plan.into();
     let relative = u32::try_from(now.checked_sub(plan.window.aos_at_ms)?).ok()?;
     plan.route.pointing_at(relative)
 }

@@ -19,6 +19,7 @@ mod inputs;
 mod lifecycle;
 mod model;
 mod planner;
+mod reception;
 mod recovery;
 mod route;
 mod runtime;
@@ -45,6 +46,9 @@ pub use planner::{
     Assessment, CandidateFailure, EvaluationPhase, PlannedGap, Planner, PlanningConfig,
     PlanningError, PlanningReport, PlanningWindow, PreparationTiming, Scenario, TrackingPlan,
     MAX_GAPS, MAX_PLANNING_STEPS, MAX_SCENARIOS,
+};
+pub use reception::{
+    AdmissionPolicy, ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS,
 };
 pub use recovery::{
     RecoveryHold, RecoveryStatus, INTERCEPT_GRID_MS, INTERCEPT_PLANNING_LEAD_MS, INTERCEPT_RETRY_MS,

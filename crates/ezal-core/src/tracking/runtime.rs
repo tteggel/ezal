@@ -6,9 +6,9 @@ use super::recovery::{InterceptSearch, Recovery};
 use super::{
     BoundTrackingPlan, DeviationStatus, ExecutionInputs, FollowingController, InputError,
     LifecycleError, PassEvent, PlanRevisions, PlanTicket, PlanningError, PlanningReport,
-    RecoveryHold, RecoveryStatus, RestingStart, RunToken, TimingError, TrackingAction,
-    TrackingMode, TrackingPhase, TrackingRequest, TrackingSession, TrackingSnapshot, TrackingStop,
-    TrackingTermination, REACQUISITION_DWELL_MS,
+    PlanningWindow, ReceptionCoverage, RecoveryHold, RecoveryStatus, RestingStart, RunToken,
+    TimingError, TrackingAction, TrackingMode, TrackingPhase, TrackingRequest, TrackingSession,
+    TrackingSnapshot, TrackingStop, TrackingTermination, REACQUISITION_DWELL_MS,
 };
 use crate::actuator::Actuator;
 use crate::ads1015::FEEDBACK_FULL_SCALE;
@@ -59,6 +59,10 @@ impl From<InputError> for RuntimeError {
 /// Final pointing metrics paired with their pass/run and termination reason.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrackingSummary {
+    /// Original pass coordinates for the retained predicted reception windows.
+    pub window: PlanningWindow,
+    /// Frozen prediction retained after LOS/cancellation, including missed reception.
+    pub reception: ReceptionCoverage,
     /// Identifies the completed/cancelled/stopped run and its reason.
     pub termination: TrackingTermination,
     /// Final maximum and observed time outside tolerance; current is unavailable.
@@ -75,6 +79,7 @@ pub struct TrackingRuntime {
     observed_ms: Option<u64>,
     last_summary: Option<TrackingSummary>,
     deviation_run: Option<RunToken>,
+    run_prediction: Option<(PlanningWindow, ReceptionCoverage)>,
     deviation: Option<DeviationMonitor>,
     feedback: Option<FeedbackSample>,
     recovery: Option<Recovery>,
@@ -96,6 +101,7 @@ impl TrackingRuntime {
             observed_ms: None,
             last_summary: None,
             deviation_run: None,
+            run_prediction: None,
             deviation: None,
             feedback: None,
             recovery: None,
@@ -304,6 +310,10 @@ impl TrackingRuntime {
         let state = self.session.snapshot();
         if state.run.is_some() && state.run != self.deviation_run {
             self.deviation_run = state.run;
+            self.run_prediction = self
+                .session
+                .bound_plan()
+                .map(|b| (b.plan().window, b.plan().reception()));
             self.feedback = None;
             self.deviation = self
                 .session
@@ -319,7 +329,10 @@ impl TrackingRuntime {
                 .termination
                 .filter(|t| t.run.is_some() && t.run == self.deviation_run)
             {
+                let (window, reception) = self.run_prediction.expect("frozen run prediction");
                 self.last_summary = Some(TrackingSummary {
+                    window,
+                    reception,
                     termination,
                     deviation: self.deviation(now),
                 });

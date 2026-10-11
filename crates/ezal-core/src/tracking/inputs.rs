@@ -309,7 +309,7 @@ impl ExecutionInputs {
         Ok(self
             .clock
             .admission_deadline_ms()?
-            .min(self.window.aos_at_ms))
+            .min(self.window.aos_at_ms + u64::from(self.window.duration_ms)))
     }
     /// Verify the result used the snapshot's timeline and assumptions. The
     /// internal worker remains responsible for actually planning this ephemeris.

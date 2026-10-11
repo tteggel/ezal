@@ -299,6 +299,28 @@ impl Simulation {
         !self.actuator.actual().is_active() && self.model.is_settled()
     }
 
+    /// Copy a coherent post-coast start without resetting relay or duty history.
+    pub(super) fn resting_start(&self) -> Option<RestingStart> {
+        if self.fault.is_some() || !self.is_settled() || self.actuator.target().is_active() {
+            return None;
+        }
+        let feedback = self.interlock.feedback()?;
+        let age = self.serviced_ms.checked_sub(feedback.sampled_at_ms())?;
+        let (_, idle) = self.actuator.resting_history(self.serviced_ms)?;
+        if age >= crate::feedback::FEEDBACK_MAX_AGE_MS
+            || idle[0] < age.saturating_add(self.settings.actuator.travel.azimuth.coast_ms)
+            || idle[1] < age.saturating_add(self.settings.actuator.travel.elevation.coast_ms)
+        {
+            return None;
+        }
+        Some(RestingStart {
+            at_ms: self.serviced_ms,
+            feedback,
+            actuator: self.actuator,
+            network: self.network,
+        })
+    }
+
     /// Advance one bounded step using an already planned mechanical target.
     /// This convenience method assumes exact sky alignment of the route. Use
     /// `step_target` when the route intentionally offsets the satellite direction.

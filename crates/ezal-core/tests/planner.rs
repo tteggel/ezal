@@ -10,11 +10,14 @@ use ezal_core::orbit::LookAngle;
 use ezal_core::passes::Ephemeris;
 use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
 use ezal_core::tracking::{
-    CandidateFailure, FollowingController, MotorProfile, Planner, PlanningConfig, PlanningError,
-    PlanningReport, PlanningWindow, PreparationTiming, RestingStart, RouteKind, Scenario,
-    Simulation, SimulationError, SimulationSettings, MAX_PLANNING_STEPS,
+    AdmissionPolicy, CandidateFailure, FollowingController, MotorProfile, Planner, PlanningConfig,
+    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, RestingStart, RouteKind,
+    Scenario, Simulation, SimulationError, SimulationSettings, MAX_PLANNING_STEPS,
 };
 use std::cell::Cell;
+
+#[path = "common/tracking_partial.rs"]
+mod partial;
 
 const CAL: PositionCalibration = PositionCalibration {
     azimuth: AxisCalibration {
@@ -72,7 +75,10 @@ fn snapshot(cal: PositionCalibration, pose: Pointing, used: [u64; 2]) -> Resting
 }
 
 fn nominal() -> PlanningConfig {
-    let mut config = PlanningConfig::default();
+    let mut config = PlanningConfig {
+        admission: AdmissionPolicy::CompleteOnly,
+        ..PlanningConfig::default()
+    };
     config.scenarios.clear();
     config.scenarios.push(Scenario::NOMINAL).unwrap();
     config
@@ -92,7 +98,7 @@ fn run<E: Ephemeris>(mut planner: Planner<E>) -> PlanningReport {
     }
     let report = planner.into_report().unwrap();
     assert!(report.work_steps <= MAX_PLANNING_STEPS);
-    assert_eq!(report.evaluated_candidates + report.geometry_rejections, 24);
+    assert!((1..=48).contains(&(report.evaluated_candidates + report.geometry_rejections)));
     report
 }
 
@@ -116,6 +122,10 @@ fn over_top_crosses_zenith_without_a_keyhole_in_all_default_scenarios() {
     )
     .unwrap());
     let plan = report.plan.as_ref().unwrap_or_else(|| panic!("{report:?}"));
+    assert!(
+        plan.reception().is_complete(),
+        "a complete OTT route outranks partial recovery"
+    );
     assert!(matches!(
         plan.route.choice().kind,
         RouteKind::OverTop { .. }

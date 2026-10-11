@@ -3,12 +3,15 @@
 
 use super::route::{self, Bridge, Knot, Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
 use super::{
-    pointing_deviation_deg, FollowingController, MotorProfile, RestingStart, Simulation,
-    SimulationError, SimulationSettings, TrackingTarget,
+    pointing_deviation_deg, AdmissionPolicy, FollowingController, MotorProfile, ReceptionCoverage,
+    RestingStart, Simulation, SimulationError, SimulationSettings, TrackingTarget,
 };
 use crate::passes::Ephemeris;
 use crate::position::{Pointing, PositionCalibration};
 use heapless::Vec;
+
+mod partial;
+use partial::PartialEvaluation;
 
 /// Maximum explicitly evaluated plant/measurement scenarios.
 pub const MAX_SCENARIOS: usize = 9;
@@ -75,6 +78,8 @@ pub enum PreparationTiming {
 /// Explicit planning assumptions, frozen with a supported route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanningConfig {
+    /// Complete support is preferred; partial support requires recovery validation.
+    pub admission: AdmissionPolicy,
     /// Starting early needs its own duty/relay evaluation, not a schedule override.
     pub preparation_timing: PreparationTiming,
     /// Total operational pointing target (provisional default 3°).
@@ -104,6 +109,7 @@ impl Default for PlanningConfig {
         let slow = MotorProfile::AC_SLOW;
         let fast = MotorProfile::AC_FAST;
         Self {
+            admission: AdmissionPolicy::AllowPartial,
             preparation_timing: PreparationTiming::Scheduled,
             tolerance_deg: 3.0,
             uncertainty_deg: 1.0,
@@ -189,8 +195,10 @@ pub enum PlanningError {
     Configuration,
     /// The caller must supply a serviced, settled, fault-free starting snapshot.
     StartingState,
-    /// A complete-pass plan cannot start after AOS; late intercepts belong to reacquisition.
+    /// A complete-only job cannot start after AOS; partial admission was disabled.
     PassAlreadyStarted,
+    /// No future reception remains in the selected original window.
+    PassEnded,
     /// Propagation failed or returned a non-finite/out-of-range visible sky direction.
     Source,
     /// Observed true sky movement exceeded the supplied intersample bound.
@@ -205,7 +213,7 @@ pub enum PlanningError {
     Incomplete,
 }
 
-/// Why one candidate cannot support the complete window under these assumptions.
+/// Why one candidate cannot establish its requested reception coverage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CandidateFailure {
     /// A real actuator or physical-model constraint stopped evaluation.
@@ -216,6 +224,8 @@ pub enum CandidateFailure {
     LatePreparation,
     /// An interval could not be bounded within the modeled pointing allocation.
     PointingBudget,
+    /// No bounded recovery with a supported remainder qualified for this route.
+    NoRecovery,
 }
 
 /// Which part of a candidate evaluation encountered its reported failure.
@@ -241,29 +251,29 @@ pub struct PlannedGap {
 pub struct Assessment {
     /// Route family and mechanical overlap.
     pub choice: RouteChoice,
-    /// Scenarios which completed preparation and the entire pass/coast.
+    /// Starting scenarios whose advertised windows and final coast were validated.
     pub completed_scenarios: usize,
     /// Worst probed movement/readiness time, excluding any initial duty rest.
     pub preparation_ms: u64,
-    /// `max(60 s, preparation + 20 s)`.
+    /// `max(60 s, preparation + 20 s)`, or zero for initial late acquisition.
     pub preparation_lead_ms: u64,
-    /// Scheduled start, clipped to the supplied current time.
+    /// Scheduled start; initial late acquisition freezes at its fixed episode entry.
     pub prepare_at_ms: u64,
     /// Worst sampled actual boresight deviation, including intentional route offset.
     pub sampled_peak_deg: f32,
     /// Conservative intersample upper bound, plus a 0.002° numeric allowance.
     pub bounded_peak_deg: f32,
-    /// Maximum uncertain/out-of-budget duration across scenarios, not their sum.
+    /// Worst nominal gap duration, or the admitted partial plan's missed interval.
     pub gap_time_ms: u64,
-    /// Scenario whose intervals are retained below.
+    /// Scenario whose diagnostic intervals are retained; partial plans aggregate cases.
     pub gap_scenario: usize,
-    /// Bounded list of gaps for that scenario; no route with gaps is supported yet.
+    /// Diagnostic gaps, or the validated missed interval for a supported partial plan.
     pub gaps: Vec<PlannedGap, MAX_GAPS>,
     /// Additional gaps existed beyond storage; totals and rejection remain valid.
     pub gaps_truncated: bool,
     /// Worst total preparation/following energized time per axis across scenarios.
     pub energized_ms: [u64; 2],
-    /// Maximum total reversal count in any scenario, used after pointing error.
+    /// Maximum reversal count, conservatively bounded across a partial recovery.
     pub reversals: u64,
     /// Maximum total relay transition count in any scenario.
     pub transitions: u64,
@@ -316,10 +326,11 @@ impl Assessment {
     }
 }
 
-/// Supported in every supplied scenario, with no predicted gaps. Keep its
+/// Supported in every supplied scenario for its explicit reception coverage. Keep its
 /// ephemeris/calibration/clock revisions bound externally when freezing a run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackingPlan {
+    pub(super) reception: ReceptionCoverage,
     /// Frozen continuous motor route, with no implicit wrapping during execution.
     pub route: Route,
     /// Original UTC and monotonic reception window.
@@ -330,8 +341,15 @@ pub struct TrackingPlan {
     pub calibration: PositionCalibration,
     /// Output policy that must match execution.
     pub actuator: crate::actuator::ActuatorConfig,
-    /// Complete-window evaluation metrics.
+    /// Evaluation metrics for the advertised reception coverage.
     pub assessment: Assessment,
+}
+
+impl TrackingPlan {
+    /// The reception claim validated by the planner; diagnostics cannot set it.
+    pub const fn reception(&self) -> ReceptionCoverage {
+        self.reception
+    }
 }
 
 /// Completed finite search. No supported plan means “none found in this search”,
@@ -342,9 +360,9 @@ pub struct PlanningReport {
     pub plan: Option<TrackingPlan>,
     /// Best evaluated candidate, including a failure/gap explanation if unsupported.
     pub closest_attempt: Option<Assessment>,
-    /// Candidates with valid installed mechanical coordinates.
+    /// Evaluations with valid installed coordinates, including the partial round.
     pub evaluated_candidates: usize,
-    /// Candidate families unavailable within measured travel or without a zenith bridge.
+    /// Evaluations rejected by travel/bridge geometry, including the partial round.
     pub geometry_rejections: usize,
     /// Incremental work performed, bounded by `MAX_PLANNING_STEPS`.
     pub work_steps: u64,
@@ -356,6 +374,9 @@ enum Phase {
     Build,
     Probe,
     Verify,
+    PartialPrefix,
+    PartialSettle,
+    PartialSearch,
     Complete,
 }
 
@@ -395,6 +416,9 @@ pub struct Planner<E> {
     assessment: Assessment,
     report: PlanningReport,
     error: Option<PlanningError>,
+    partial_round: bool,
+    partial_cut: Option<u32>,
+    partial: Option<PartialEvaluation>,
 }
 
 impl<E: Ephemeris> Planner<E> {
@@ -432,7 +456,10 @@ impl<E: Ephemeris> Planner<E> {
         {
             return Err(PlanningError::Configuration);
         }
-        if window.aos_at_ms < start.at_ms {
+        if start.at_ms >= window.aos_at_ms + u64::from(window.duration_ms) {
+            return Err(PlanningError::PassEnded);
+        }
+        if window.aos_at_ms < start.at_ms && config.admission == AdmissionPolicy::CompleteOnly {
             return Err(PlanningError::PassAlreadyStarted);
         }
         let follower =
@@ -463,6 +490,8 @@ impl<E: Ephemeris> Planner<E> {
             })?;
         }
         let choice = route::choice(0);
+        let partial_round =
+            start.at_ms >= window.aos_at_ms && config.admission == AdmissionPolicy::AllowPartial;
         Ok(Self {
             source,
             window,
@@ -494,6 +523,9 @@ impl<E: Ephemeris> Planner<E> {
                 work_steps: 0,
             },
             error: None,
+            partial_round,
+            partial_cut: None,
+            partial: None,
         })
     }
 
@@ -515,7 +547,7 @@ impl<E: Ephemeris> Planner<E> {
         }
     }
 
-    /// True after the complete candidate set has been considered.
+    /// True after a terminal error, complete search or validated partial fallback.
     pub fn is_finished(&self) -> bool {
         self.phase == Phase::Complete || self.error.is_some()
     }
@@ -523,6 +555,7 @@ impl<E: Ephemeris> Planner<E> {
     pub fn cancel(&mut self) {
         self.error = Some(PlanningError::Cancelled);
         self.sim = None;
+        self.partial = None;
         self.report.plan = None;
     }
     /// Consume the completed result; partial work never becomes a supported plan.
@@ -555,6 +588,9 @@ impl<E: Ephemeris> Planner<E> {
                 }
                 Phase::Probe => self.simulate(true),
                 Phase::Verify => self.simulate(false),
+                Phase::PartialPrefix => self.simulate(false),
+                Phase::PartialSettle => self.settle_partial(),
+                Phase::PartialSearch => self.search_partial(),
                 Phase::Complete => Ok(()),
             }
         };
@@ -562,6 +598,7 @@ impl<E: Ephemeris> Planner<E> {
             self.error = Some(error);
             self.report.plan = None;
             self.sim = None;
+            self.partial = None;
         }
         result
     }
@@ -627,13 +664,23 @@ impl<E: Ephemeris> Planner<E> {
 
     fn next_candidate(&mut self) {
         self.sim = None;
+        self.partial = None;
+        self.partial_cut = None;
         self.candidate += 1;
         self.build_index = 0;
         self.scenario = 0;
         self.route.points.clear();
         if self.candidate == route::CANDIDATES {
-            self.phase = Phase::Complete;
-            return;
+            if self.report.plan.is_none()
+                && !self.partial_round
+                && self.config.admission == AdmissionPolicy::AllowPartial
+            {
+                self.partial_round = true;
+                self.candidate = 0;
+            } else {
+                self.phase = Phase::Complete;
+                return;
+            }
         }
         self.route.choice = route::choice(self.candidate);
         self.assessment = Assessment::new(self.route.choice);
@@ -669,6 +716,9 @@ impl<E: Ephemeris> Planner<E> {
         if self.build_index == self.geometry.len() {
             self.report.evaluated_candidates += 1;
             self.phase = Phase::Probe;
+            if self.start.at_ms >= self.window.aos_at_ms && self.partial_round {
+                self.begin_partial(None);
+            }
         }
     }
 
@@ -788,6 +838,12 @@ impl<E: Ephemeris> Planner<E> {
         let now = self.sim.as_ref().unwrap().now_ms();
         let aos = self.window.aos_at_ms;
         let los = aos + u64::from(self.window.duration_ms);
+        if self.phase == Phase::PartialPrefix
+            && now >= self.partial.as_ref().unwrap().recovery_at_ms
+        {
+            self.phase = Phase::PartialSettle;
+            return Ok(());
+        }
         let start_pose = self.route.pointing_at(0).expect("complete route");
         let preparing = probe || now < aos;
         if preparing
@@ -798,6 +854,10 @@ impl<E: Ephemeris> Planner<E> {
             return Ok(());
         }
         if !probe && now >= aos && !self.prepared {
+            if self.phase == Phase::PartialPrefix {
+                self.begin_partial(None);
+                return Ok(());
+            }
             self.fail_candidate(CandidateFailure::LatePreparation);
             return Ok(());
         }
@@ -872,14 +932,31 @@ impl<E: Ephemeris> Planner<E> {
             let error =
                 pointing_deviation_deg(sample.position, sky).ok_or(PlanningError::Source)?;
             self.observe_error(now, error, sky)?;
+            if self.phase == Phase::PartialPrefix
+                && self.partial_cut.is_some_and(|cut| {
+                    aos + u64::from(cut) < self.partial.as_ref().unwrap().recovery_at_ms
+                })
+            {
+                self.begin_partial(self.partial_cut);
+                return Ok(());
+            }
         }
         let sim = self.sim.as_mut().unwrap();
         if !probe && now >= los && sim.is_settled() {
             self.finish_scenario();
+            return Ok(());
         } else if !probe && now < aos {
             sim.stop_step_at(aos);
         } else if !probe && now < los {
             sim.stop_step_at(los);
+        }
+        if let Some(partial) = &self.partial {
+            if self.phase == Phase::PartialPrefix {
+                self.sim
+                    .as_mut()
+                    .unwrap()
+                    .stop_step_at(partial.recovery_at_ms);
+            }
         }
         Ok(())
     }
@@ -909,6 +986,8 @@ impl<E: Ephemeris> Planner<E> {
         self.metrics.bound = self.metrics.bound.max(bound);
         let relative = (now - self.window.aos_at_ms) as u32;
         if bound > self.config.tolerance_deg - self.config.uncertainty_deg {
+            let cut = (begin - self.window.aos_at_ms) as u32;
+            self.partial_cut = Some(self.partial_cut.map_or(cut, |previous| previous.min(cut)));
             self.metrics
                 .open_gap
                 .get_or_insert((begin - self.window.aos_at_ms) as u32);
@@ -998,6 +1077,7 @@ impl<E: Ephemeris> Planner<E> {
                 .is_none_or(|plan| self.assessment.better_than(&plan.assessment))
         {
             self.report.plan = Some(TrackingPlan {
+                reception: ReceptionCoverage::Complete,
                 route: self.route.clone(),
                 window: self.window,
                 config: self.config.clone(),
@@ -1005,6 +1085,29 @@ impl<E: Ephemeris> Planner<E> {
                 actuator: self.start.actuator.configuration(),
                 assessment: self.assessment.clone(),
             });
+        }
+        if self.partial_round && self.partial.is_none() {
+            match self.assessment.failure {
+                Some(CandidateFailure::PointingBudget) => {
+                    self.begin_partial(self.partial_cut);
+                    return;
+                }
+                Some(CandidateFailure::LatePreparation | CandidateFailure::PreparationTimeout) => {
+                    self.begin_partial(None);
+                    return;
+                }
+                Some(CandidateFailure::Simulation(_))
+                    if self.assessment.failure_phase == Some(EvaluationPhase::Following)
+                        && self.partial_cut.is_some() =>
+                {
+                    // The nominal continuation may fault after losing pointing.
+                    // A different, inhibited recovery path must still pass every
+                    // physical check; never carry the failed actuator into it.
+                    self.begin_partial(self.partial_cut);
+                    return;
+                }
+                _ => {}
+            }
         }
         self.next_candidate();
     }

@@ -133,6 +133,107 @@ impl Rig {
 }
 
 #[test]
+fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_los() {
+    let at = AOS + 1000;
+    let (mut runtime, owner) = selected(EVENT, observation(at));
+    let inputs = ExecutionInputs::capture(
+        runtime.planning_ticket().unwrap(),
+        catalog().snapshot(EVENT.norad_id).unwrap(),
+        InputSettings::default(),
+        clock(UTC),
+        execution_window(clock(UTC).anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
+        &config(),
+        at,
+    )
+    .unwrap();
+    assert_eq!(inputs.freeze_before_ms().unwrap(), LOS);
+    let look = inputs.look_at_uptime(at).unwrap();
+    let pose = Pointing::new(look.azimuth_deg as f32, look.elevation_deg as f32 + 5.0);
+    let mut actuator = Actuator::with_config(
+        ActuatorConfig {
+            duty: DutyConfig::CONFIRMED_AC,
+            ..ActuatorConfig::DEFAULT
+        },
+        DutyHistory::Known([0; 2]),
+    );
+    let mut interlock =
+        FeedbackInterlock::new(InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap());
+    for now in [at - 2000, at] {
+        interlock.publish(Some(measured(pose, now)));
+        actuator.step(
+            ActuatorInput {
+                interlock,
+                network: observation(now).network,
+                command: None,
+            },
+            now,
+        );
+    }
+    let start = RestingStart {
+        at_ms: at,
+        feedback: measured(pose, at),
+        actuator,
+        network: observation(at).network,
+    };
+    let mut planner = Planner::new(inputs.clone(), inputs.window(), CAL, start, config()).unwrap();
+    while !planner.is_finished() {
+        planner.step().unwrap();
+    }
+    let report = planner.into_report().unwrap();
+    let plan = report.plan.as_ref().unwrap_or_else(|| panic!("{report:?}"));
+    let coverage = plan.reception();
+    let gap = coverage.gap().unwrap();
+    assert!(gap.late_acquisition);
+    runtime
+        .publish_plan(inputs.ticket(), Ok(report), inputs, observation(at))
+        .unwrap();
+    assert_eq!(runtime.snapshot().plan, PlanStatus::SupportedPartial);
+    action(&mut runtime, owner, 2, TrackingAction::Arm, observation(at)).unwrap();
+    runtime
+        .service(observation(gap.recovery_at_ms - 1))
+        .unwrap();
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Armed);
+    runtime.service(observation(gap.recovery_at_ms)).unwrap();
+    let run = runtime.snapshot().run.unwrap();
+    let mut rig = Rig {
+        runtime,
+        run,
+        actuator,
+        model: MotorModel::new(MotorProfile::AC_50HZ, CAL, pose, [0; 2]).unwrap(),
+        feedback: healthy(measured(pose, gap.recovery_at_ms)),
+        pending: VecDeque::new(),
+        now: gap.recovery_at_ms,
+    };
+    rig.tick(gap.recovery_at_ms);
+    assert_eq!(
+        rig.runtime.recovery().unwrap().episode.cause(),
+        RecoveryCause::LateAcquisition
+    );
+    let recovery = rig.plan();
+    assert!(recovery.intercept_at_ms.is_some(), "{recovery:?}");
+    while rig.runtime.snapshot().phase == TrackingPhase::Reacquiring && rig.now < LOS {
+        rig.tick(rig.now + 20);
+    }
+    assert_eq!(
+        rig.runtime.snapshot().phase,
+        TrackingPhase::Following,
+        "{:?}",
+        rig.runtime.snapshot()
+    );
+    assert!(rig.now <= AOS + u64::from(gap.missed.end_ms));
+    assert!(rig.runtime.deviation(rig.now).maximum_deg.unwrap() > 4.0);
+    assert!(rig.runtime.operator(rig.now).is_none());
+    rig.until(LOS);
+    assert_eq!(rig.runtime.snapshot().phase, TrackingPhase::Complete);
+    let summary = rig.runtime.last_summary().unwrap();
+    assert_eq!(summary.reception, coverage);
+    assert_eq!(summary.window.aos_at_ms, AOS);
+    assert_eq!(summary.window.duration_ms, (LOS - AOS) as u32);
+    assert_eq!(summary.termination.reason, TrackingStop::LossOfSignal);
+    assert!(!rig.actuator.actual().is_active());
+}
+
+#[test]
 fn recoverable_lag_executes_a_future_intercept_and_preserves_duty() {
     let mut rig = Rig::new(10.0, [9000, 21000]);
     rig.until(AOS + 200);
