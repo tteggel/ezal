@@ -5,6 +5,9 @@ use ezal_core::feedback::{FeedbackHealth, FeedbackSnapshot};
 use ezal_core::passes::{Config, Job};
 use std::collections::VecDeque;
 
+#[path = "tracking_execution_acceptance.rs"]
+mod acceptance;
+
 fn measured(pose: Pointing, at: u64) -> FeedbackSample {
     FeedbackSample::from_voltages(
         InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
@@ -24,6 +27,7 @@ struct Device {
     ready_seen: bool,
     following_seen: bool,
     applied_transitions: usize,
+    event: PassEvent,
 }
 
 impl Device {
@@ -46,6 +50,7 @@ impl Device {
             ready_seen: false,
             following_seen: false,
             applied_transitions: 0,
+            event: EVENT,
         };
         for at in (0..=2000).step_by(100) {
             device.state.publish_network(true, at);
@@ -100,6 +105,14 @@ impl Device {
     }
 
     fn request(&mut self, sequence: u64, action: TrackingAction) {
+        self.try_request(sequence, action).unwrap();
+    }
+
+    fn try_request(
+        &mut self,
+        sequence: u64,
+        action: TrackingAction,
+    ) -> Result<u64, ezal_core::protocol::TrackingRejection> {
         let token = self.state.operator(self.owner, self.now).unwrap().token;
         let mut freshness = ezal_core::session::CommandFreshness::new(self.owner);
         let proof = freshness.issue(self.now).unwrap().token;
@@ -111,9 +124,10 @@ impl Device {
             action,
         };
         self.state
-            .request_tracking(self.owner, intent, &freshness, self.now, |p| p == EVENT)
+            .request_tracking(self.owner, intent, &freshness, self.now, |p| {
+                p == self.event
+            })
             .result
-            .unwrap();
     }
 
     fn feedback(&mut self, sample: FeedbackSample, at: u64) {
@@ -139,15 +153,25 @@ impl Device {
     }
 
     fn tick(&mut self, at: u64) {
+        self.tick_inner(at, Some(measured));
+        assert_eq!(
+            self.actuator.fault(),
+            None,
+            "{:?}",
+            self.state.tracking().snapshot()
+        );
+    }
+
+    fn tick_inner(&mut self, at: u64, read: Option<fn(Pointing, u64) -> FeedbackSample>) {
         self.model
             .advance(self.actuator.actual(), at - self.now)
             .unwrap();
         self.now = at;
         self.state.publish_network(true, at);
         // 100 ms paired acquisition followed by the firmware's 100 ms delay.
-        if at.is_multiple_of(200) {
+        if let Some(read) = read.filter(|_| at.is_multiple_of(200)) {
             self.pending
-                .push_back((at + 100, measured(self.model.position(), at)));
+                .push_back((at + 100, read(self.model.position(), at)));
         }
         while self.pending.front().is_some_and(|(ready, _)| *ready <= at) {
             let sample = self.pending.pop_front().unwrap().1;
@@ -158,12 +182,6 @@ impl Device {
         self.apply(at);
         self.ready_seen |= self.state.tracking().snapshot().phase == TrackingPhase::Ready;
         self.following_seen |= self.state.tracking().snapshot().phase == TrackingPhase::Following;
-        assert_eq!(
-            self.actuator.fault(),
-            None,
-            "{:?}",
-            self.state.tracking().snapshot()
-        );
     }
 
     fn until(&mut self, at: u64) {

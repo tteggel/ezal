@@ -26,8 +26,8 @@ overhead. The pure core now computes satellite az/el and reception windows
 from TLEs using SGP4. Manual control drives the G-5500's direction inputs
 through transistor switches and reads calibrated position feedback via an
 Adafruit ADS1015 I²C ADC. The device executor and dashboard arming are integrated;
-board timing checks, complete-pass acceptance and installation commissioning
-remain before routine automatic tracking.
+full-pass host acceptance is complete. Board timing checks and installation
+commissioning remain before routine automatic tracking.
 See [HARDWARE.md](docs/HARDWARE.md) and the [design/](design/) folder for the
 interface details and schematic.
 
@@ -234,7 +234,9 @@ records host validation, Pico memory checks and remaining board measurements.
 The [tracking dashboard and API](docs/PASS_PREDICTION.md#tracking-api-and-dashboard-t8)
 provide selection, full/partial feasibility, scheduled preparation, Prepare now,
 Cancel and Return to Manual. Tracking continues without a browser; live deviation,
-recovery and final metrics remain visible to viewers. T9 complete-pass acceptance,
+recovery and final metrics remain visible to viewers.
+[T9 host acceptance](docs/PASS_PREDICTION.md#complete-pass-acceptance-t9) covers full
+passes, rejection and interruption, and records prediction/actual recovery variance.
 T10 commissioning and T7 board timing/watchdog checks remain.
 
 ## License

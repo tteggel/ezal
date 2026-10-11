@@ -670,11 +670,12 @@ commissioning supplies that evidence.
   Show phase, desired/measured pointing, timestamp-matched spherical deviation,
   stale feedback, recovery progress and the final summary. Test owner/viewer
   permissions and reconnects. Depends on T4, T6/T6a and T7.
-- [ ] **T9 — Complete-pass acceptance.** Run recorded and synthetic exact-
-  zenith/near-zenith passes, azimuth wraps, extreme preparation positions,
+- [x] **T9 — Complete-pass acceptance.** Host acceptance complete; see the
+  [results and prediction limits](#complete-pass-acceptance-t9). Ran recorded and
+  synthetic exact-zenith/near-zenith passes, azimuth wraps, extreme preparation positions,
   slow/fast motor profiles, cancellations, faults, duty exhaustion and LOS.
-  Confirm holding the final position, no automatic next pass, and external
-  recording only. Compare the planner's predictions with the execution path.
+  Confirmed holding the final position, no automatic next pass, and external
+  recording only. Compared the planner's predictions with the execution path.
   Depends on T3–T8.
 - [ ] **T10 — Installation commissioning.** Follow [CALIBRATION.md](CALIBRATION.md)
   to identify hardware, calibrate full travel/sky pointing and measure loaded
@@ -1181,8 +1182,8 @@ was taken for this implementation.** The [board procedure](DEVELOPMENT.md#tracki
 must still verify the 20 ms maximum interval, two-second recovery computation
 lead, five-second late-admission lead, stack headroom and physical watchdog
 release under concurrent network/viewer load. T7 remains open for those checks.
-T8 below supplies the tracking API/dashboard; routine hardware tracking also
-remains subject to T9 acceptance and T10 commissioning.
+T8 below supplies the tracking API/dashboard and T9 records host acceptance;
+routine hardware tracking still requires T10 commissioning and these board checks.
 
 Software validation: 292 Rust tests (including the doctest), 50 dashboard tests,
 host/Pico Clippy, formatting, build-tool checks and the Pico release build pass.
@@ -1278,9 +1279,9 @@ boundary. A shared JSON fixture carries actual Armed, Preparing, Following and
 Complete observations into dashboard tests, alongside partial, recovery, stale
 feedback, failure and no-replay cases. No firmware was flashed for T8.
 
-The next software task is **T9 — Complete-pass acceptance**. T7's board timing,
-watchdog and stack measurements and **T10 — Installation commissioning** remain
-open; the current installed calibration still limits travel to 360°/90°. Follow
+T9 host acceptance is recorded below. T7's board timing, watchdog and stack
+measurements and **T10 — Installation commissioning** remain open; the current
+installed calibration still limits travel to 360°/90°. Follow
 [CALIBRATION.md](CALIBRATION.md) before powered movement or enabling measured
 over-the-top travel.
 
@@ -1292,3 +1293,87 @@ for the shared stack. The 192 KiB linker reserve passes. Assembly inspection
 still shows roughly 62 KiB for the tracking worker poll and 53 KiB for plan
 publication; the web task poll has a small local frame with its buffers in the
 task pool. These are capacity checks, not measured board high-water or timing.
+
+### Complete-pass acceptance (T9)
+
+The host acceptance matrix is in
+[`tracking_plan_acceptance.rs`](../crates/ezal-core/tests/common/tracking_plan_acceptance.rs)
+and
+[`tracking_execution_acceptance.rs`](../crates/ezal-core/tests/common/tracking_execution_acceptance.rs).
+It runs automatically with the existing host suite. To print the comparisons:
+
+```bash
+nix develop .#ci --command cargo test --locked -p ezal-core \
+  --target x86_64-unknown-linux-gnu --test planner --test tracking_inputs \
+  acceptance -- --nocapture
+```
+
+Synthetic routes use a separate 10 ms driver around the production follower and
+actuator, with quantized ADC pairs, latency/skew, startup, coast, backlash and
+duty accounting. This driver does not call the planner's `Simulation`. It checks
+the complete route and post-LOS coast against the 20 ms planning results. The
+motor model is shared, so these are independent integration checks under shared
+physical assumptions, not independent evidence for those assumptions.
+
+The recorded run uses the full production coordination/runtime and leased API,
+including actual measured preparation readiness and incremental recovery. It
+checks the fixture's AOS/LOS against the pass search. Its complete 751-second
+window is METOP-B/NORAD 38771 over Clevedon, Unix seconds 1791402086–1791402837,
+using the recorded `weather-2026-10-07.tle` catalog and the normal 5° mask.
+The browser disconnects after arming. ADC pairs arrive with 100 ms latency at
+the firmware's 200 ms pair cadence; output runs every 10 ms.
+
+| Case | Planning result | Independent execution result |
+|---|---|---|
+| Exact zenith, 600 s, nine qualification scenarios | Complete OTT; 1.533° bounded modeled peak | Nominal/slow/fast replay peaks 0.852° / 0.852° / 1.261°; no modeled-budget excursions |
+| Near zenith, 88° peak, 600 s, nine scenarios | Unsupported; pointing-budget excursions and noisy speed supervision | No executable route issued |
+| Azimuth 350°→370°, 120 s, nominal scenario | Complete continuous route; 1.784° bounded peak | 1.705° peak; no wrap reversal |
+| Preparation from 1°/1° and 449°/179°, then 120 s static target, nominal scenario | Complete; 0.248° / 0.119° bounded peaks | 0.137° / 0.222° peaks; within the 2° modeled allocation; include slew and final coast |
+| Full recorded METOP-B window, nominal scenario | Partial; 12.50 s predicted gap; 2.218° bounded peak | Completes at original LOS; one 22.46 s recovery; 2.345° true model peak / 2.370° peak reported from ADC; zero measured time above 3° |
+| Same recorded window, all nine scenarios | Unsupported; includes noisy azimuth speed fault | Arm rejected, zero relay transitions through LOS |
+| Same recorded window, duty already exhausted | Unsupported, no recovery route | Arm rejected; later rest does not arm it |
+| Leased cancellation while Armed, Preparing, Following or Reacquiring | Operator interruption | Immediate output inhibition; duty retained; stays stopped through original LOS |
+| Stalled motor / lost feedback | Unexpected execution failure | Motion / feedback termination; returning samples never restart the run |
+| Recorded recovery with insufficient planning throughput | Repeated missed launches | 13 bounded attempts, final timeout exactly at original 30 s deadline; peak/outside-tolerance metrics retained for the dashboard |
+
+All tests use explicitly synthetic 450°/180° travel and confirmed-AC duty for
+the modeled plant. The nominal-only fixtures deliberately isolate integration;
+they do not qualify a real pass under the firmware's nine scenarios. Installed
+travel, motion limits, relay timing, tolerance and scenario settings are unchanged.
+The existing conventional-only zenith, FENGYUN 3C full-window rejection, duty
+deadline, source/network failure and partial-admission tests also remain in the
+host suite. Successful and interrupted runs hold their final post-coast position,
+with no park or automatic next pass. There is no receiver/recording integration;
+recording remains external.
+
+Two differences matter for commissioning:
+
+- **Predictions are conditional on the simulated schedule.** Changing ADC/pulse
+  phase between 20 ms planning and 10 ms execution can exceed the reported
+  modeled peak, even for a stationary target. The separate synthetic runs still
+  fit the 2° modeled allocation. The recorded nominal replay's gap lasts 9.96 s
+  longer than predicted and its true peak is 0.127° higher. It stays within the
+  original recovery deadline and the provisional 3° operational threshold, but
+  this does not establish the 1° reserve or RF reception windows. The dashboard
+  correctly retains the original windows as predictions and reports live
+  recovery/deviation separately. Measure scheduling, plant and pointing errors
+  before accepting the reserve or treating modeled reception as achievable RF
+  coverage; broaden timing-phase qualification if those measurements require it.
+- **Full-pass recovery has a substantial computation cost.** A successful
+  recorded search uses 398,964 incremental work units. The host harness supplies
+  up to 2,048 units per virtual 10 ms turn; this is an explicit test throughput,
+  not a Pico benchmark. At 128 units per turn the same run misses its launch
+  opportunities and stops safely, with 3.393° peak measured error and 2.44 s
+  above tolerance. T7 must measure complete searches with long suffixes and the
+  real concurrent load against the fixed two-second launch lead. If the board
+  cannot meet it, optimize/rebudget recovery and revalidate admission before
+  claiming usable partial-pass tracking; do not extend an active episode deadline.
+
+T9 closes the host acceptance work. It does not close T7's board timing/watchdog/
+stack checks or T10's loaded motor, full-travel and RF commissioning. No firmware
+was flashed and no physical pointing or RF tracking was tested for this task.
+
+T9 software validation: **306 Rust tests (including the doctest), 61 dashboard
+tests, host/Pico Clippy, formatting, build-tool checks and the Pico release build
+pass**. This task adds tests and documentation; production behavior and its
+T8 memory layout are unchanged.

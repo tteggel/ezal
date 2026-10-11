@@ -317,7 +317,7 @@ Use `cargo fmt --all` to apply formatting. Firmware has no embedded `libtest`,
 so do not select its test targets with `--workspace --all-targets`.
 
 CI runs these checks, the test scripts, and one firmware job that builds,
-lints and packages the manual firmware, uploading its ELF and UF2 under
+lints and packages the firmware, uploading its ELF and UF2 under
 `dist/`. The optional `cyw43-firmware-logs` feature enables radio diagnostics
 independently; it does not select a control mode.
 
@@ -459,7 +459,7 @@ to `thumbv8m.main-none-eabihf` in `.vscode/settings.json`:
 
 ### Tracking execution load check
 
-T7/T8 software integration and host tests do not establish board timing. The
+T7/T8 software integration and T9 host acceptance do not establish board timing. The
 dashboard now supplies selection and arming. Perform this check with the direction
 leads disconnected and suitable feedback simulation first; use the existing
 commissioning procedure before powered movement. The installed calibration
@@ -498,6 +498,16 @@ still limits azimuth/elevation to 360°/90° until measured replacements are mad
    recovery must finish before its fixed two-second launch lead, and a late
    admission must finish before its five-second entry lead. Longer jobs must
    hold/fail visibly rather than run an unchecked late trajectory.
+
+   Include a full recorded pass with a long remaining suffix, not only a short
+   acquisition segment. [T9 acceptance](PASS_PREDICTION.md#complete-pass-acceptance-t9)
+   observed 398,964 work units in a successful nominal METOP-B recovery search;
+   a low-throughput worker missed all usable launches. Measure whole-search
+   elapsed time under concurrent load against the two-second lead. If it does
+   not fit, recovery needs optimization or a revised prevalidated schedule before
+   partial-pass operation is commissioned. Record actual recovery duration and
+   pointing error alongside the preview: the host replay's 12.50 s predicted gap
+   became 22.46 s at execution cadence.
 
 4. Suspend background planning alone; GPIO/watchdog service must continue,
    holding during an unresolved intercept. Delay a normal control step beyond

@@ -1,18 +1,19 @@
 # Position calibration
 
 ezal converts the G-5500's two feedback voltages into angles with a linear
-two-point calibration for each axis. The manual firmware uses that mapping
+two-point calibration for each axis. Manual and tracking control use that mapping
 with the real ADS1015. For now the four installed-system endpoints are
 deliberately hard-coded; this document is the procedure for replacing them
 with measurements from your unit.
 
-The planned tracking installation has an 80 cm parabolic dish with a custom
+The tracking installation has an 80 cm parabolic dish with a custom
 helical feed and permits over-the-top movement. Its full-travel calibration
 and pointing tolerance remain unmeasured. Follow this procedure before using
-that extra travel; the existing firmware still provides manual control and
-advisory prediction. The [tracking design](PASS_PREDICTION.md#planned-tracking)
+that extra travel. Device-owned tracking and its dashboard are implemented;
+[host acceptance](PASS_PREDICTION.md#complete-pass-acceptance-t9) does not establish
+physical or RF performance. The [tracking design](PASS_PREDICTION.md#planned-tracking)
 and [provisional motor profile](HARDWARE.md#provisional-tracking-profile)
-describe assumptions for future tracking, not measured installation values.
+describe provisional assumptions, not measured installation values.
 
 ## Current hard-coded values
 
@@ -24,7 +25,7 @@ The single source of truth is `HARD_CODED_CALIBRATION` in
 | A0          | elevation     | 0°–90°           | 1281 mV at 0°, 58 mV at 90° |
 | A1          | azimuth       | 0°–360°          | 114 mV at 0°, 2033 mV at 360° |
 
-These checked-in installation values govern manual movement.
+These checked-in installation values govern manual and tracking movement.
 The mapping accepts at most 25 mV of endpoint noise before declaring feedback
 invalid and inhibiting movement.
 
@@ -251,6 +252,16 @@ Measurements can follow initial tracking development; use the documented
 provisional profile for simulation meanwhile. Record actual loaded behavior
 when commissioning hardware, keeping each value separate from its assumption.
 Position endpoints must be measured before extending permitted travel.
+
+Complete the [tracking load check](DEVELOPMENT.md#tracking-execution-load-check)
+with simulated feedback before supervised powered passes. Log predicted and
+actual preparation/recovery times and measured deviation through the whole pass.
+T9's nominal recorded replay recovered within its deadline but took 22.46 s
+against a 12.50 s prediction; its timing-phase and pointing differences must be
+accounted for when establishing the error reserve. The two-second recovery
+planning lead also requires a whole-search board measurement, not only a fast
+individual planning step. Keep recording and RF measurements in the external
+receiver system.
 
 | Measurement | CW | CCW | Up | Down |
 |---|---|---|---|---|

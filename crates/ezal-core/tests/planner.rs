@@ -19,6 +19,9 @@ use std::cell::Cell;
 #[path = "common/tracking_partial.rs"]
 mod partial;
 
+#[path = "common/tracking_plan_acceptance.rs"]
+mod acceptance;
+
 const CAL: PositionCalibration = PositionCalibration {
     azimuth: AxisCalibration {
         angle_min_deg: 0.0,
