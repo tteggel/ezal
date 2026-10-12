@@ -667,14 +667,13 @@ fn ordinary_follower_release_respects_production_minimum_on_and_off_times() {
 
 #[test]
 fn recorded_orbit_replays_through_the_real_actuator_until_los() {
-    use ezal_core::orbit::{Catalog, GroundStation, Observer};
-    let mut catalog = Catalog::new();
-    catalog.update(
-        include_str!("fixtures/weather-2026-10-07.tle"),
-        1_791_385_200,
-    );
-    let orbit = catalog
-        .orbits()
+    use ezal_core::orbit::{GroundStation, Observer, Update};
+    let mut update = Update::new(1_791_385_200);
+    update.push(include_str!("fixtures/weather-2026-10-07.tle").as_bytes());
+    let orbits = update.finish();
+    let orbit = orbits
+        .iter()
+        .flatten()
         .find(|orbit| orbit.satellite.norad_id == 39260)
         .unwrap();
     let station = GroundStation::new(Observer::CLEVEDON).unwrap();

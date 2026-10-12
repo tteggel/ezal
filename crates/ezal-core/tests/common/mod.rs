@@ -6,6 +6,7 @@
 
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
+use ezal_core::catalog::{CompletedOrbitalDownload, OrbitalDownload};
 use ezal_core::duty::{DutyConfig, DutyHistory};
 use ezal_core::feedback::FeedbackSample;
 use ezal_core::interlock::FeedbackInterlock;
@@ -135,4 +136,20 @@ pub fn nominal() -> PlanningConfig {
     config.scenarios.clear();
     config.scenarios.push(Scenario::NOMINAL).unwrap();
     config
+}
+
+/// Frame `body` as a complete Content-Length response and stream it through
+/// the device's download boundary in small reads, staging elements fresh at
+/// `now_unix_s`.
+pub fn download(body: &str, now_unix_s: i64) -> CompletedOrbitalDownload {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let mut download = OrbitalDownload::new(now_unix_s);
+    for bytes in response.as_bytes().chunks(17) {
+        download.push(bytes).unwrap();
+    }
+    assert!(download.is_complete());
+    download.finish().unwrap()
 }

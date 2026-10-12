@@ -25,9 +25,10 @@
 //! runs low or new elements arrive, and a [`Report`] serves only what the
 //! current forecast fully covers.
 
+use crate::catalog::Catalog;
 use crate::orbit::{
-    fresh_epoch, within, Catalog, GroundStation, LookAngle, Observer, ObserverError, Orbit,
-    Satellite, SATELLITES, SATELLITE_COUNT,
+    fresh_epoch, within, GroundStation, LookAngle, Observer, ObserverError, Orbit, Satellite,
+    SATELLITES, SATELLITE_COUNT,
 };
 use core::fmt::{self, Write};
 use heapless::Vec;

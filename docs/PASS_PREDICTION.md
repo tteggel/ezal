@@ -875,7 +875,8 @@ the watchdog. T8 exposes selection and arming through the browser.
 
 ### Current execution-input milestone
 
-T5 adds [`OrbitalDownload`, `OrbitalCatalog` and `ExecutionInputs`](../crates/ezal-core/src/tracking/inputs.rs).
+T5 adds [`OrbitalDownload` and `Catalog`](../crates/ezal-core/src/catalog.rs) and
+[`ExecutionInputs`](../crates/ezal-core/src/tracking/inputs.rs).
 The download wrapper composes the existing bounded HTTP decoder and TLE parser.
 Only a complete framed response can produce a catalog publication; the first
 framing error stays latched. Truncation, timeout or non-200 responses cannot

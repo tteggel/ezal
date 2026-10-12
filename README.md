@@ -62,7 +62,7 @@ embedded Rust.
 │   │       ├── operator.rs        # exclusive leases for the tracking lifecycle
 │   │       ├── ntp.rs             # SNTP validation, uncertainty + revisioned UTC anchor
 │   │       ├── http.rs            # streamed HTTP framing for TLE downloads
-│   │       ├── orbit.rs           # TLE validation, catalog, SGP4 look angles
+│   │       ├── orbit.rs           # TLE validation, SGP4 look angles
 │   │       ├── passes.rs          # pass search, forecasts, /api/passes JSON
 │   │       ├── tracking.rs        # planning, lifecycle, following + offline simulation
 │   │       ├── protocol.rs        # wire parsing and coherent telemetry

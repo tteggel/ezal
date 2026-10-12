@@ -251,16 +251,15 @@ fn future_wait_replenishes_partial_duty_before_preparation_without_simulating_ho
 
 #[test]
 fn recorded_pass_includes_real_sky_error_and_reports_noisy_preparation_failure() {
-    use ezal_core::orbit::{Catalog, GroundStation, Observer};
+    use ezal_core::orbit::{GroundStation, Observer, Update};
     use ezal_core::passes::Track;
     use ezal_core::tracking::EvaluationPhase;
-    let mut catalog = Catalog::new();
-    catalog.update(
-        include_str!("../fixtures/weather-2026-10-07.tle"),
-        1_791_385_200,
-    );
-    let orbit = catalog
-        .orbits()
+    let mut update = Update::new(1_791_385_200);
+    update.push(include_str!("../fixtures/weather-2026-10-07.tle").as_bytes());
+    let orbits = update.finish();
+    let orbit = orbits
+        .iter()
+        .flatten()
         .find(|orbit| orbit.satellite.norad_id == 39260)
         .unwrap();
     let station = GroundStation::new(Observer::CLEVEDON).unwrap();

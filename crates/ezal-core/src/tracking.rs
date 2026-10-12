@@ -35,10 +35,7 @@ pub use deviation::{
     REACQUISITION_LIMIT_MS, REACQUISITION_TOLERANCE_DEG,
 };
 pub use event::{reconcile_event, EventError, EventId, PassEvent, MAX_EVENT_SHIFT_S};
-pub use inputs::{
-    CompletedOrbitalDownload, ExecutionInputs, InputError, InputSettings, OrbitalCatalog,
-    OrbitalDownload, OrbitalPublication, OrbitalSnapshot, OrbitalTransport,
-};
+pub use inputs::{ExecutionInputs, InputError, InputSettings};
 pub use lifecycle::{
     BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
     RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingLifecycle,

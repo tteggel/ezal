@@ -132,7 +132,6 @@ fn recorded_complete_window_executes_its_admitted_reception_then_holds_without_a
     // short fragment of a longer pass.
     let catalog = catalog();
     let orbit = catalog
-        .catalog()
         .orbits()
         .find(|o| o.satellite.norad_id == FULL_EVENT.norad_id)
         .unwrap();

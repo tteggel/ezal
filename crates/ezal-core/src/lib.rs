@@ -18,8 +18,9 @@
 //!
 //! [`ads1015`] models ADC registers and decoding; [`wifi`] contains credential
 //! validation and reconnect timing. Advisory prediction is separate: [`ntp`]
-//! supplies a revisioned UTC anchor and error estimate, [`http`] frames streamed downloads, and
-//! [`orbit`]/[`passes`] validate elements and calculate reception windows.
+//! supplies a revisioned UTC anchor and error estimate, [`http`] frames streamed downloads,
+//! [`orbit`] validates elements, [`catalog`] publishes them, and [`passes`] calculates
+//! reception windows.
 //! [`tracking`] supplies bounded planning, a device-owned lifecycle, following
 //! and offline simulation. Its execution-input boundary owns orbital/clock
 //! snapshots and enforces source/timing/network validity. [`operator`] supplies
@@ -39,6 +40,7 @@ mod test_support;
 
 pub mod actuator;
 pub mod ads1015;
+pub mod catalog;
 pub mod coordination;
 pub mod dashboard;
 pub mod drive;

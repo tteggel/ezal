@@ -1,180 +1,15 @@
-//! Owned, validated orbital inputs. HTTP is an explicit installation decision,
-//! not an authentication claim; only the device download task publishes data.
+//! Owned, validated execution inputs: the orbital, observer and clock snapshot
+//! one plan is built and executed against. Elements come only from
+//! [`crate::catalog`] publications.
 
 use super::{
     ExecutionClock, PlanTicket, PlanningConfig, PlanningWindow, TimingError, TimingPolicy,
     TrackingPlan,
 };
-use crate::http;
+use crate::catalog::OrbitalSnapshot;
 use crate::ntp::UtcClock;
-use crate::orbit::{
-    Catalog, GroundStation, LookAngle, Observer, Orbit, Update, MAX_FUTURE_EPOCH_S, MAX_TLE_AGE_S,
-    SATELLITE_COUNT,
-};
+use crate::orbit::{GroundStation, LookAngle, Observer, MAX_FUTURE_EPOCH_S, MAX_TLE_AGE_S};
 use crate::passes::Ephemeris;
-
-/// Provenance of accepted orbital data. The current installation accepts the
-/// network-tampering risk of CelesTrak's unauthenticated HTTP feed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OrbitalTransport {
-    /// Complete, framed HTTP response from the configured CelesTrak endpoint.
-    CelestrakHttp,
-}
-
-/// Bounded HTTP framing and TLE staging in one publication boundary. A partial
-/// or failed response cannot produce the value required by `OrbitalCatalog`.
-pub struct OrbitalDownload {
-    response: http::Response,
-    update: Update,
-    failure: Option<http::Error>,
-}
-
-/// Complete, successfully framed response; element validation is still applied
-/// by the catalog. This proves framing, not authentication or orbital accuracy.
-pub struct CompletedOrbitalDownload(Update);
-
-impl OrbitalDownload {
-    /// Start one download using the device's validated current UTC.
-    pub fn new(now_unix_s: i64) -> Self {
-        Self {
-            response: http::Response::new(),
-            update: Update::new(now_unix_s),
-            failure: None,
-        }
-    }
-    /// Stream socket bytes with arbitrary read boundaries. The first error is
-    /// latched, so calling finish after a decoding failure cannot publish data.
-    pub fn push(&mut self, bytes: &[u8]) -> Result<(), http::Error> {
-        if let Some(error) = self.failure {
-            return Err(error);
-        }
-        if let Err(error) = self.response.feed(bytes, |body| self.update.push(body)) {
-            self.failure = Some(error);
-            return Err(error);
-        }
-        Ok(())
-    }
-    /// Content-Length/chunked message completed; close-delimited requires EOF.
-    pub fn is_complete(&self) -> bool {
-        self.failure.is_none() && self.response.is_done()
-    }
-    /// Finish at validated framing completion or socket EOF, never on timeout.
-    pub fn finish(self) -> Result<CompletedOrbitalDownload, http::Error> {
-        if let Some(error) = self.failure {
-            return Err(error);
-        }
-        self.response.finish()?;
-        Ok(CompletedOrbitalDownload(self.update))
-    }
-}
-
-/// Download metadata retained with the exact accepted element set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct OrbitalPublication {
-    /// Device-owned publication identity; failed/older updates do not advance it.
-    pub revision: u64,
-    /// Original monotonic completion instant, never renewed by reading a cache.
-    pub received_at_ms: u64,
-    /// Source channel, not an assertion of cryptographic authenticity.
-    pub transport: OrbitalTransport,
-}
-
-/// An owned element set with publication metadata. No mutable orbit accessor
-/// allows a caller to change the epoch while retaining its SGP4 constants.
-#[derive(Clone, Debug)]
-pub struct OrbitalSnapshot {
-    orbit: Orbit,
-    publication: OrbitalPublication,
-}
-
-impl OrbitalSnapshot {
-    /// Stable catalog number, independent of row order or feed names.
-    pub fn norad_id(&self) -> u64 {
-        self.orbit.satellite.norad_id
-    }
-    /// Fractional epoch, used for age rather than the time of download.
-    pub const fn epoch_unix_s(&self) -> f64 {
-        self.orbit.epoch_unix_s
-    }
-    /// Metadata of the exact download that supplied these elements.
-    pub const fn publication(&self) -> OrbitalPublication {
-        self.publication
-    }
-}
-
-/// A catalog whose entries can be captured for execution. Ordinary advisory
-/// `Catalog` values cannot be relabeled as execution snapshots. The firmware
-/// calls `commit` only after the bounded HTTP decoder completes successfully.
-pub struct OrbitalCatalog {
-    catalog: Catalog,
-    publications: [Option<OrbitalPublication>; SATELLITE_COUNT],
-    revision: u64,
-    received_at_ms: Option<u64>,
-}
-
-impl Default for OrbitalCatalog {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl OrbitalCatalog {
-    /// Boot without persisted or implicitly trusted elements.
-    pub const fn new() -> Self {
-        Self {
-            catalog: Catalog::new(),
-            publications: [None; SATELLITE_COUNT],
-            revision: 0,
-            received_at_ms: None,
-        }
-    }
-    /// Publish a completed HTTP download. Validation and non-regressive epoch
-    /// replacement share the advisory catalog's parser. Unusable entries leave
-    /// both the old orbit and its old metadata untouched.
-    pub fn commit(
-        &mut self,
-        mut download: CompletedOrbitalDownload,
-        received_at_ms: u64,
-    ) -> Result<usize, InputError> {
-        if self.received_at_ms.is_some_and(|old| received_at_ms < old) {
-            return Err(InputError::SourceOrder);
-        }
-        let revision = self
-            .revision
-            .checked_add(1)
-            .ok_or(InputError::SourceOrder)?;
-        let mask = self.catalog.commit_mask(&mut download.0);
-        if mask == 0 {
-            return Ok(0);
-        }
-        self.revision = revision;
-        self.received_at_ms = Some(received_at_ms);
-        for (index, publication) in self.publications.iter_mut().enumerate() {
-            if mask & (1 << index) != 0 {
-                *publication = Some(OrbitalPublication {
-                    revision,
-                    received_at_ms,
-                    transport: OrbitalTransport::CelestrakHttp,
-                });
-            }
-        }
-        Ok(mask.count_ones() as usize)
-    }
-    /// Reuse the same accepted elements for the forecast without copying them.
-    pub const fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-    /// Capture one satellite's immutable elements and original publication.
-    pub fn snapshot(&self, norad_id: u64) -> Option<OrbitalSnapshot> {
-        (0..SATELLITE_COUNT).find_map(|index| {
-            let orbit = self.catalog.orbit(index)?;
-            (orbit.satellite.norad_id == norad_id).then(|| OrbitalSnapshot {
-                orbit: orbit.clone(),
-                publication: self.publications[index].expect("accepted slot has publication"),
-            })
-        })
-    }
-}
 
 /// Input rejection, suitable for both a blocked preview and a terminal run reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,7 +18,7 @@ pub enum InputError {
     MissingOrbit,
     /// Orbital epoch cannot support the whole window plus the timing allowance.
     StaleOrbit,
-    /// Download completion predates an already accepted publication or this boot.
+    /// The snapshot's download completed after the current uptime.
     SourceOrder,
     /// Invalid station coordinates.
     Observer,
@@ -255,7 +90,7 @@ impl ExecutionInputs {
             .ok_or(InputError::Binding)? as f64
             / 1000.0;
         if ticket.pass().norad_id != orbit.norad_id()
-            || ticket.revisions().orbit != orbit.publication.revision
+            || ticket.revisions().orbit != orbit.publication().revision
             || ticket.revisions().clock != anchor.revision()
             || config.preparation_timing != ticket.preparation_timing()
             || !window.aos_unix_s.is_finite()
@@ -326,7 +161,7 @@ impl ExecutionInputs {
         self.validate_orbit(now_ms)
     }
     fn validate_orbit(&self, now_ms: u64) -> Result<(), InputError> {
-        if now_ms < self.orbit.publication.received_at_ms {
+        if now_ms < self.orbit.publication().received_at_ms {
             return Err(InputError::SourceOrder);
         }
         let now = self.clock.unix_s(now_ms)?;
@@ -359,6 +194,6 @@ impl Ephemeris for ExecutionInputs {
         if !unix_s.is_finite() || unix_s < self.window.aos_unix_s || unix_s > end {
             return None;
         }
-        self.orbit.orbit.look_at(&self.station, unix_s)
+        self.orbit.orbit().look_at(&self.station, unix_s)
     }
 }

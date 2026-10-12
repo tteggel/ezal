@@ -3,10 +3,12 @@
 mod common;
 
 use common::{
-    full_travel_installed, full_travel_sample, nominal, resting_start, FULL_TRAVEL_CALIBRATION,
+    download, full_travel_installed, full_travel_sample, nominal, resting_start,
+    FULL_TRAVEL_CALIBRATION,
 };
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
+use ezal_core::catalog::{Catalog, OrbitalDownload, SourceOrder};
 use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
 use ezal_core::duty::{DutyConfig, DutyHistory};
 use ezal_core::feedback::{FeedbackSample, FeedbackSnapshot};
@@ -65,20 +67,8 @@ fn observation(at: u64) -> RuntimeObservation {
         network,
     }
 }
-fn download(body: &str, now: i64) -> CompletedOrbitalDownload {
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    let mut download = OrbitalDownload::new(now);
-    for bytes in response.as_bytes().chunks(17) {
-        download.push(bytes).unwrap();
-    }
-    assert!(download.is_complete());
-    download.finish().unwrap()
-}
-fn catalog() -> OrbitalCatalog {
-    let mut catalog = OrbitalCatalog::new();
+fn catalog() -> Catalog {
+    let mut catalog = Catalog::new();
     assert_eq!(
         catalog
             .commit(download(TLES, (UTC / 1000) as i64), 2000)
@@ -120,7 +110,7 @@ fn selected(event: PassEvent, observation: RuntimeObservation) -> (TrackingRunti
 }
 fn capture(
     runtime: &TrackingRuntime,
-    catalog: &OrbitalCatalog,
+    catalog: &Catalog,
     current: UtcClock,
     aos_utc: u64,
     los_utc: u64,
@@ -232,10 +222,6 @@ fn command(at: u64) -> CommandEnvelope {
 fn framed_downloads_are_atomic_and_failed_older_or_malformed_updates_retain_metadata() {
     let mut catalog = catalog();
     let before = catalog.snapshot(EVENT.norad_id).unwrap();
-    assert_eq!(
-        before.publication().transport,
-        OrbitalTransport::CelestrakHttp
-    );
     let mut truncated = OrbitalDownload::new((UTC / 1000) as i64);
     truncated
         .push(
@@ -266,7 +252,7 @@ fn framed_downloads_are_atomic_and_failed_older_or_malformed_updates_retain_meta
     );
     assert_eq!(
         catalog.commit(download(TLES, (UTC / 1000) as i64), 1999),
-        Err(InputError::SourceOrder)
+        Err(SourceOrder)
     );
     assert_eq!(
         catalog.snapshot(EVENT.norad_id).unwrap().publication(),
@@ -614,7 +600,7 @@ fn device_outage_expired_network_observation_and_recovered_generation_stop_the_r
 
 #[test]
 fn missing_clock_invalid_input_reports_and_reboot_remain_disarmed() {
-    assert!(OrbitalCatalog::new().snapshot(EVENT.norad_id).is_none());
+    assert!(Catalog::new().snapshot(EVENT.norad_id).is_none());
     let mut boot = TrackingRuntime::new();
     boot.service(observation(AOS)).unwrap();
     assert_eq!(boot.snapshot().mode, TrackingMode::Manual);

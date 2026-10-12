@@ -194,13 +194,8 @@ fn device_prepares_follows_and_finishes_after_browser_disconnect_under_backgroun
     }
     let catalog = catalog();
     let station = ezal_core::orbit::GroundStation::new(Observer::CLEVEDON).unwrap();
-    let mut prediction = Job::new(
-        catalog.catalog(),
-        &station,
-        Config::DEFAULT,
-        (UTC / 1000) as i64,
-    )
-    .unwrap();
+    let mut prediction =
+        Job::new(&catalog, &station, Config::DEFAULT, (UTC / 1000) as i64).unwrap();
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{TLES}",
         TLES.len()
