@@ -28,10 +28,7 @@ use ezal_core::protocol::{
 use ezal_core::session::{CommandFreshness, LeaseHeartbeat, TELEMETRY_PERIOD_MS};
 
 use crate::state::{SharedState, STATE};
-
-#[path = "ws_receive.rs"]
-mod ws_receive;
-use ws_receive::{ReceiveError, ReceiveEvent};
+use crate::ws_receive::{self, ReceiveError, ReceiveEvent};
 
 /// picoserve server configuration.
 ///

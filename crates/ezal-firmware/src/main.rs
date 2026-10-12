@@ -18,6 +18,7 @@ mod tracking;
 mod watchdog;
 mod web;
 mod wifi;
+mod ws_receive;
 
 // ─── imports ────────────────────────────────────────────────────────────
 use cyw43::NetDriver;
