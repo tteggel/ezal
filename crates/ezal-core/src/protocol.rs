@@ -10,7 +10,9 @@ use crate::coordination::TelemetrySnapshot;
 use core::fmt;
 
 mod tracking;
-pub use tracking::{TrackingIntent, TrackingRejection, TrackingReply, TrackingTelemetry};
+pub use tracking::{
+    TrackingIntent, TrackingRejection, TrackingReply, TrackingTelemetry, TRACKING_REPLY_CAPACITY,
+};
 
 use crate::coordination::ControlStatus;
 use crate::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
@@ -22,6 +24,9 @@ pub const WS_PATH: &str = "/ws";
 
 /// WebSocket message used by a viewer to become the controller.
 pub const TAKE_CONTROL_MESSAGE: &str = "control:take";
+
+/// Server message that clears the browser's held input; motion needs a new press.
+pub const INPUT_REQUIRED_MESSAGE: &str = "{\"type\":\"input_required\"}";
 
 /// Fixed acknowledgement buffer, including maximum-width duty counters.
 pub const CONTROL_STATUS_CAPACITY: usize = 320;

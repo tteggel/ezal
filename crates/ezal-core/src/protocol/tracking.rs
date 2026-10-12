@@ -145,6 +145,10 @@ pub enum TrackingRejection {
     Rejected(RuntimeError),
 }
 
+/// Fixed acknowledgement buffer: maximum-width identifiers and the longest
+/// rejection need 140 bytes.
+pub const TRACKING_REPLY_CAPACITY: usize = 192;
+
 /// Acknowledgement is correlated with intent, and never renews observation age.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrackingReply {

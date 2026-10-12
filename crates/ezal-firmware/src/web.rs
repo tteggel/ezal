@@ -23,7 +23,8 @@ use ezal_core::drive::Command;
 use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::passes::Report;
 use ezal_core::protocol::{
-    ClientMessage, TelemetryMessage, CONTROL_STATUS_CAPACITY, TELEMETRY_CAPACITY, WS_PATH,
+    ClientMessage, TelemetryMessage, CONTROL_STATUS_CAPACITY, INPUT_REQUIRED_MESSAGE,
+    TELEMETRY_CAPACITY, TRACKING_REPLY_CAPACITY, WS_PATH,
 };
 use ezal_core::session::{CommandFreshness, LeaseHeartbeat, TELEMETRY_PERIOD_MS};
 
@@ -187,6 +188,19 @@ async fn send_control_status<W: PicoserveWrite>(
     Ok(())
 }
 
+/// Inhibit this client's motion and clear the browser hold too: a newly issued
+/// token must not turn a timer refresh into a new operator press after this
+/// rejection. Returns whether the inhibit signaled the actuator.
+async fn reject_input<W: PicoserveWrite>(
+    tx: &mut SocketTx<W>,
+    state: &'static SharedState,
+    client_id: u32,
+) -> Result<bool, SocketError<W::Error>> {
+    let signaled = state.accept_command(client_id, CommandEnvelope::INHIBIT);
+    tx.send_text(INPUT_REQUIRED_MESSAGE).await?;
+    Ok(signaled)
+}
+
 /// Send one observation with its proof. Acknowledgements do not issue proofs.
 async fn send_telemetry<W: PicoserveWrite>(
     tx: &mut SocketTx<W>,
@@ -326,7 +340,7 @@ impl DashboardSocket {
                         Some(ClientMessage::TakeControl) => {
                             freshness.reject();
                             state.take_control(client_id);
-                            tx.send_text("{\"type\":\"input_required\"}").await?;
+                            tx.send_text(INPUT_REQUIRED_MESSAGE).await?;
                             true
                         }
                         Some(ClientMessage::Stop) => {
@@ -338,7 +352,7 @@ impl DashboardSocket {
                             let reply = state.request_tracking(client_id, intent, &freshness);
                             // Release the executor before formatting or waiting on a reader.
                             yield_now().await;
-                            let mut payload: String<320> = String::new();
+                            let mut payload: String<TRACKING_REPLY_CAPACITY> = String::new();
                             reply
                                 .write_json(&mut payload)
                                 .map_err(|_| SocketError::Encoding)?;
@@ -356,21 +370,12 @@ impl DashboardSocket {
                                     },
                                 )
                             } else {
-                                let signaled =
-                                    state.accept_command(client_id, CommandEnvelope::INHIBIT);
-                                // Clear the browser hold too; a newly issued
-                                // token must not turn a timer refresh into a
-                                // new operator press after this rejection.
-                                tx.send_text("{\"type\":\"input_required\"}").await?;
-                                signaled
+                                reject_input(&mut tx, state, client_id).await?
                             }
                         }
                         None => {
                             freshness.reject();
-                            let signaled =
-                                state.accept_command(client_id, CommandEnvelope::INHIBIT);
-                            tx.send_text("{\"type\":\"input_required\"}").await?;
-                            signaled
+                            reject_input(&mut tx, state, client_id).await?
                         }
                     };
 
