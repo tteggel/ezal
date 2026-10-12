@@ -11,9 +11,9 @@ use ezal_core::orbit::LookAngle;
 use ezal_core::passes::Ephemeris;
 use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
 use ezal_core::tracking::{
-    AdmissionPolicy, CandidateFailure, FollowingController, MotorProfile, Planner, PlanningConfig,
-    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, RestingStart, RouteKind,
-    Scenario, Simulation, SimulationError, SimulationSettings, MAX_PLANNING_STEPS,
+    CandidateFailure, FollowingController, MotorProfile, Planner, PlanningConfig, PlanningError,
+    PlanningReport, PlanningWindow, PreparationTiming, RestingStart, RouteKind, Scenario,
+    Simulation, SimulationError, SimulationSettings, MAX_PLANNING_STEPS, PARTIAL_ADMISSION_LEAD_MS,
 };
 use std::cell::Cell;
 
@@ -79,10 +79,7 @@ fn snapshot(cal: PositionCalibration, pose: Pointing, used: [u64; 2]) -> Resting
 }
 
 fn nominal() -> PlanningConfig {
-    let mut config = PlanningConfig {
-        admission: AdmissionPolicy::CompleteOnly,
-        ..PlanningConfig::default()
-    };
+    let mut config = PlanningConfig::default();
     config.scenarios.clear();
     config.scenarios.push(Scenario::NOMINAL).unwrap();
     config
@@ -100,7 +97,7 @@ fn run<E: Ephemeris>(mut planner: Planner<E>) -> PlanningReport {
     while !planner.is_finished() {
         planner.step().unwrap();
     }
-    let report = planner.into_report().unwrap();
+    let report = planner.take_report().unwrap();
     assert!(report.work_steps <= MAX_PLANNING_STEPS);
     assert!((1..=48).contains(&(report.evaluated_candidates + report.geometry_rejections)));
     report
@@ -205,7 +202,7 @@ fn azimuth_wrap_is_a_continuous_overlap_and_each_step_has_at_most_one_propagatio
         planner.step().unwrap();
         assert!(calls.get() - before <= 1);
     }
-    let report = planner.into_report().unwrap();
+    let report = planner.take_report().unwrap();
     let plan = report
         .plan
         .unwrap_or_else(|| panic!("{:?}", report.closest_attempt));
@@ -269,18 +266,18 @@ fn insufficient_lead_time_and_already_started_passes_cannot_claim_full_support()
     };
     let start = snapshot(CAL, Pointing::new(100.0, 10.0), [0, 0]);
     let mut time = window(10_000);
-    time.aos_at_ms = 2500;
-    let report = run(Planner::new(source, time, CAL, start, nominal()).unwrap());
-    assert!(report.plan.is_none());
-    assert_eq!(
-        report.closest_attempt.unwrap().failure,
-        Some(CandidateFailure::LatePreparation)
-    );
-    time.aos_at_ms = 1999;
-    assert!(matches!(
-        Planner::new(source, time, CAL, start, nominal()),
-        Err(PlanningError::PassAlreadyStarted)
-    ));
+    for aos_at_ms in [2500, 1999] {
+        time.aos_at_ms = aos_at_ms;
+        let report = run(Planner::new(source, time, CAL, start, nominal()).unwrap());
+        assert!(report.plan.is_none());
+        // Only a late intercept at the fixed entry remains, and none reaches the target.
+        let attempt = report.closest_attempt.unwrap();
+        assert_eq!(
+            attempt.prepare_at_ms,
+            start.at_ms + PARTIAL_ADMISSION_LEAD_MS
+        );
+        assert_eq!(attempt.failure, Some(CandidateFailure::NoRecovery));
+    }
 }
 
 #[test]
@@ -410,15 +407,8 @@ fn prepare_now_does_not_borrow_future_rest_and_can_hold_after_readiness() {
 }
 
 #[test]
-fn cancellation_and_bad_sources_never_publish_partial_results() {
+fn bad_sources_never_publish_partial_results() {
     let start = snapshot(CAL, Pointing::new(180.0, 10.0), [0, 0]);
-    let mut planner = Planner::new(zenith, window(600_000), CAL, start, nominal()).unwrap();
-    for _ in 0..2000 {
-        planner.step().unwrap();
-    }
-    planner.cancel();
-    assert_eq!(planner.step(), Err(PlanningError::Cancelled));
-    assert_eq!(planner.into_report(), Err(PlanningError::Cancelled));
     for source in [
         |_: f64| None,
         |_: f64| {
@@ -430,7 +420,7 @@ fn cancellation_and_bad_sources_never_publish_partial_results() {
     ] {
         let mut planner = Planner::new(source, window(1000), CAL, start, nominal()).unwrap();
         assert_eq!(planner.step(), Err(PlanningError::Source));
-        assert_eq!(planner.into_report(), Err(PlanningError::Source));
+        assert_eq!(planner.take_report(), Err(PlanningError::Source));
     }
     let source = |t: f64| {
         Some(LookAngle {
@@ -444,7 +434,7 @@ fn cancellation_and_bad_sources_never_publish_partial_results() {
 }
 
 #[test]
-fn route_storage_exhaustion_is_explicit_and_cancellable() {
+fn route_storage_exhaustion_is_explicit() {
     let source = |_: f64| {
         Some(LookAngle {
             azimuth_deg: 180.0,
@@ -465,7 +455,7 @@ fn route_storage_exhaustion_is_explicit_and_cancellable() {
         }
     };
     assert_eq!(error, PlanningError::RouteCapacity);
-    assert_eq!(planner.into_report(), Err(PlanningError::RouteCapacity));
+    assert_eq!(planner.take_report(), Err(PlanningError::RouteCapacity));
     assert!(std::mem::size_of::<Planner<fn(f64) -> Option<LookAngle>>>() < 90_000);
 }
 

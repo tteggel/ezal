@@ -205,7 +205,7 @@ fn report(inputs: &ExecutionInputs) -> PlanningReport {
             while !planner.is_finished() {
                 planner.step().unwrap();
             }
-            let report = planner.into_report().unwrap();
+            let report = planner.take_report().unwrap();
             assert!(
                 report.plan.is_some(),
                 "fixture must be feasible: {:?}",

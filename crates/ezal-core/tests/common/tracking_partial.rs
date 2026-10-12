@@ -65,7 +65,7 @@ fn keyhole(t: f64) -> Option<LookAngle> {
     })
 }
 
-fn gap_report(source: impl Ephemeris, admission: AdmissionPolicy) -> PlanningReport {
+fn gap_report(source: impl Ephemeris) -> PlanningReport {
     let mut cal = CAL;
     cal.elevation.angle_max_deg = 90.0;
     run(Planner::new(
@@ -73,20 +73,14 @@ fn gap_report(source: impl Ephemeris, admission: AdmissionPolicy) -> PlanningRep
         window(90_000),
         cal,
         snapshot(cal, Pointing::new(120.0, 80.0), [1000; 2]),
-        PlanningConfig {
-            admission,
-            ..nominal()
-        },
+        nominal(),
     )
     .unwrap())
 }
 
 #[test]
 fn predicted_keyhole_gap_requires_a_new_recovery_trajectory_with_supported_prefix_and_suffix() {
-    let diagnostic = gap_report(keyhole, AdmissionPolicy::CompleteOnly);
-    assert!(diagnostic.plan.is_none());
-    assert!(diagnostic.closest_attempt.unwrap().gap_time_ms > 0);
-    let report = gap_report(keyhole, AdmissionPolicy::AllowPartial);
+    let report = gap_report(keyhole);
     let plan = report.plan.as_ref().unwrap_or_else(|| panic!("{report:?}"));
     let gap = plan
         .reception()
@@ -116,14 +110,11 @@ fn predicted_keyhole_gap_requires_a_new_recovery_trajectory_with_supported_prefi
 fn expired_short_exhausted_and_separated_gap_passes_remain_unsupported() {
     assert!(late_plan(1000, [0; 2], 8000).plan.is_none());
     assert!(late_plan(1000, [300_000; 2], 90_000).plan.is_none());
-    let report = gap_report(
-        |t| {
-            let mut look = keyhole(t)?;
-            look.azimuth_deg += (t - 65.0).clamp(0.0, 6.0) * 10.0;
-            Some(look)
-        },
-        AdmissionPolicy::AllowPartial,
-    );
+    let report = gap_report(|t| {
+        let mut look = keyhole(t)?;
+        look.azimuth_deg += (t - 65.0).clamp(0.0, 6.0) * 10.0;
+        Some(look)
+    });
     assert!(
         report.plan.is_none(),
         "two separated recoveries are outside this finite search"
@@ -140,19 +131,6 @@ fn expired_short_exhausted_and_separated_gap_passes_remain_unsupported() {
             PlanningConfig::default()
         ),
         Err(PlanningError::PassEnded)
-    ));
-    assert!(matches!(
-        Planner::new(
-            fixed,
-            PlanningWindow {
-                aos_at_ms: 1000,
-                ..window(90_000)
-            },
-            CAL,
-            snapshot(CAL, Pointing::new(180.0, 40.0), [0; 2]),
-            nominal()
-        ),
-        Err(PlanningError::PassAlreadyStarted)
     ));
 }
 
@@ -266,7 +244,7 @@ fn late_preview_requires_explicit_arming_and_freezes_at_its_fixed_entry() {
 
 #[test]
 fn planned_gap_interrupts_queued_following_and_only_the_current_controller_can_cancel() {
-    let report = gap_report(keyhole, AdmissionPolicy::AllowPartial);
+    let report = gap_report(keyhole);
     let plan = report.plan.as_ref().unwrap();
     let gap = plan.reception().gap().unwrap();
     let prep = plan.assessment.prepare_at_ms;
@@ -336,7 +314,6 @@ fn late_publication_and_inconsistent_partial_claims_are_rejected() {
         |plan: &mut TrackingPlan| plan.assessment.gaps.clear(),
         |plan: &mut TrackingPlan| plan.assessment.gap_time_ms = 0,
         |plan: &mut TrackingPlan| plan.assessment.completed_scenarios -= 1,
-        |plan: &mut TrackingPlan| plan.config.admission = AdmissionPolicy::CompleteOnly,
         |plan: &mut TrackingPlan| plan.assessment.prepare_at_ms += 1,
     ] {
         let mut invalid = report.clone();
@@ -350,54 +327,47 @@ fn late_publication_and_inconsistent_partial_claims_are_rejected() {
 }
 
 #[test]
-fn partial_work_yields_and_cancellation_or_later_source_failure_discards_it() {
-    for cancel in [true, false] {
-        let calls = Cell::new(0);
-        let fail = Cell::new(false);
-        let source = |t| {
-            calls.set(calls.get() + 1);
-            if fail.get() {
-                None
-            } else {
-                fixed(t)
-            }
-        };
-        let mut planner = Planner::new(
-            source,
-            PlanningWindow {
-                aos_at_ms: 1000,
-                ..window(90_000)
-            },
-            CAL,
-            snapshot(CAL, Pointing::new(180.0, 40.0), [0; 2]),
-            PlanningConfig::default(),
-        )
-        .unwrap();
-        for _ in 0..2000 {
-            let before = calls.get();
-            planner.step().unwrap();
-            assert!(calls.get() - before <= 1);
-            assert!(!planner.is_finished());
-        }
-        if cancel {
-            planner.cancel();
-            assert_eq!(planner.into_report(), Err(PlanningError::Cancelled));
+fn partial_work_yields_and_later_source_failure_discards_it() {
+    let calls = Cell::new(0);
+    let fail = Cell::new(false);
+    let source = |t| {
+        calls.set(calls.get() + 1);
+        if fail.get() {
+            None
         } else {
-            fail.set(true);
-            let error = loop {
-                if let Err(error) = planner.step() {
-                    break error;
-                }
-            };
-            assert_eq!(error, PlanningError::Source);
-            assert_eq!(planner.into_report(), Err(error));
+            fixed(t)
         }
+    };
+    let mut planner = Planner::new(
+        source,
+        PlanningWindow {
+            aos_at_ms: 1000,
+            ..window(90_000)
+        },
+        CAL,
+        snapshot(CAL, Pointing::new(180.0, 40.0), [0; 2]),
+        PlanningConfig::default(),
+    )
+    .unwrap();
+    for _ in 0..2000 {
+        let before = calls.get();
+        planner.step().unwrap();
+        assert!(calls.get() - before <= 1);
+        assert!(!planner.is_finished());
     }
+    fail.set(true);
+    let error = loop {
+        if let Err(error) = planner.step() {
+            break error;
+        }
+    };
+    assert_eq!(error, PlanningError::Source);
+    assert_eq!(planner.take_report(), Err(error));
 }
 
 #[test]
 fn a_planned_gap_cannot_extend_an_earlier_recovery_episode() {
-    let report = gap_report(keyhole, AdmissionPolicy::AllowPartial);
+    let report = gap_report(keyhole);
     let plan = report.plan.as_ref().unwrap();
     let gap = plan.reception().gap().unwrap();
     let prep = plan.assessment.prepare_at_ms;

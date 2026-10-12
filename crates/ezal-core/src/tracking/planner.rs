@@ -3,8 +3,8 @@
 
 use super::route::{self, Bridge, Knot, Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
 use super::{
-    pointing_deviation_deg, AdmissionPolicy, FollowingController, MotorProfile, ReceptionCoverage,
-    RestingStart, Scenario, Simulation, SimulationError, SimulationSettings, TrackingTarget,
+    pointing_deviation_deg, FollowingController, MotorProfile, ReceptionCoverage, RestingStart,
+    Scenario, Simulation, SimulationError, SimulationSettings, TrackingTarget,
 };
 use crate::passes::Ephemeris;
 use crate::position::{Pointing, PositionCalibration};
@@ -48,8 +48,6 @@ pub enum PreparationTiming {
 /// Explicit planning assumptions, frozen with a supported route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanningConfig {
-    /// Complete support is preferred; partial support requires recovery validation.
-    pub admission: AdmissionPolicy,
     /// Starting early needs its own duty/relay evaluation, not a schedule override.
     pub preparation_timing: PreparationTiming,
     /// Total operational pointing target (provisional default 3°).
@@ -79,7 +77,6 @@ impl Default for PlanningConfig {
         let slow = MotorProfile::AC_SLOW;
         let fast = MotorProfile::AC_FAST;
         Self {
-            admission: AdmissionPolicy::AllowPartial,
             preparation_timing: PreparationTiming::Scheduled,
             tolerance_deg: 3.0,
             uncertainty_deg: 1.0,
@@ -165,8 +162,6 @@ pub enum PlanningError {
     Configuration,
     /// The caller must supply a serviced, settled, fault-free starting snapshot.
     StartingState,
-    /// A complete-only job cannot start after AOS; partial admission was disabled.
-    PassAlreadyStarted,
     /// No future reception remains in the selected original window.
     PassEnded,
     /// Propagation failed or returned a non-finite/out-of-range visible sky direction.
@@ -177,9 +172,7 @@ pub enum PlanningError {
     RouteCapacity,
     /// Search exceeded its hard work bound instead of blocking indefinitely.
     WorkLimit,
-    /// Cancelled work cannot publish or revive an earlier candidate.
-    Cancelled,
-    /// Result requested before all candidates were evaluated.
+    /// No completed result is held: the search is unfinished or its report was already taken.
     Incomplete,
 }
 
@@ -426,9 +419,6 @@ impl<E: Ephemeris> Planner<E> {
         if start.at_ms >= window.aos_at_ms + u64::from(window.duration_ms) {
             return Err(PlanningError::PassEnded);
         }
-        if window.aos_at_ms < start.at_ms && config.admission == AdmissionPolicy::CompleteOnly {
-            return Err(PlanningError::PassAlreadyStarted);
-        }
         let follower =
             FollowingController::new(config.reference, config.deadband_deg, output.relays)
                 .map_err(|_| PlanningError::Configuration)?;
@@ -459,8 +449,7 @@ impl<E: Ephemeris> Planner<E> {
             })?;
         }
         let choice = route::choice(0);
-        let partial_round =
-            start.at_ms >= window.aos_at_ms && config.admission == AdmissionPolicy::AllowPartial;
+        let partial_round = start.at_ms >= window.aos_at_ms;
         Ok(Self {
             source,
             window,
@@ -506,26 +495,9 @@ impl<E: Ephemeris> Planner<E> {
     pub const fn source(&self) -> &E {
         &self.source
     }
-    /// Cancelling invalidates all partial and earlier candidate results.
-    pub fn cancel(&mut self) {
-        self.error = Some(PlanningError::Cancelled);
-        self.sim = None;
-        self.partial = None;
-        self.report.plan = None;
-    }
-    /// Consume the completed result; partial work never becomes a supported plan.
-    pub fn into_report(self) -> Result<PlanningReport, PlanningError> {
-        if let Some(error) = self.error {
-            Err(error)
-        } else if self.phase != Phase::Complete {
-            Err(PlanningError::Incomplete)
-        } else {
-            Ok(self.report)
-        }
-    }
-    /// Move out a completed report without moving the large planner workspace.
-    /// Useful for a statically stored embedded worker. A second extraction is
-    /// rejected; partial work is never published as success.
+    /// Move out the completed report without moving the large planner workspace.
+    /// A failed job returns its error, an unfinished or already-taken one
+    /// [`PlanningError::Incomplete`]; partial work is never published as success.
     pub fn take_report(&mut self) -> Result<PlanningReport, PlanningError> {
         if let Some(error) = self.error {
             return Err(error);
@@ -639,10 +611,7 @@ impl<E: Ephemeris> Planner<E> {
         self.scenario = 0;
         self.route.points.clear();
         if self.candidate == route::CANDIDATES {
-            if self.report.plan.is_none()
-                && !self.partial_round
-                && self.config.admission == AdmissionPolicy::AllowPartial
-            {
+            if self.report.plan.is_none() && !self.partial_round {
                 self.partial_round = true;
                 self.candidate = 0;
             } else {

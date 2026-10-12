@@ -117,7 +117,7 @@ fn report(timing: PreparationTiming) -> PlanningReport {
             while !planner.is_finished() {
                 planner.step().unwrap();
             }
-            let report = planner.into_report().unwrap();
+            let report = planner.take_report().unwrap();
             assert!(report.plan.is_some());
             report
         })

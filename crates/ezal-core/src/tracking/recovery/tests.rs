@@ -104,7 +104,7 @@ fn plan() -> TrackingPlan {
         while !planner.is_finished() {
             planner.step().unwrap();
         }
-        planner.into_report().unwrap().plan.unwrap()
+        planner.take_report().unwrap().plan.unwrap()
     })
     .clone()
 }

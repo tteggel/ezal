@@ -51,9 +51,7 @@ pub use planner::{
     PlanningError, PlanningReport, PlanningWindow, PreparationTiming, TrackingPlan, MAX_GAPS,
     MAX_PLANNING_STEPS, MAX_SCENARIOS,
 };
-pub use reception::{
-    AdmissionPolicy, ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS,
-};
+pub use reception::{ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS};
 pub use recovery::{
     RecoveryHold, RecoveryStatus, INTERCEPT_GRID_MS, INTERCEPT_PLANNING_LEAD_MS, INTERCEPT_RETRY_MS,
 };

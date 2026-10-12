@@ -179,7 +179,7 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
     while !planner.is_finished() {
         planner.step().unwrap();
     }
-    let report = planner.into_report().unwrap();
+    let report = planner.take_report().unwrap();
     let plan = report.plan.as_ref().unwrap_or_else(|| panic!("{report:?}"));
     let coverage = plan.reception();
     let gap = coverage.gap().unwrap();

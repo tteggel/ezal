@@ -747,8 +747,8 @@ recovers a frozen run and handles preparation that misses AOS. T6a adds a
 separate partial-reception claim only after validating a bounded recovery and
 the remaining window; unsupported diagnostic attempts still cannot authorize
 movement. Complete reception is preferred whenever this search finds it.
-Cancellation or a source/work/storage failure invalidates the entire job,
-including earlier candidates. Exhausting this finite search means no supported
+A source, work or storage failure invalidates the entire job, including
+earlier candidates. Exhausting this finite search means no supported
 route was found, not that every possible physical route is impossible.
 
 The planner stores at most 2,048 route points, nine scenarios and 16 gap
@@ -782,9 +782,9 @@ hardware 180 s duty policy, and 900 s initial rest.
 
 [Planner tests](../crates/ezal-core/tests/planner.rs) exercise full zenith/recorded
 passes, wrap continuity, one-propagation steps, preparation/duty carryover,
-retained relay holds, far-future rest, late starts, cancellation and bounded
-storage. [Controller tests](../crates/ezal-core/tests/tracking.rs) cover plant
-physics, noisy/skewed feedback, relay timing and pulse hysteresis.
+retained relay holds, far-future rest, late starts and bounded storage.
+[Controller tests](../crates/ezal-core/tests/tracking.rs) cover plant physics,
+noisy/skewed feedback, relay timing and pulse hysteresis.
 [Output-policy tests](../crates/ezal-core/tests/output_policy.rs) verify that
 post-release coast can prove progress without forgiving stalls, reversed
 feedback or movement first observed after a long idle.
@@ -1058,8 +1058,7 @@ AOS, LOS and mechanical route, and exposes:
   predicted reception time. The missed interval includes the two-second
   recovery dwell and 500 ms feedback allowance after the latest route join.
 
-`AllowPartial` is the default admission policy; `CompleteOnly` preserves the
-complete-window requirement. The [planner's second search](../crates/ezal-core/src/tracking/planner/partial.rs)
+The [planner's second search](../crates/ezal-core/src/tracking/planner/partial.rs)
 runs only after no complete route qualifies (or selection is already past
 AOS). A nominal failed route does not become supported by changing its label.
 For every starting scenario, the planner replays preparation and the supported
@@ -1077,7 +1076,7 @@ gaps needing additional planned episodes remain unsupported. All complete
 routes are preferred to partial reception; within the partial round the first
 qualifying route wins. The nested work shares the original 20-million-step
 job limit; each step still performs at most one propagation and one simulation
-service. Cancellation and source/work/storage failure discard the whole job.
+service. A source, work or storage failure discards the whole job.
 
 For initial late acquisition, the fixed entry is `max(original AOS, snapshot
 time + 5 s)`. Selection only previews it. Explicit arming allows the device to
@@ -1102,8 +1101,8 @@ a complete-reception claim.
 [Admission tests](../crates/ezal-core/tests/common/tracking_partial.rs) cover
 late starts before/after AOS across all nine default cases, an explicitly
 nominal-profile keyhole gap, complete OTT preference, insufficient remaining
-time/duty, separated gaps, expired/invalid publication, fixed episode deadlines,
-cancellation and one-propagation-per-step yielding. The same keyhole fixture
+time/duty, separated gaps, expired/invalid publication, fixed episode deadlines
+and one-propagation-per-step yielding. The same keyhole fixture
 remains unsupported with all nine default cases because a noisy fast-axis
 case trips motion supervision. Partial admission does not relax that policy.
 The [real-orbit runtime test](../crates/ezal-core/tests/common/tracking_recovery.rs)

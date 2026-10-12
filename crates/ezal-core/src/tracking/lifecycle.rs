@@ -5,9 +5,8 @@
 
 use super::mailbox::CommandMailbox;
 use super::{
-    reconcile_event, AdmissionPolicy, CandidateFailure, EventError, EventId, InputError, PassEvent,
-    PlanningError, PlanningReport, PreparationTiming, ReceptionCoverage, TrackingPlan,
-    REACQUISITION_LIMIT_MS,
+    reconcile_event, CandidateFailure, EventError, EventId, InputError, PassEvent, PlanningError,
+    PlanningReport, PreparationTiming, ReceptionCoverage, TrackingPlan, REACQUISITION_LIMIT_MS,
 };
 use crate::drive::{Command, CommandEnvelope, MOVEMENT_LEASE_MS};
 use crate::feedback::FeedbackHealth;
@@ -1139,8 +1138,7 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
                     && assessment.gaps.is_empty()
             }
             ReceptionCoverage::Partial(gap) => {
-                plan.config.admission == AdmissionPolicy::AllowPartial
-                    && plan.reception().valid(window)
+                plan.reception().valid(window)
                     && assessment.gaps.as_slice()
                         == [super::PlannedGap {
                             start_ms: gap.missed.start_ms,

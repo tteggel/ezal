@@ -3,16 +3,6 @@
 
 use super::{PlanningWindow, REACQUISITION_LIMIT_MS};
 
-/// Whether the finite planner may evaluate a bounded partial-reception fallback.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AdmissionPolicy {
-    /// Every instant from AOS through LOS must fit the modeled allocation.
-    CompleteOnly,
-    /// Prefer a complete pass, otherwise validate a bounded recovery and suffix.
-    #[default]
-    AllowPartial,
-}
-
 /// Preview time reserved before a late acquisition's fixed execution start.
 /// Like T6's computation lead, this needs Pico timing validation in T7.
 pub const PARTIAL_ADMISSION_LEAD_MS: u64 = 5_000;

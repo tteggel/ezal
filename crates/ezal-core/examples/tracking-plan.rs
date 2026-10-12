@@ -80,7 +80,7 @@ fn plan(name: &str, source: impl Ephemeris, window: PlanningWindow, relays: Rela
             return;
         }
     }
-    let report = planner.into_report().unwrap();
+    let report = planner.take_report().unwrap();
     println!(
         "{name}: {} ({} candidates, {} geometry rejections, {} steps, {:.2}s host)",
         match report.plan.as_ref() {
