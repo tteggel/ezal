@@ -407,7 +407,7 @@ header {
   const idle = () => ({ azimuth: null, elevation: null });
   const hasDesired = (state) => Boolean(state.held.azimuth || state.held.elevation);
   const telemetryFresh = (state, now) => state.token !== null && now < state.telemetryUntil;
-  const feedbackReady = (state) => state.telemetry?.feedback.control_state === "idle";
+  const feedbackReady = (state) => state.telemetry?.feedback.health === "healthy";
   const axisReady = (state, axis) => state.duty?.[axis]?.cooldown === 0;
   const canControl = (state, now) => state.connected && state.controller && state.networkReady
     && !state.motionFault && !state.hidden && telemetryFresh(state, now) && feedbackReady(state)
@@ -466,10 +466,10 @@ header {
   const validTelemetry = (message) => {
     const optionalNumber = (value) => value === null || Number.isFinite(value);
     return message.position && message.feedback && message.control && validTracking(message.tracking)
-      && Number.isFinite(message.position.a0_mv) && Number.isFinite(message.position.a1_mv)
+      && optionalNumber(message.position.a0_mv) && optionalNumber(message.position.a1_mv)
       && optionalNumber(message.feedback.azimuth_tenths)
       && optionalNumber(message.feedback.elevation_tenths)
-      && typeof message.feedback.control_state === "string"
+      && typeof message.feedback.health === "string"
       && typeof message.control.controller === "boolean"
       && typeof message.control.network_ready === "boolean"
       && dutyPair(message.control.duty_remaining_ms) && dutyPair(message.control.duty_cooldown_ms)
@@ -747,13 +747,14 @@ header {
     if (state.motionFault) return ["locked", `Movement locked: ${state.motionFault.replaceAll("_", " ")}.`];
     if (!state.controller) return ["viewer", "Select Take control above to enable the direction buttons."];
     if (state.hidden) return ["paused", "Controls paused while this page is hidden."];
-    const feedback = state.telemetry.feedback.control_state;
+    const feedback = state.telemetry.feedback.health;
     if (!feedbackReady(state)) {
       const reason = {
         "feedback-invalid": "Position feedback is outside the calibrated range. Check the A0/A1 readings and calibration.",
         "calibration-invalid": "The installed position calibration is invalid.",
         "no-feedback": "Waiting for position feedback from the controller.",
         "feedback-stale": "Position feedback is stale. Check the feedback connection.",
+        "read-timeout": "A position feedback read timed out. Acquisition is latched until the device is reset.",
         "timestamp-invalid": "Position feedback timing is invalid.",
       }[feedback] || `Check position feedback (${feedback.replaceAll("-", " ")}).`;
       return ["blocked", `Movement blocked. ${reason}`];
@@ -777,11 +778,11 @@ header {
     const online = known && state.networkReady;
     setText(status, !configured ? "configuration unavailable" : known && !state.networkReady ? "network unavailable" : state.status);
     status.classList.toggle("online", online);
-    setText(a0, data ? data.position.a0_mv : "--");
-    setText(a1, data ? data.position.a1_mv : "--");
+    setText(a0, data?.position.a0_mv ?? "--");
+    setText(a1, data?.position.a1_mv ?? "--");
     setText(azimuth, degrees(data?.feedback.azimuth_tenths));
     setText(elevation, degrees(data?.feedback.elevation_tenths));
-    setText(health, state.motionFault ? state.motionFault.replaceAll("_", " ") : data?.feedback.control_state ?? "unknown");
+    setText(health, state.motionFault ? state.motionFault.replaceAll("_", " ") : data?.feedback.health ?? "unknown");
     take.disabled = !canTake(state, now);
     setText(take, state.controller ? "controller" : "take control");
     const [summary, hint] = controlView(now);
