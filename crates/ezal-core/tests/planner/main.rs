@@ -17,11 +17,8 @@ use ezal_core::tracking::{
 };
 use std::cell::Cell;
 
-#[path = "common/tracking_partial.rs"]
-mod partial;
-
-#[path = "common/tracking_plan_acceptance.rs"]
 mod acceptance;
+mod partial;
 
 const CAL: PositionCalibration = PositionCalibration {
     azimuth: AxisCalibration {
@@ -311,7 +308,7 @@ fn recorded_pass_includes_real_sky_error_and_reports_noisy_preparation_failure()
     use ezal_core::tracking::EvaluationPhase;
     let mut catalog = Catalog::new();
     catalog.update(
-        include_str!("fixtures/weather-2026-10-07.tle"),
+        include_str!("../fixtures/weather-2026-10-07.tle"),
         1_791_385_200,
     );
     let orbit = catalog

@@ -780,7 +780,7 @@ relaxing live limits. The examples never extend the installed 0–360°/0–90°
 calibration. Live firmware retains 500 ms on / 2 s off timing, the unidentified
 hardware 180 s duty policy, and 900 s initial rest.
 
-[Planner tests](../crates/ezal-core/tests/planner.rs) exercise full zenith/recorded
+[Planner tests](../crates/ezal-core/tests/planner/main.rs) exercise full zenith/recorded
 passes, wrap continuity, one-propagation steps, preparation/duty carryover,
 retained relay holds, far-future rest, late starts and bounded storage.
 [Controller tests](../crates/ezal-core/tests/tracking.rs) cover plant physics,
@@ -954,7 +954,7 @@ without a selection, run or persisted permission.
 
 [Clock tests](../crates/ezal-core/tests/tracking_clock.rs) exercise fractional
 conversion, signed corrections, cumulative drift, expiry, leap announcements
-and checked arithmetic. [Input/runtime tests](../crates/ezal-core/tests/tracking_inputs.rs)
+and checked arithmetic. [Input/runtime tests](../crates/ezal-core/tests/tracking_inputs/main.rs)
 use the recorded orbital fixture and real planner to test source binding,
 atomic download publication, through-LOS age, refresh/freeze ordering,
 browser-independent execution, network interruption, queued-output inhibition
@@ -1039,7 +1039,7 @@ computation lead must be measured in T7 before enabling tracking.
 [Core recovery tests](../crates/ezal-core/src/tracking/recovery/tests.rs) exercise
 all nine scenarios, remaining-pass source failure, impossible/duty-limited
 intercepts, preserved overlap/over-the-top routes, changed starting history and
-immutable episode deadlines. [Runtime tests](../crates/ezal-core/tests/common/tracking_recovery.rs)
+immutable episode deadlines. [Runtime tests](../crates/ezal-core/tests/tracking_inputs/recovery.rs)
 use the recorded TLE fixture, a separate motor model and delayed feedback to
 exercise successful recovery, late preparation, missed measured intercepts,
 late computation/output, repeated retries, cancellation, feedback/network/motion
@@ -1098,14 +1098,14 @@ window and complete/partial prediction alongside measured deviation and the
 actual termination reason. Reaching LOS does not turn a partial forecast into
 a complete-reception claim.
 
-[Admission tests](../crates/ezal-core/tests/common/tracking_partial.rs) cover
+[Admission tests](../crates/ezal-core/tests/planner/partial.rs) cover
 late starts before/after AOS across all nine default cases, an explicitly
 nominal-profile keyhole gap, complete OTT preference, insufficient remaining
 time/duty, separated gaps, expired/invalid publication, fixed episode deadlines
 and one-propagation-per-step yielding. The same keyhole fixture
 remains unsupported with all nine default cases because a noisy fast-axis
 case trips motion supervision. Partial admission does not relax that policy.
-The [real-orbit runtime test](../crates/ezal-core/tests/common/tracking_recovery.rs)
+The [real-orbit runtime test](../crates/ezal-core/tests/tracking_inputs/recovery.rs)
 executes an admitted late plan through recovery to LOS with delayed feedback
 and verifies that the final summary retains its partial prediction.
 The offline example's static late-acquisition case qualifies across all nine
@@ -1295,9 +1295,9 @@ task pool. These are capacity checks, not measured board high-water or timing.
 ### Complete-pass acceptance (T9)
 
 The host acceptance matrix is in
-[`tracking_plan_acceptance.rs`](../crates/ezal-core/tests/common/tracking_plan_acceptance.rs)
+[`planner/acceptance.rs`](../crates/ezal-core/tests/planner/acceptance.rs)
 and
-[`tracking_execution_acceptance.rs`](../crates/ezal-core/tests/common/tracking_execution_acceptance.rs).
+[`tracking_inputs/execution/acceptance.rs`](../crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs).
 It runs automatically with the existing host suite. To print the comparisons:
 
 ```bash

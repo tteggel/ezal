@@ -14,13 +14,10 @@ use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, Posit
 use ezal_core::tracking::*;
 use std::sync::OnceLock;
 
-#[path = "common/tracking_recovery.rs"]
+mod execution;
 mod recovery;
 
-#[path = "common/tracking_execution.rs"]
-mod execution;
-
-const TLES: &str = include_str!("fixtures/weather-2026-10-07.tle");
+const TLES: &str = include_str!("../fixtures/weather-2026-10-07.tle");
 const EVENT: PassEvent = PassEvent {
     norad_id: 39260,
     aos_unix_s: 1_791_385_770,

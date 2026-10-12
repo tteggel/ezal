@@ -5,7 +5,6 @@ use ezal_core::feedback::{FeedbackHealth, FeedbackSnapshot};
 use ezal_core::passes::{Config, Job};
 use std::collections::VecDeque;
 
-#[path = "tracking_execution_acceptance.rs"]
 mod acceptance;
 
 fn measured(pose: Pointing, at: u64) -> FeedbackSample {
