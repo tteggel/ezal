@@ -43,7 +43,7 @@ impl Scenario {
     };
 }
 
-/// Explicit plant, acquisition and sampling assumptions for a development run.
+/// Explicit plant, acquisition and sampling assumptions for one simulated run.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SimulationSettings {
     /// Upper bound on time between simulation samples, 1–100 ms. Actuator and

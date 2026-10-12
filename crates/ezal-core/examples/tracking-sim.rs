@@ -28,7 +28,8 @@ const CALIBRATION: PositionCalibration = PositionCalibration {
     },
 };
 const START: i64 = 1_791_385_200; // Fixture epoch: 2026-10-07T15:00:00Z
-                                  // Modeled deviation allocation, leaving 1° of the proposed 3° budget for uncertainty.
+
+// Modeled deviation allocation, leaving 1° of the proposed 3° budget for uncertainty.
 const ALLOCATION_DEG: f32 = 2.0;
 
 fn replay(
