@@ -825,8 +825,8 @@ refreshes cannot walk the association to another orbit. Missing, ambiguous,
 invalid or over-capacity forecasts block preparation with explicit reasons.
 The comparison uses a complete forecast and is independent of row order.
 
-Each planning ticket binds the selection to orbital, observer, calibration,
-motion, clock and starting-state revisions, plus the preparation schedule.
+Each planning ticket binds the selection to orbital, clock and starting-state
+revisions, plus the preparation schedule.
 Publishing newer inputs immediately removes the preceding plan's permission
 to prepare. Only the latest job can publish, even if an older successful job
 finishes later. Manual movement also invalidates a preview's starting pose.
@@ -1154,9 +1154,9 @@ artificial millisecond sleep. Downloads yield after every bounded parsing chunk;
 forecasting retains its own cooperative task. Complete forecasts and their exact
 orbital snapshots publish atomically. Clock corrections and changed starting
 pose/duty/history invalidate preview work before it can freeze; fresh ADC
-*timestamps alone* do not restart planning. Installed calibration/motion settings
-remain compile-time revisions. Noisy changing starting positions can prevent a
-stable preview from completing; commissioning must check this with real feedback.
+*timestamps alone* do not restart planning. Noisy changing starting positions can
+prevent a stable preview from completing; commissioning must check this with real
+feedback.
 All shared tracking/forecast users run on the single core-0 thread executor.
 Thread-mode borrows keep interrupts enabled and never span an await or I/O.
 

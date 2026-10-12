@@ -18,9 +18,6 @@ const EVENT: PassEvent = PassEvent {
 };
 const REVISIONS: PlanRevisions = PlanRevisions {
     orbit: 1,
-    observer: 1,
-    calibration: 1,
-    motion: 1,
     clock: 1,
     start: 1,
 };
@@ -407,7 +404,7 @@ fn auto_refresh_preserves_identity_and_discards_old_or_ambiguous_work() {
 }
 
 #[test]
-fn freeze_is_atomic_and_only_installation_changes_replace_it_with_a_stop() {
+fn freeze_is_atomic_and_newer_revisions_cannot_replace_it() {
     let (mut session, _) = armed();
     session.tick(PREP).unwrap();
     let run = session.snapshot().run.unwrap();
@@ -418,9 +415,7 @@ fn freeze_is_atomic_and_only_installation_changes_replace_it_with_a_stop() {
             PlanRevisions {
                 orbit: 20,
                 clock: 20,
-                observer: 20,
                 start: 20,
-                ..REVISIONS
             },
             PREP,
         )
@@ -438,29 +433,6 @@ fn freeze_is_atomic_and_only_installation_changes_replace_it_with_a_stop() {
         ),
         Err(LifecycleError::StaleJob)
     );
-    session
-        .refresh(
-            &[],
-            PlanRevisions {
-                orbit: 20,
-                clock: 20,
-                observer: 20,
-                start: 20,
-                calibration: 2,
-                ..REVISIONS
-            },
-            PREP + 1,
-        )
-        .unwrap();
-    assert_eq!(
-        session.snapshot().termination.unwrap().reason,
-        TrackingStop::InstallationChanged
-    );
-    assert_eq!(
-        session.take_command(PREP + 1),
-        Some(CommandEnvelope::INHIBIT)
-    );
-    assert!(!session.tracking_command(run, output(PREP + 1, Command::Drive(CW)), PREP + 1));
 }
 
 #[test]

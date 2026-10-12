@@ -20,12 +20,6 @@ use crate::operator::{LeaseError, OperatorGrant, OperatorLease, OperatorToken};
 pub struct PlanRevisions {
     /// Accepted orbital data, including source/expiry metadata.
     pub orbit: u64,
-    /// Ground station and reception mask.
-    pub observer: u64,
-    /// Installed feedback mapping and mechanical limits.
-    pub calibration: u64,
-    /// Motor, relay, duty and pointing assumptions.
-    pub motion: u64,
     /// Fractional UTC anchor and its uncertainty.
     pub clock: u64,
     /// Starting pose/output history; advance when that planning assumption changes.
@@ -34,12 +28,7 @@ pub struct PlanRevisions {
 
 impl PlanRevisions {
     fn follows(self, previous: Self) -> bool {
-        self.orbit >= previous.orbit
-            && self.observer >= previous.observer
-            && self.calibration >= previous.calibration
-            && self.motion >= previous.motion
-            && self.clock >= previous.clock
-            && self.start >= previous.start
+        self.orbit >= previous.orbit && self.clock >= previous.clock && self.start >= previous.start
     }
 }
 
@@ -211,7 +200,7 @@ pub enum TrackingStop {
     ManualMode,
     /// A replacement selection stopped the preceding run first.
     Replaced,
-    /// Installed calibration, travel or motor policy changed during execution.
+    /// The actuator's installed configuration no longer matches the frozen plan.
     InstallationChanged,
     /// Preparation was not established before AOS.
     LatePreparation,
@@ -595,7 +584,7 @@ impl<S> TrackingLifecycle<S> {
                 });
                 // Orbital publication revisions belong to a satellite. A
                 // different selection may legitimately use an older cached
-                // publication; installation/clock/start counters still follow.
+                // publication; the clock and start counters still follow.
                 if let Some(revisions) = self.revisions.as_mut() {
                     revisions.orbit = 0;
                 }
@@ -665,8 +654,8 @@ impl<S> TrackingLifecycle<S> {
     }
 
     /// Publish a complete forecast/input revision atomically before servicing
-    /// preparation. Refreshes cannot replace frozen inputs; installation changes
-    /// stop them instead. `TrackingRuntime` enforces clock/source validity.
+    /// preparation. Refreshes cannot replace frozen inputs; after freeze they only
+    /// record the newer revisions. `TrackingRuntime` enforces clock/source validity.
     pub fn refresh(
         &mut self,
         forecast: &[PassEvent],
@@ -680,26 +669,10 @@ impl<S> TrackingLifecycle<S> {
         {
             return Err(LifecycleError::StaleInputs);
         }
+        let changed = self.revisions.replace(revisions) != Some(revisions);
         if self.run.is_some() {
-            let frozen = self
-                .plan
-                .as_ref()
-                .expect("run owns its frozen plan")
-                .ticket
-                .revisions;
-            if revisions.calibration != frozen.calibration || revisions.motion != frozen.motion {
-                self.bump(now_ms)?;
-                self.stop(
-                    TrackingStop::InstallationChanged,
-                    TrackingPhase::Stopped,
-                    now_ms,
-                );
-            }
-            self.revisions = Some(revisions);
             return Ok(());
         }
-        let changed = self.revisions != Some(revisions);
-        self.revisions = Some(revisions);
         let Some(selection) = self.selection else {
             return Ok(());
         };

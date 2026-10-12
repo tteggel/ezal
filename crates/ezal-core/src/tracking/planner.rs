@@ -294,7 +294,7 @@ impl Assessment {
 }
 
 /// Supported in every supplied scenario for its explicit reception coverage. Keep its
-/// ephemeris/calibration/clock revisions bound externally when freezing a run.
+/// ephemeris and clock revisions bound externally when freezing a run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackingPlan {
     pub(super) reception: ReceptionCoverage,

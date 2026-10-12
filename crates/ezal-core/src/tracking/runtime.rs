@@ -207,8 +207,8 @@ impl TrackingRuntime {
         Ok(result)
     }
     /// Publish complete input/forecast revisions before a simultaneous freeze.
-    /// After freeze, the lifecycle retains its inputs and only installation
-    /// changes abort the route; live clock corrections are checked separately.
+    /// After freeze, the lifecycle retains its inputs; installation changes and
+    /// live clock corrections are checked separately.
     pub fn refresh(
         &mut self,
         forecast: &[PassEvent],
@@ -416,6 +416,9 @@ impl TrackingRuntime {
         let reason = if let Some(fault) = actuator.fault() {
             Some(TrackingStop::Motion(fault))
         } else if actuator.configuration() != bound.plan().actuator {
+            // Installation settings are compile-time constants, so the run compares
+            // the actuator configuration by value. A persisted calibration must bring
+            // its own by-value or revision check.
             Some(TrackingStop::InstallationChanged)
         } else if feedback.health != FeedbackHealth::Healthy {
             Some(TrackingStop::Feedback(feedback.health))

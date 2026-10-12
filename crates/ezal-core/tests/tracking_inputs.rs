@@ -2,7 +2,7 @@ use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
 use ezal_core::duty::{DutyConfig, DutyHistory};
-use ezal_core::feedback::FeedbackSample;
+use ezal_core::feedback::{FeedbackSample, FeedbackSnapshot};
 use ezal_core::http;
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::network::NetworkGate;
@@ -31,9 +31,6 @@ const AOS: u64 = 122_000;
 const LOS: u64 = 152_000;
 const REVISIONS: PlanRevisions = PlanRevisions {
     orbit: 1,
-    observer: 1,
-    calibration: 1,
-    motion: 1,
     clock: 1,
     start: 1,
 };
@@ -508,7 +505,6 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
             &[EVENT],
             PlanRevisions {
                 orbit: 2,
-                observer: 2,
                 clock: 2,
                 ..REVISIONS
             },
@@ -707,20 +703,32 @@ fn missing_clock_invalid_input_reports_and_reboot_remain_disarmed() {
 
 #[test]
 fn installation_changes_and_backwards_uptime_inhibit_frozen_work() {
-    let (mut runtime, _) = following();
+    let (mut runtime, run) = following();
+    let frozen = runtime.bound_plan().unwrap().plan().actuator;
+    let mut travel = frozen.travel;
+    travel.azimuth.coast_ms += 100;
+    assert!(travel.is_valid());
+    let installed = Actuator::with_config(
+        ActuatorConfig { travel, ..frozen },
+        DutyHistory::Known([0, 0]),
+    );
+    // Unavailable feedback would stop the run too; the reason shows the
+    // configuration check ran first.
     runtime
-        .refresh(
-            &[EVENT],
-            PlanRevisions {
-                calibration: 2,
-                ..REVISIONS
-            },
+        .observe_tracking(
+            run,
+            FeedbackSnapshot::INITIAL,
+            &installed,
             observation(AOS + 1),
         )
         .unwrap();
     assert_eq!(
         runtime.snapshot().termination.unwrap().reason,
         TrackingStop::InstallationChanged
+    );
+    assert_eq!(
+        runtime.take_command(observation(AOS + 1)),
+        Some(CommandEnvelope::INHIBIT)
     );
     let (mut runtime, run) = following();
     assert!(runtime.tracking_command(run, command(AOS + 100), observation(AOS + 100)));
