@@ -350,8 +350,8 @@ fn changed_start_invalidates_preview_before_a_simultaneous_preparation_deadline(
 fn a_disarmed_clock_publication_blocks_preview_and_stops_a_run() {
     let mut disarmed = clock(UTC);
     assert_eq!(
-        disarmed.synchronize_sample(1000, sample(UTC)),
-        Err(ntp::ClockError::MonotonicOrCounter)
+        disarmed.synchronize(1000, sample(UTC)),
+        Err(ntp::ClockDisarmed)
     );
     let unavailable = InputError::Timing(TimingError::Unavailable);
     let mut device = Device::new();

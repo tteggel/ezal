@@ -68,7 +68,7 @@ fn sample(utc: u64) -> ntp::TimeSample {
 }
 fn clock(utc: u64) -> UtcClock {
     let mut clock = UtcClock::new();
-    clock.synchronize_sample(2000, sample(utc)).unwrap();
+    clock.synchronize(2000, sample(utc)).unwrap();
     clock
 }
 fn observation(at: u64) -> RuntimeObservation {
@@ -400,7 +400,7 @@ fn input_snapshot_propagates_fractional_time_and_binds_clock_satellite_and_plan(
     plan.window.aos_at_ms += 1;
     assert!(!inputs.matches(&plan, inputs.ticket()));
     let mut changed = clock(UTC);
-    changed.synchronize_sample(2000, sample(UTC)).unwrap();
+    changed.synchronize(2000, sample(UTC)).unwrap();
     assert!(matches!(
         capture(&runtime, &catalog, changed, UTC + 120_000, UTC + 150_000),
         Err(InputError::Binding)
@@ -502,7 +502,7 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
         .look_at_uptime(AOS + 100);
     let mut obs = observation(AOS + 100);
     obs.clock
-        .synchronize_sample(AOS + 100, sample(UTC + AOS + 100 - 2000 + 100))
+        .synchronize(AOS + 100, sample(UTC + AOS + 100 - 2000 + 100))
         .unwrap();
     runtime
         .refresh(
@@ -561,7 +561,7 @@ fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacemen
     let old_inputs = runtime.bound_plan().unwrap().inputs().clone();
     let mut obs = observation(prep);
     obs.clock
-        .synchronize_sample(prep, sample(UTC + prep - 2000))
+        .synchronize(prep, sample(UTC + prep - 2000))
         .unwrap();
     runtime
         .refresh(
@@ -619,7 +619,7 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
         assert!(runtime.tracking_command(run, command(now), observation(now)));
         let mut obs = observation(now);
         obs.clock
-            .synchronize_sample(
+            .synchronize(
                 now,
                 sample((UTC as i64 + now as i64 - 2000 + correction) as u64),
             )
@@ -811,7 +811,7 @@ fn runtime_cancel_at_preparation_prevents_a_freeze_and_stale_clock_publications_
     let mut updated = observation(AOS + 100);
     updated
         .clock
-        .synchronize_sample(AOS + 100, sample(UTC + AOS + 100 - 2000))
+        .synchronize(AOS + 100, sample(UTC + AOS + 100 - 2000))
         .unwrap();
     runtime.service(updated).unwrap();
     assert!(runtime.tracking_command(run, command(AOS + 100), updated));

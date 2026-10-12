@@ -1,4 +1,4 @@
-use ezal_core::ntp::{self, ClockError, UtcClock};
+use ezal_core::ntp::{self, ClockDisarmed, UtcClock};
 use ezal_core::tracking::{
     execution_window, ExecutionClock, PlanningConfig, TimingError, TimingPolicy,
 };
@@ -27,7 +27,7 @@ fn packet(utc: u64) -> [u8; 48] {
 fn clock(at: u64, utc: u64) -> UtcClock {
     let mut clock = UtcClock::new();
     clock
-        .synchronize_sample(at, ntp::reply_sample(&packet(utc), COOKIE, 0).unwrap())
+        .synchronize(at, ntp::reply_sample(&packet(utc), COOKIE, 0).unwrap())
         .unwrap();
     clock
 }
@@ -75,7 +75,7 @@ fn fractional_mapping_preserves_original_anchor_across_positive_and_negative_cor
         assert_eq!(window.aos_unix_s, (UTC + 120_003) as f64 / 1000.0);
         let sample =
             ntp::reply_sample(&packet((UTC as i64 + 1000 + correction) as u64), COOKIE, 0).unwrap();
-        live.synchronize_sample(3000, sample).unwrap();
+        live.synchronize(3000, sample).unwrap();
         assert_eq!(frozen.validate(live, 3100), Ok(()));
         assert_eq!(frozen.unix_s(3100).unwrap(), (UTC + 1100) as f64 / 1000.0);
         assert_eq!(frozen.anchor().revision(), 1);
@@ -100,7 +100,7 @@ fn corrections_must_fit_remaining_error_through_los_and_never_ratchet_the_anchor
         (4000, 200, Ok(())),
         (5000, 300, Err(TimingError::Correction)),
     ] {
-        live.synchronize_sample(
+        live.synchronize(
             at,
             ntp::reply_sample(&packet(UTC + at - 2000 + correction), COOKIE, 0).unwrap(),
         )
@@ -109,7 +109,7 @@ fn corrections_must_fit_remaining_error_through_los_and_never_ratchet_the_anchor
     }
     let mut early = clock(2000, UTC);
     early
-        .synchronize_sample(
+        .synchronize(
             3000,
             ntp::reply_sample(&packet(UTC + 700), COOKIE, 0).unwrap(),
         )
@@ -118,7 +118,7 @@ fn corrections_must_fit_remaining_error_through_los_and_never_ratchet_the_anchor
     // A small correction plus a noisy new sample also exceeds the allowance.
     let mut noisy = clock(2000, UTC);
     noisy
-        .synchronize_sample(
+        .synchronize(
             3000,
             ntp::reply_sample(&packet(UTC + 1000), COOKIE, 400).unwrap(),
         )
@@ -168,24 +168,12 @@ fn full_horizon_uncertainty_and_source_age_are_checked_at_exclusive_boundaries()
 }
 
 #[test]
-fn legacy_unquantified_leap_and_missing_clocks_cannot_authorize_execution() {
-    let mut legacy = UtcClock::new();
-    legacy.synchronize(2000, UTC);
-    assert_eq!(
-        ExecutionClock::new(
-            legacy.anchor().unwrap(),
-            TimingPolicy::default(),
-            &PlanningConfig::default(),
-            3000,
-            2000
-        ),
-        Err(TimingError::Unavailable)
-    );
+fn leap_pending_and_missing_clocks_cannot_authorize_execution() {
     for leap in [1, 2] {
         let mut reply = packet(UTC);
         reply[0] |= leap << 6;
         let mut live = UtcClock::new();
-        live.synchronize_sample(2000, ntp::reply_sample(&reply, COOKIE, 0).unwrap())
+        live.synchronize(2000, ntp::reply_sample(&reply, COOKIE, 0).unwrap())
             .unwrap();
         assert_eq!(live.unix_ms(2100), Some(UTC + 100));
         assert_eq!(
@@ -218,14 +206,8 @@ fn legacy_unquantified_leap_and_missing_clocks_cannot_authorize_execution() {
 fn reversed_time_latches_and_deadline_conversions_never_wrap() {
     let mut live = clock(2000, UTC);
     let sample = ntp::reply_sample(&packet(UTC), COOKIE, 0).unwrap();
-    assert_eq!(
-        live.synchronize_sample(1999, sample),
-        Err(ClockError::MonotonicOrCounter)
-    );
-    assert_eq!(
-        live.synchronize_sample(3000, sample),
-        Err(ClockError::MonotonicOrCounter)
-    );
+    assert_eq!(live.synchronize(1999, sample), Err(ClockDisarmed));
+    assert_eq!(live.synchronize(3000, sample), Err(ClockDisarmed));
     assert!(live.anchor().is_none());
     let anchor = clock(2000, UTC).anchor().unwrap();
     assert_eq!(anchor.monotonic_at(UTC - 1999), Some(1));
