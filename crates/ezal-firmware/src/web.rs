@@ -61,7 +61,7 @@ const TCP_TX_BUFFER_SIZE: usize = 4096;
 
 /// Build the dashboard app. `report` is the owning acceptor task's slot for
 /// the `/api/passes` reply it is currently sending.
-pub fn app<'a>(
+fn app<'a>(
     state: &'static SharedState,
     report: &'a RefCell<Option<Report>>,
 ) -> picoserve::Router<impl PathRouter + 'a> {

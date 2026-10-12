@@ -314,8 +314,14 @@ so do not select its test targets with `--workspace --all-targets`.
 
 CI runs these checks, the test scripts, and one firmware job that builds,
 lints and packages the firmware, uploading its ELF and UF2 under
-`dist/`. The optional `cyw43-firmware-logs` feature enables radio diagnostics
-independently; it does not select a control mode.
+`dist/`.
+
+To dump the CYW43 radio's own console log, enable the driver's
+diagnostic feature with a debug defmt filter:
+
+```bash
+DEFMT_LOG=debug cargo run -p ezal-firmware --release --features cyw43/firmware-logs
+```
 
 ### Watching for file changes
 

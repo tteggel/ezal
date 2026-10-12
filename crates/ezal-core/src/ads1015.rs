@@ -16,11 +16,6 @@
 //!
 //! [ADS1015]: https://www.ti.com/product/ADS1015
 
-/// 7-bit I²C address of the ADS1015 with its ADDR pin tied to GND — the
-/// wiring on the ezal interface board. (Tying ADDR to VDD / SDA / SCL would
-/// instead give 0x49 / 0x4A / 0x4B; we only ever use 0x48.)
-pub const I2C_ADDR: u8 = 0x48;
-
 /// Feedback ADC range used by both the hardware driver and calibration checks.
 /// Endpoints near 2 V need room for their 25 mV noise margin and an observable
 /// overrange fault, which ±2.048 V cannot give. This range has a 2 mV code size.

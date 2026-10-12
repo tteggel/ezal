@@ -3,6 +3,8 @@
 
 #![no_std]
 #![no_main]
+// Computing the layout of the web task's future, whose type nests picoserve's
+// router, exceeds rustc's default query depth of 128.
 #![recursion_limit = "256"]
 
 // ─── modules ────────────────────────────────────────────────────────────
@@ -104,11 +106,11 @@ async fn main(spawner: Spawner) {
     // POST before WiFi so feedback diagnostics remain available during retry.
     // The actuator's network gate keeps every direction low until readiness.
     let i2c = I2c::new_async(p.I2C0, p.PIN_5, p.PIN_4, Irqs, i2c::Config::default());
-    let mut adc = Ads1015::new(i2c, ezal_core::ads1015::I2C_ADDR);
+    let mut adc = Ads1015::new(i2c);
 
     info!(
         "ezal adc-bringup: POSTing ADS1015 at 0x{=u8:x}",
-        ezal_core::ads1015::I2C_ADDR
+        ads1015::I2C_ADDR
     );
     match with_timeout(ADC_POST_TIMEOUT, adc.post()).await {
         Ok(Ok(r)) => {

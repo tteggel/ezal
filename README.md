@@ -70,7 +70,7 @@ embedded Rust.
 │   │       ├── dashboard.rs       # browser asset and shared timing configuration
 │   │       └── drive.rs           # vocabulary and private relay timing
 │   └── ezal-firmware/              # the on-chip application
-│       ├── build.rs                # stages memory.x; bakes .env creds + station in
+│       ├── build.rs                # memory.x link path; bakes .env creds + station in
 │       ├── memory.x                # linker memory layout
 │       ├── cyw43-firmware/         # vendored CYW43439 radio blobs
 │       └── src/
