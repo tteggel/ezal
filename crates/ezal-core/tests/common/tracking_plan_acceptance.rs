@@ -36,7 +36,7 @@ fn execute(
         [0; 2],
     )
     .unwrap();
-    let mut controller = FollowingController::with_timing(
+    let mut controller = FollowingController::new(
         plan.config.reference,
         plan.config.deadband_deg,
         plan.actuator.relays,

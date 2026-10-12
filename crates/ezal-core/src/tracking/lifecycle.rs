@@ -58,17 +58,12 @@ pub struct Selection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanTicket {
     serial: u64,
-    event: EventId,
     pass: PassEvent,
     revisions: PlanRevisions,
     timing: PreparationTiming,
 }
 
 impl PlanTicket {
-    /// Boot-local job identity, distinct from UI state revisions.
-    pub const fn serial(self) -> u64 {
-        self.serial
-    }
     /// Selected event whose complete window must be evaluated.
     pub const fn pass(self) -> PassEvent {
         self.pass
@@ -87,7 +82,6 @@ impl PlanTicket {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunToken {
     serial: u64,
-    event: EventId,
 }
 
 impl RunToken {
@@ -95,16 +89,11 @@ impl RunToken {
     pub const fn serial(self) -> u64 {
         self.serial
     }
-    /// Event being executed.
-    pub const fn event(self) -> EventId {
-        self.event
-    }
 }
 
 /// One bounded episode. Replanning never changes this identity or deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecoveryToken {
-    run: RunToken,
     serial: u64,
     started_at_ms: u64,
     deadline_ms: u64,
@@ -125,10 +114,6 @@ pub enum RecoveryCause {
 }
 
 impl RecoveryToken {
-    /// Frozen pass being recovered.
-    pub const fn run(self) -> RunToken {
-        self.run
-    }
     /// Boot-local episode identity, distinct from intercept attempts.
     pub const fn serial(self) -> u64 {
         self.serial
@@ -258,8 +243,6 @@ pub struct TrackingTermination {
     pub event: Option<EventId>,
     /// Frozen run that was stopped, when any.
     pub run: Option<RunToken>,
-    /// Current recovery episode, unchanged by intercept retries.
-    pub recovery: Option<RecoveryToken>,
     /// Explicit cause, independent of operator presence.
     pub reason: TrackingStop,
     /// Service instant when inhibition was requested.
@@ -538,7 +521,6 @@ impl<S> TrackingSession<S> {
         self.termination = Some(TrackingTermination {
             event: self.selection.map(|s| s.id),
             run: self.run,
-            recovery: self.recovery,
             reason,
             at_ms: now_ms,
         });
@@ -673,7 +655,6 @@ impl<S> TrackingSession<S> {
         self.bump(now_ms)?;
         self.ticket = Some(PlanTicket {
             serial,
-            event: selection.id,
             pass,
             revisions,
             timing: self.timing,
@@ -854,12 +835,7 @@ impl<S> TrackingSession<S> {
             let window = self.plan.as_ref().unwrap().plan.window;
             let los = window.aos_at_ms + u64::from(window.duration_ms);
             if self.phase == TrackingPhase::Preparing && now_ms >= window.aos_at_ms {
-                self.enter_reacquisition(
-                    self.run.unwrap(),
-                    RecoveryCause::LatePreparation,
-                    window.aos_at_ms,
-                    now_ms,
-                )?;
+                self.enter_reacquisition(RecoveryCause::LatePreparation, window.aos_at_ms, now_ms)?;
             }
             if let Some(gap) = self
                 .plan
@@ -874,7 +850,6 @@ impl<S> TrackingSession<S> {
                 // An unexpected earlier episode keeps its original deadline.
                 if self.recovery.is_none() {
                     self.enter_reacquisition(
-                        self.run.unwrap(),
                         RecoveryCause::PlannedGap,
                         gap.recovery_at_ms,
                         now_ms,
@@ -927,7 +902,6 @@ impl<S> TrackingSession<S> {
                 } else {
                     let token = RunToken {
                         serial: self.serial(now_ms)?,
-                        event: self.selection.unwrap().id,
                     };
                     self.bump(now_ms)?;
                     self.run = Some(token);
@@ -944,7 +918,6 @@ impl<S> TrackingSession<S> {
                     {
                         self.planned_recovery_handled = true;
                         self.enter_reacquisition(
-                            token,
                             RecoveryCause::LateAcquisition,
                             gap.recovery_at_ms,
                             now_ms,
@@ -995,13 +968,12 @@ impl<S> TrackingSession<S> {
         if self.phase != TrackingPhase::Following {
             return Ok(None);
         }
-        self.enter_reacquisition(run, RecoveryCause::Deviation, now_ms, now_ms)
+        self.enter_reacquisition(RecoveryCause::Deviation, now_ms, now_ms)
             .map(Some)
     }
 
     fn enter_reacquisition(
         &mut self,
-        run: RunToken,
         cause: RecoveryCause,
         started_at_ms: u64,
         now_ms: u64,
@@ -1011,7 +983,6 @@ impl<S> TrackingSession<S> {
             .saturating_add(REACQUISITION_LIMIT_MS)
             .min(window.aos_at_ms + u64::from(window.duration_ms));
         let recovery = RecoveryToken {
-            run,
             serial: self.serial(now_ms)?,
             started_at_ms,
             deadline_ms,

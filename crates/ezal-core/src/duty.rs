@@ -72,20 +72,6 @@ pub struct DutyStatus {
     pub elevation: AxisDutyStatus,
 }
 
-impl DutyStatus {
-    /// Before the first output service, boot history is unknown.
-    pub const INITIAL: Self = Self {
-        azimuth: AxisDutyStatus {
-            remaining_ms: 0,
-            cooldown_ms: DutyConfig::DEFAULT.rest_ms,
-        },
-        elevation: AxisDutyStatus {
-            remaining_ms: 0,
-            cooldown_ms: DutyConfig::DEFAULT.rest_ms,
-        },
-    };
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct AxisDuty {
     used_ms: u64,

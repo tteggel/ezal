@@ -265,8 +265,6 @@ pub struct Assessment {
     pub bounded_peak_deg: f32,
     /// Worst nominal gap duration, or the admitted partial plan's missed interval.
     pub gap_time_ms: u64,
-    /// Scenario whose diagnostic intervals are retained; partial plans aggregate cases.
-    pub gap_scenario: usize,
     /// Diagnostic gaps, or the validated missed interval for a supported partial plan.
     pub gaps: Vec<PlannedGap, MAX_GAPS>,
     /// Additional gaps existed beyond storage; totals and rejection remain valid.
@@ -296,7 +294,6 @@ impl Assessment {
             sampled_peak_deg: 0.0,
             bounded_peak_deg: 0.0,
             gap_time_ms: 0,
-            gap_scenario: 0,
             gaps: Vec::new(),
             gaps_truncated: false,
             energized_ms: [0, 0],
@@ -463,7 +460,7 @@ impl<E: Ephemeris> Planner<E> {
             return Err(PlanningError::PassAlreadyStarted);
         }
         let follower =
-            FollowingController::with_timing(config.reference, config.deadband_deg, output.relays)
+            FollowingController::new(config.reference, config.deadband_deg, output.relays)
                 .map_err(|_| PlanningError::Configuration)?;
         for scenario in &config.scenarios {
             if scenario.motor.azimuth.rate_deg_per_s > output.travel.azimuth.max_speed_deg_per_s
@@ -741,7 +738,7 @@ impl<E: Ephemeris> Planner<E> {
 
     fn start_simulation(&mut self, probe: bool) -> Result<(), PlanningError> {
         let case = self.config.scenarios[self.scenario];
-        let follower = FollowingController::with_timing(
+        let follower = FollowingController::new(
             self.config.reference,
             self.config.deadband_deg,
             self.start.actuator.configuration().relays,
@@ -1045,7 +1042,6 @@ impl<E: Ephemeris> Planner<E> {
         }
         if self.metrics.gap_time > self.assessment.gap_time_ms {
             self.assessment.gap_time_ms = self.metrics.gap_time;
-            self.assessment.gap_scenario = self.scenario;
             self.assessment.gaps = self.metrics.gaps.clone();
             self.assessment.gaps_truncated = self.metrics.truncated;
         }

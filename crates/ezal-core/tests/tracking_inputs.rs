@@ -533,9 +533,9 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
             .bound_plan()
             .unwrap()
             .inputs()
-            .orbit()
-            .publication()
-            .revision,
+            .ticket()
+            .revisions()
+            .orbit,
         1
     );
     assert!(runtime.tracking_command(run, command(obs.now_ms), obs));

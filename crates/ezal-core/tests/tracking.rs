@@ -1,6 +1,6 @@
 use ezal_core::actuator::ActuatorConfig;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection};
+use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection, RelayConfig};
 use ezal_core::duty::DutyConfig;
 use ezal_core::feedback::{FeedbackSample, FEEDBACK_MAX_AGE_MS};
 use ezal_core::motion::MotionFault;
@@ -58,7 +58,7 @@ fn simulation(initial: Pointing, plant: MotorProfile) -> Simulation {
         CALIBRATION,
         initial,
         plant,
-        FollowingController::new(MotorProfile::AC_50HZ, 0.5).unwrap(),
+        FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap(),
         SimulationSettings {
             actuator: ActuatorConfig {
                 duty: DutyConfig {
@@ -257,7 +257,8 @@ fn coast_can_cross_a_limit_after_the_relay_has_been_released() {
 
 #[test]
 fn follower_requires_current_feedback_and_preserves_continuous_coordinates() {
-    let mut controller = FollowingController::new(MotorProfile::AC_50HZ, 0.5).unwrap();
+    let mut controller =
+        FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap();
     let position = Pointing::new(359.0, 45.0);
     let feedback = FeedbackSample::from_voltages(
         InstalledCalibration::new(CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
@@ -326,7 +327,7 @@ fn channel_skew_preserves_oldest_timestamp_and_each_channels_capture_position() 
         CALIBRATION,
         Pointing::new(100.0, 45.0),
         plant,
-        FollowingController::new(MotorProfile::AC_50HZ, 0.15).unwrap(),
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap(),
         SimulationSettings {
             step_ms: 50,
             feedback_latency_ms: 150,
@@ -362,7 +363,7 @@ fn noisy_feedback_is_applied_before_adc_quantization_and_alternates_per_read() {
         CALIBRATION,
         Pointing::new(100.11, 45.07),
         MotorProfile::AC_50HZ,
-        FollowingController::new(MotorProfile::AC_50HZ, 0.15).unwrap(),
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap(),
         SimulationSettings {
             feedback_latency_ms: 0,
             noise_codes: [1, -1],
@@ -404,7 +405,7 @@ fn pulse_aware_follower_avoids_reversal_chatter_with_both_relay_policies() {
                 CALIBRATION,
                 Pointing::new(180.0, 10.0),
                 plant,
-                FollowingController::with_timing(MotorProfile::AC_50HZ, 0.15, relays).unwrap(),
+                FollowingController::new(MotorProfile::AC_50HZ, 0.15, relays).unwrap(),
                 SimulationSettings {
                     actuator: ActuatorConfig {
                         relays,
@@ -446,7 +447,7 @@ fn stationary_target_needs_no_drive_and_cancellation_holds_after_coast() {
     while sim.now_ms() < 2_000 {
         sim.step(Some(Pointing::new(200.0, 45.0))).unwrap();
     }
-    assert!(sim.applied().is_active());
+    assert!(sim.actuator().actual().is_active());
     let cancelled = sim.step(None).unwrap();
     assert_eq!(cancelled.applied, DriveCommand::IDLE);
     assert!(!sim.is_settled());
@@ -475,7 +476,7 @@ fn actual_actuator_catches_stalls_and_implausible_speed() {
             }
         };
         assert_eq!(error, SimulationError::Motion(expected));
-        assert_eq!(sim.applied(), DriveCommand::IDLE);
+        assert_eq!(sim.actuator().actual(), DriveCommand::IDLE);
         assert_eq!(sim.step(None), Err(error));
     }
 }
@@ -490,7 +491,7 @@ fn simulator_checks_duty_at_its_exact_deadline_and_latches_failure() {
             assert_eq!(error, SimulationError::DutyLimit(Axis::Azimuth));
             assert_eq!(sim.now_ms(), 1_105); // first activation was at 100 ms
             assert_eq!(sim.summary().energized_ms, [1_005, 0]);
-            assert_eq!(sim.applied(), DriveCommand::IDLE);
+            assert_eq!(sim.actuator().actual(), DriveCommand::IDLE);
             break;
         }
         assert!(sim.now_ms() <= 1_105);
@@ -531,7 +532,7 @@ fn impossible_target_rate_is_reported_as_deviation_without_a_false_motion_fault(
     assert!(sim.summary().max_deviation_deg > 30.0);
     assert!(sim.summary().outside_tolerance_ms > 5_000);
     sim.step(None).unwrap();
-    assert_eq!(sim.applied(), DriveCommand::IDLE);
+    assert_eq!(sim.actuator().actual(), DriveCommand::IDLE);
 }
 
 #[test]
@@ -554,7 +555,8 @@ fn intentional_keyhole_offset_is_included_in_reported_sky_deviation() {
 
 #[test]
 fn invalid_simulation_inputs_never_create_or_retain_output() {
-    let controller = FollowingController::new(MotorProfile::AC_50HZ, 0.5).unwrap();
+    let controller =
+        FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap();
     for settings in [
         SimulationSettings {
             step_ms: 0,
@@ -584,12 +586,12 @@ fn invalid_simulation_inputs_never_create_or_retain_output() {
     while sim.now_ms() < 1_000 {
         sim.step(Some(Pointing::new(200.0, 45.0))).unwrap();
     }
-    assert!(sim.applied().is_active());
+    assert!(sim.actuator().actual().is_active());
     assert_eq!(
         sim.step(Some(Pointing::new(451.0, 45.0))),
         Err(SimulationError::InvalidPointing)
     );
-    assert_eq!(sim.applied(), DriveCommand::IDLE);
+    assert_eq!(sim.actuator().actual(), DriveCommand::IDLE);
     assert_eq!(
         sim.step(Some(Pointing::new(200.0, 45.0))),
         Err(SimulationError::InvalidPointing)
@@ -716,7 +718,7 @@ fn candidate_timing_preserves_healthy_coast_and_reversal_with_delayed_feedback()
             CALIBRATION,
             Pointing::new(180.0, 60.0),
             profile,
-            FollowingController::new(MotorProfile::AC_50HZ, 0.5).unwrap(),
+            FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap(),
             SimulationSettings {
                 feedback_latency_ms: 150,
                 actuator: ActuatorConfig {

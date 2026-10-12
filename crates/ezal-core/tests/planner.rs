@@ -471,7 +471,8 @@ fn route_storage_exhaustion_is_explicit_and_cancellable() {
 #[test]
 fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
     let start = snapshot(CAL, Pointing::new(100.0, 30.0), [1000, 2000]);
-    let follower = FollowingController::new(MotorProfile::AC_50HZ, 0.15).unwrap();
+    let follower =
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap();
     let make = |start| {
         Simulation::from_rest(
             CAL,
@@ -535,7 +536,8 @@ fn simulation_copies_recent_relay_holds_and_consumed_duty_from_the_output_owner(
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
     };
-    let follower = FollowingController::new(MotorProfile::AC_50HZ, 0.15).unwrap();
+    let follower =
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap();
     let settings = SimulationSettings {
         feedback_latency_ms: 0,
         ..SimulationSettings::default()

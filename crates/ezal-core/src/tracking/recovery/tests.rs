@@ -369,10 +369,6 @@ fn recovery_episode_has_one_deadline_and_old_sources_cannot_resume() {
         session.snapshot().termination.unwrap().reason,
         TrackingStop::ReacquisitionTimeout
     );
-    assert_eq!(
-        session.snapshot().termination.unwrap().recovery,
-        Some(second)
-    );
     assert_eq!(session.snapshot().mode, TrackingMode::Manual);
     assert!(!session
         .finish_reacquisition(second, second.deadline_ms())

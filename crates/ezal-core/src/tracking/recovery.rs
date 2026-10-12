@@ -211,7 +211,7 @@ impl InterceptSearch {
         let plan = plan.into();
         let launch_at_ms = start.at_ms.checked_add(INTERCEPT_PLANNING_LEAD_MS)?;
         let join_at_ms = launch_at_ms.checked_add(INTERCEPT_GRID_MS)?;
-        let follower = FollowingController::with_timing(
+        let follower = FollowingController::new(
             plan.config.reference,
             plan.config.deadband_deg,
             plan.actuator.relays,
@@ -287,7 +287,7 @@ impl InterceptSearch {
         };
         let case = plan.config.scenarios[self.scenario];
         if self.sim.is_none() {
-            let follower = FollowingController::with_timing(
+            let follower = FollowingController::new(
                 plan.config.reference,
                 plan.config.deadband_deg,
                 plan.actuator.relays,

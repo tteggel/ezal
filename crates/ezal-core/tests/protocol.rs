@@ -119,6 +119,9 @@ fn formats_position_telemetry_as_compact_json() {
 
 #[test]
 fn formats_control_status_as_compact_json() {
+    use ezal_core::coordination::CoordinationState;
+
+    let duty = CoordinationState::new().telemetry(1, 0).control.duty;
     let mut json = String::new();
     ControlStatus {
         controller: true,
@@ -128,7 +131,7 @@ fn formats_control_status_as_compact_json() {
         },
         network_ready: true,
         motion_fault: None,
-        duty: DutyStatus::INITIAL,
+        duty,
     }
     .write_json(&mut json)
     .unwrap();
@@ -144,7 +147,7 @@ fn formats_control_status_as_compact_json() {
         drive: DriveCommand::IDLE,
         network_ready: false,
         motion_fault: None,
-        duty: DutyStatus::INITIAL,
+        duty,
     }
     .write_json(&mut json)
     .unwrap();

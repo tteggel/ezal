@@ -39,8 +39,7 @@ fn replay(
         CALIBRATION,
         initial,
         profile,
-        FollowingController::with_timing(MotorProfile::AC_50HZ, 0.15, settings.actuator.relays)
-            .unwrap(),
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15, settings.actuator.relays).unwrap(),
         settings,
     )
     .unwrap();

@@ -225,7 +225,6 @@ impl Default for InputSettings {
 #[derive(Clone, Debug)]
 pub struct ExecutionInputs {
     orbit: OrbitalSnapshot,
-    settings: InputSettings,
     station: GroundStation,
     clock: ExecutionClock,
     ticket: PlanTicket,
@@ -274,7 +273,6 @@ impl ExecutionInputs {
         let clock = ExecutionClock::preview(anchor, settings.timing, config, los_ms, now_ms)?;
         let inputs = Self {
             orbit,
-            settings,
             station,
             clock,
             ticket,
@@ -283,14 +281,6 @@ impl ExecutionInputs {
         };
         inputs.validate_preview(current, now_ms)?;
         Ok(inputs)
-    }
-    /// Immutable publication metadata, including its unauthenticated transport.
-    pub const fn orbit(&self) -> &OrbitalSnapshot {
-        &self.orbit
-    }
-    /// Captured station and timing assumptions.
-    pub const fn settings(&self) -> InputSettings {
-        self.settings
     }
     /// Clock used for every fractional orbital-time calculation.
     pub const fn clock(&self) -> ExecutionClock {

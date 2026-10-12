@@ -284,11 +284,6 @@ impl Simulation {
         self.summary
     }
 
-    /// Most recently permitted output (idle after an error or `step(None)`).
-    pub const fn applied(&self) -> DriveCommand {
-        self.actuator.actual()
-    }
-
     /// Actual model position, including coast that has already been simulated.
     pub fn position(&self) -> Pointing {
         self.model.position()

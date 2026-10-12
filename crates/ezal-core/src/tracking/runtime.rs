@@ -566,7 +566,7 @@ impl TrackingRuntime {
             return;
         };
         let follower = self.follower.get_or_insert_with(|| {
-            FollowingController::with_timing(
+            FollowingController::new(
                 plan.config.reference,
                 plan.config.deadband_deg,
                 plan.actuator.relays,
@@ -737,7 +737,7 @@ impl TrackingRuntime {
                 } else if !intercept.start_unchanged(start) {
                     recovery.hold(RecoveryHold::ChangedStart, now);
                 } else {
-                    recovery.follower = FollowingController::with_timing(
+                    recovery.follower = FollowingController::new(
                         bound.plan().config.reference,
                         bound.plan().config.deadband_deg,
                         bound.plan().actuator.relays,

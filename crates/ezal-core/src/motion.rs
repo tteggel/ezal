@@ -53,12 +53,6 @@ impl MotionConfig {
     }
 }
 
-impl Default for MotionConfig {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
 /// First motion-supervision failure; latches both physical outputs off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MotionFault {

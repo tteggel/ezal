@@ -78,7 +78,7 @@ fn ssid_length_boundary_is_32_octets() {
             password: ""
         }
         .validate(),
-        Err(CredentialError::SsidTooLong { len: 33 })
+        Err(CredentialError::SsidTooLong)
     );
 }
 
@@ -91,16 +91,10 @@ fn password_length_boundaries_are_8_and_63_octets() {
     let ssid = "ground-station";
     let check = |pw: &str| Credentials { ssid, password: pw }.validate();
 
-    assert_eq!(
-        check(&n_chars(7)),
-        Err(CredentialError::PasswordTooShort { len: 7 })
-    );
+    assert_eq!(check(&n_chars(7)), Err(CredentialError::PasswordTooShort));
     assert_eq!(check(&n_chars(8)), Ok(Security::Protected));
     assert_eq!(check(&n_chars(63)), Ok(Security::Protected));
-    assert_eq!(
-        check(&n_chars(64)),
-        Err(CredentialError::PasswordTooLong { len: 64 })
-    );
+    assert_eq!(check(&n_chars(64)), Err(CredentialError::PasswordTooLong));
 }
 
 /// SSID length is counted in octets, not `char`s: a multi-byte SSID that fits
@@ -117,7 +111,7 @@ fn ssid_length_is_measured_in_octets_not_chars() {
             password: ""
         }
         .validate(),
-        Err(CredentialError::SsidTooLong { len: 34 })
+        Err(CredentialError::SsidTooLong)
     );
 }
 
@@ -126,9 +120,9 @@ fn ssid_length_is_measured_in_octets_not_chars() {
 fn every_error_has_a_message() {
     for err in [
         CredentialError::SsidEmpty,
-        CredentialError::SsidTooLong { len: 33 },
-        CredentialError::PasswordTooShort { len: 7 },
-        CredentialError::PasswordTooLong { len: 64 },
+        CredentialError::SsidTooLong,
+        CredentialError::PasswordTooShort,
+        CredentialError::PasswordTooLong,
     ] {
         assert!(!err.message().is_empty());
     }
