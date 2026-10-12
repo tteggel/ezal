@@ -2,7 +2,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{full_travel_installed, nominal, resting_start, FULL_TRAVEL_CALIBRATION};
+use common::{
+    full_travel_installed, full_travel_sample, nominal, resting_start, FULL_TRAVEL_CALIBRATION,
+};
 use ezal_core::actuator::ActuatorInput;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{
@@ -443,15 +445,7 @@ fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
         }),
         Err(SimulationError::InvalidStart)
     ));
-    let installed = full_travel_installed();
-    let old = FeedbackSample::from_voltages(
-        installed,
-        FULL_TRAVEL_CALIBRATION
-            .position_to_feedback(Pointing::new(100.0, 30.0))
-            .unwrap(),
-        1000,
-    )
-    .unwrap();
+    let old = full_travel_sample(Pointing::new(100.0, 30.0), 1000);
     assert!(matches!(
         make(RestingStart {
             feedback: old,
@@ -504,14 +498,7 @@ fn simulation_copies_recent_relay_holds_and_consumed_duty_from_the_output_owner(
         (3000, 102.0, Command::Inhibit),
     ] {
         start.at_ms = now;
-        start.feedback = FeedbackSample::from_voltages(
-            installed,
-            FULL_TRAVEL_CALIBRATION
-                .position_to_feedback(Pointing::new(azimuth, 30.0))
-                .unwrap(),
-            now,
-        )
-        .unwrap();
+        start.feedback = full_travel_sample(Pointing::new(azimuth, 30.0), now);
         let mut interlock = FeedbackInterlock::new(installed);
         interlock.publish(Some(start.feedback));
         start.network.observe(now, true);
