@@ -184,12 +184,12 @@ fn accept(
     pose: Pointing,
     config: PlanningConfig,
 ) {
-    let start = snapshot(CAL, pose, [0; 2]);
+    let start = resting_start(FULL_TRAVEL_CALIBRATION, pose, [0; 2]);
     let scenarios = config.scenarios.len();
     let report = run(Planner::new(
         |t| source.look_at(t),
         window(duration_ms),
-        CAL,
+        FULL_TRAVEL_CALIBRATION,
         start,
         config,
     )
@@ -293,8 +293,8 @@ fn near_zenith_is_not_assumed_trackable_just_because_exact_zenith_is() {
     let report = run(Planner::new(
         source,
         window(600_000),
-        CAL,
-        snapshot(CAL, Pointing::new(180.0, 10.0), [0; 2]),
+        FULL_TRAVEL_CALIBRATION,
+        resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 10.0), [0; 2]),
         PlanningConfig::default(),
     )
     .unwrap());

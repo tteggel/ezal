@@ -1,30 +1,18 @@
+mod common;
+
+use common::FULL_TRAVEL_CALIBRATION;
 use ezal_core::actuator::ActuatorConfig;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection, RelayConfig};
 use ezal_core::duty::DutyConfig;
 use ezal_core::feedback::{FeedbackSample, FEEDBACK_MAX_AGE_MS};
 use ezal_core::motion::MotionFault;
-use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
+use ezal_core::position::{InstalledCalibration, Pointing};
 use ezal_core::tracking::{
     pointing_deviation_deg, Axis, FollowingController, MotorModel, MotorProfile, Scenario,
     Simulation, SimulationError, SimulationSample, SimulationSettings, TrackingTarget,
 };
 
-// Synthetic full-travel installation, not an extrapolation of the hardware's calibration.
-const CALIBRATION: PositionCalibration = PositionCalibration {
-    azimuth: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 450.0,
-        voltage_min_mv: 200,
-        voltage_max_mv: 2_900,
-    },
-    elevation: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 180.0,
-        voltage_min_mv: 2_800,
-        voltage_max_mv: 1_000,
-    },
-};
 const CW: DriveCommand = DriveCommand {
     azimuth: Some(AzimuthDirection::Clockwise),
     elevation: None,
@@ -70,12 +58,18 @@ fn deviation(sample: SimulationSample, sky: Pointing) -> f32 {
 }
 
 fn model(profile: MotorProfile) -> MotorModel {
-    MotorModel::new(profile, CALIBRATION, Pointing::new(100.0, 45.0), [0, 0]).unwrap()
+    MotorModel::new(
+        profile,
+        FULL_TRAVEL_CALIBRATION,
+        Pointing::new(100.0, 45.0),
+        [0, 0],
+    )
+    .unwrap()
 }
 
 fn simulation(initial: Pointing, plant: MotorProfile) -> Simulation {
     Simulation::new(
-        CALIBRATION,
+        FULL_TRAVEL_CALIBRATION,
         initial,
         FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap(),
         settings(plant),
@@ -118,19 +112,24 @@ fn profile_and_installed_travel_are_checked_before_simulation() {
     let mut bad = MotorProfile::AC_50HZ;
     bad.azimuth.rate_deg_per_s = f32::NAN;
     assert_eq!(
-        MotorModel::new(bad, CALIBRATION, Pointing::new(100.0, 45.0), [0, 0]),
+        MotorModel::new(
+            bad,
+            FULL_TRAVEL_CALIBRATION,
+            Pointing::new(100.0, 45.0),
+            [0, 0]
+        ),
         Err(SimulationError::InvalidProfile)
     );
     assert_eq!(
         MotorModel::new(
             MotorProfile::AC_50HZ,
-            CALIBRATION,
+            FULL_TRAVEL_CALIBRATION,
             Pointing::new(100.0, 181.0),
             [0, 0]
         ),
         Err(SimulationError::InvalidPointing)
     );
-    let mut narrow = CALIBRATION;
+    let mut narrow = FULL_TRAVEL_CALIBRATION;
     narrow.elevation.angle_max_deg = 90.0;
     assert_eq!(
         MotorModel::new(
@@ -237,8 +236,13 @@ fn brief_idle_does_not_replenish_duty_and_full_rest_is_per_axis() {
     let mut profile = ideal_profile(1.0);
     profile.duty_limit_ms = 1_000;
     profile.rest_ms = 2_000;
-    let mut motor =
-        MotorModel::new(profile, CALIBRATION, Pointing::new(100.0, 45.0), [900, 0]).unwrap();
+    let mut motor = MotorModel::new(
+        profile,
+        FULL_TRAVEL_CALIBRATION,
+        Pointing::new(100.0, 45.0),
+        [900, 0],
+    )
+    .unwrap();
     motor.advance(CW, 100).unwrap();
     let mut rested = motor;
     motor.advance(DriveCommand::IDLE, 1_999).unwrap();
@@ -260,8 +264,13 @@ fn brief_idle_does_not_replenish_duty_and_full_rest_is_per_axis() {
 fn coast_can_cross_a_limit_after_the_relay_has_been_released() {
     let mut profile = ideal_profile(10.0);
     profile.azimuth.coast_ms = 500;
-    let mut motor =
-        MotorModel::new(profile, CALIBRATION, Pointing::new(449.0, 45.0), [0, 0]).unwrap();
+    let mut motor = MotorModel::new(
+        profile,
+        FULL_TRAVEL_CALIBRATION,
+        Pointing::new(449.0, 45.0),
+        [0, 0],
+    )
+    .unwrap();
     motor.advance(CW, 100).unwrap();
     assert_eq!(
         motor.advance(DriveCommand::IDLE, 1),
@@ -279,8 +288,10 @@ fn follower_requires_current_feedback_and_preserves_continuous_coordinates() {
         FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap();
     let position = Pointing::new(359.0, 45.0);
     let feedback = FeedbackSample::from_voltages(
-        InstalledCalibration::new(CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
-        CALIBRATION.position_to_feedback(position).unwrap(),
+        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
+        FULL_TRAVEL_CALIBRATION
+            .position_to_feedback(position)
+            .unwrap(),
         100,
     )
     .unwrap();
@@ -342,7 +353,7 @@ fn channel_skew_preserves_oldest_timestamp_and_each_channels_capture_position() 
     let mut plant = ideal_profile(2.0);
     plant.azimuth.rate_deg_per_s = 4.0;
     let mut sim = Simulation::new(
-        CALIBRATION,
+        FULL_TRAVEL_CALIBRATION,
         Pointing::new(100.0, 45.0),
         FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap(),
         SimulationSettings {
@@ -381,7 +392,7 @@ fn channel_skew_preserves_oldest_timestamp_and_each_channels_capture_position() 
 #[test]
 fn noisy_feedback_is_applied_before_adc_quantization_and_alternates_per_read() {
     let mut sim = Simulation::new(
-        CALIBRATION,
+        FULL_TRAVEL_CALIBRATION,
         Pointing::new(100.11, 45.07),
         FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap(),
         SimulationSettings {
@@ -427,7 +438,7 @@ fn pulse_aware_follower_avoids_reversal_chatter_with_both_relay_policies() {
             MotorProfile::AC_FAST,
         ] {
             let mut sim = Simulation::new(
-                CALIBRATION,
+                FULL_TRAVEL_CALIBRATION,
                 Pointing::new(180.0, 10.0),
                 FollowingController::new(MotorProfile::AC_50HZ, 0.15, relays).unwrap(),
                 settings(plant),
@@ -587,7 +598,7 @@ fn invalid_simulation_inputs_never_create_or_retain_output() {
     ] {
         assert!(matches!(
             Simulation::new(
-                CALIBRATION,
+                FULL_TRAVEL_CALIBRATION,
                 Pointing::new(100.0, 45.0),
                 controller,
                 settings,
@@ -733,7 +744,7 @@ fn candidate_timing_preserves_healthy_coast_and_reversal_with_delayed_feedback()
         MotorProfile::AC_FAST,
     ] {
         let mut sim = Simulation::new(
-            CALIBRATION,
+            FULL_TRAVEL_CALIBRATION,
             Pointing::new(180.0, 60.0),
             FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap(),
             SimulationSettings {

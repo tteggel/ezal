@@ -4,15 +4,6 @@ use super::*;
 use ezal_core::feedback::{FeedbackHealth, FeedbackSnapshot};
 use std::collections::VecDeque;
 
-fn measured(pose: Pointing, at: u64) -> FeedbackSample {
-    FeedbackSample::from_voltages(
-        InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
-        CAL.position_to_feedback(pose).unwrap(),
-        at,
-    )
-    .unwrap()
-}
-
 fn healthy(sample: FeedbackSample) -> FeedbackSnapshot {
     FeedbackSnapshot {
         raw: None,
@@ -40,11 +31,12 @@ impl Rig {
         let mut pose = plan.route.pointing_at(0).unwrap();
         pose.elevation_deg += offset;
         let mut actuator = Actuator::with_config(plan.actuator, DutyHistory::Known(used));
-        let feedback = healthy(measured(pose, AOS - 100));
-        let mut interlock =
-            FeedbackInterlock::new(InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap());
+        let feedback = healthy(full_travel_sample(pose, AOS - 100));
+        let mut interlock = FeedbackInterlock::new(
+            InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
+        );
         for at in [AOS - 2000, AOS] {
-            interlock.publish(Some(measured(pose, at)));
+            interlock.publish(Some(full_travel_sample(pose, at)));
             actuator.step(
                 ActuatorInput {
                     interlock,
@@ -58,7 +50,8 @@ impl Rig {
             runtime,
             run,
             actuator,
-            model: MotorModel::new(MotorProfile::AC_50HZ, CAL, pose, used).unwrap(),
+            model: MotorModel::new(MotorProfile::AC_50HZ, FULL_TRAVEL_CALIBRATION, pose, used)
+                .unwrap(),
             feedback,
             pending: VecDeque::new(),
             now: AOS,
@@ -72,13 +65,14 @@ impl Rig {
         self.now = at;
         if (at - AOS).is_multiple_of(100) {
             self.pending
-                .push_back((at + 100, measured(self.model.position(), at)));
+                .push_back((at + 100, full_travel_sample(self.model.position(), at)));
         }
         while self.pending.front().is_some_and(|(ready, _)| *ready <= at) {
             self.feedback = healthy(self.pending.pop_front().unwrap().1);
         }
-        let mut interlock =
-            FeedbackInterlock::new(InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap());
+        let mut interlock = FeedbackInterlock::new(
+            InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
+        );
         interlock.publish(self.feedback.last_valid);
         let obs = observation(at);
         // A coherent snapshot is serviced before planning; GPIO would be applied
@@ -142,7 +136,7 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         InputSettings::default(),
         clock(UTC),
         execution_window(clock(UTC).anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
-        &config(),
+        &nominal(),
         at,
     )
     .unwrap();
@@ -156,10 +150,11 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         },
         DutyHistory::Known([0; 2]),
     );
-    let mut interlock =
-        FeedbackInterlock::new(InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap());
+    let mut interlock = FeedbackInterlock::new(
+        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
+    );
     for now in [at - 2000, at] {
-        interlock.publish(Some(measured(pose, now)));
+        interlock.publish(Some(full_travel_sample(pose, now)));
         actuator.step(
             ActuatorInput {
                 interlock,
@@ -171,11 +166,18 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
     }
     let start = RestingStart {
         at_ms: at,
-        feedback: measured(pose, at),
+        feedback: full_travel_sample(pose, at),
         actuator,
         network: observation(at).network,
     };
-    let mut planner = Planner::new(inputs.clone(), inputs.window(), CAL, start, config()).unwrap();
+    let mut planner = Planner::new(
+        inputs.clone(),
+        inputs.window(),
+        FULL_TRAVEL_CALIBRATION,
+        start,
+        nominal(),
+    )
+    .unwrap();
     while !planner.is_finished() {
         planner.step().unwrap();
     }
@@ -199,8 +201,9 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         runtime,
         run,
         actuator,
-        model: MotorModel::new(MotorProfile::AC_50HZ, CAL, pose, [0; 2]).unwrap(),
-        feedback: healthy(measured(pose, gap.recovery_at_ms)),
+        model: MotorModel::new(MotorProfile::AC_50HZ, FULL_TRAVEL_CALIBRATION, pose, [0; 2])
+            .unwrap(),
+        feedback: healthy(full_travel_sample(pose, gap.recovery_at_ms)),
         pending: VecDeque::new(),
         now: gap.recovery_at_ms,
     };
@@ -441,7 +444,7 @@ fn physical_fault_and_network_loss_discard_validated_intercepts() {
         let mut obs = observation(rig.now);
         let reason = if physical {
             let mut interlock = FeedbackInterlock::new(
-                InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
+                InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
             );
             interlock.publish(rig.feedback.last_valid);
             rig.actuator.step(
@@ -494,7 +497,13 @@ fn missed_measured_intercept_retries_with_the_original_deadline_and_consumed_dut
         },
         ..MotorProfile::AC_50HZ
     };
-    rig.model = MotorModel::new(slow, CAL, rig.model.position(), [0, 10000]).unwrap();
+    rig.model = MotorModel::new(
+        slow,
+        FULL_TRAVEL_CALIBRATION,
+        rig.model.position(),
+        [0, 10000],
+    )
+    .unwrap();
     rig.until(planned.intercept_at_ms.unwrap() + REACQUISITION_DWELL_MS + 500);
     let missed = rig.runtime.recovery().unwrap();
     assert_eq!(missed.hold, Some(RecoveryHold::MissedIntercept));
@@ -519,7 +528,7 @@ fn deviation_uses_acquisition_time_and_reports_real_sampling_uncertainty() {
     runtime
         .observe_tracking(
             run,
-            healthy(measured(pose, at)),
+            healthy(full_travel_sample(pose, at)),
             &actuator,
             observation(at + 400),
         )
@@ -544,7 +553,7 @@ fn delayed_output_drain_and_missed_control_tick_hold_before_reusing_a_command() 
         if delayed_launch {
             rig.until(launch - 20);
             let mut interlock = FeedbackInterlock::new(
-                InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
+                InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
             );
             interlock.publish(rig.feedback.last_valid);
             rig.actuator.step(

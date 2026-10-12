@@ -3,39 +3,16 @@ use crate::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use crate::ads1015::FEEDBACK_FULL_SCALE;
 use crate::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
 use crate::duty::{DutyConfig, DutyHistory};
-use crate::feedback::FeedbackSample;
 use crate::interlock::FeedbackInterlock;
 use crate::network::NetworkGate;
 use crate::orbit::LookAngle;
-use crate::position::{AxisCalibration, InstalledCalibration, PositionCalibration};
+use crate::position::InstalledCalibration;
+use crate::test_support::{full_travel_sample, FULL_TRAVEL_CALIBRATION};
 use crate::tracking::*;
 use std::cell::Cell;
 use std::sync::OnceLock;
 
 const AOS: u64 = 120_000;
-const CAL: PositionCalibration = PositionCalibration {
-    azimuth: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 450.0,
-        voltage_min_mv: 200,
-        voltage_max_mv: 2900,
-    },
-    elevation: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 180.0,
-        voltage_min_mv: 2800,
-        voltage_max_mv: 1000,
-    },
-};
-
-fn feedback(pose: Pointing, now: u64) -> FeedbackSample {
-    FeedbackSample::from_voltages(
-        InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
-        CAL.position_to_feedback(pose).unwrap(),
-        now,
-    )
-    .unwrap()
-}
 
 fn rest(pose: Pointing, now: u64, used: [u64; 2]) -> RestingStart {
     let mut actuator = Actuator::with_config(
@@ -52,7 +29,7 @@ fn rest(pose: Pointing, now: u64, used: [u64; 2]) -> RestingStart {
     }
     RestingStart {
         at_ms: now,
-        feedback: feedback(pose, now),
+        feedback: full_travel_sample(pose, now),
         actuator,
         network,
     }
@@ -65,9 +42,10 @@ fn service(
     network: NetworkGate,
     command: Command,
 ) {
-    let mut interlock =
-        FeedbackInterlock::new(InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap());
-    interlock.publish(Some(feedback(pose, at)));
+    let mut interlock = FeedbackInterlock::new(
+        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
+    );
+    interlock.publish(Some(full_travel_sample(pose, at)));
     actuator.step(
         ActuatorInput {
             interlock,
@@ -96,7 +74,7 @@ fn plan() -> TrackingPlan {
                 aos_at_ms: AOS,
                 duration_ms: 90_000,
             },
-            CAL,
+            FULL_TRAVEL_CALIBRATION,
             rest(Pointing::new(180.0, 45.0), 2000, [0, 0]),
             PlanningConfig::default(),
         )
@@ -236,7 +214,7 @@ fn start_proof_rejects_changed_pose_and_hidden_relay_history() {
     let now = intercept.launch_at_ms;
     let mut current = start;
     current.at_ms = now;
-    current.feedback = feedback(pose, now);
+    current.feedback = full_travel_sample(pose, now);
     for at in (start.at_ms..=now).step_by(100) {
         current.network.observe(at, true);
     }
@@ -248,7 +226,7 @@ fn start_proof_rejects_changed_pose_and_hidden_relay_history() {
         Command::Inhibit,
     );
     assert!(intercept.start_unchanged(current));
-    current.feedback = feedback(Pointing::new(180.0, 35.1), now);
+    current.feedback = full_travel_sample(Pointing::new(180.0, 35.1), now);
     assert!(!intercept.start_unchanged(current));
     // Return to the same pose with a fresh sample, but lose continuous idle.
     current = start;
@@ -273,7 +251,7 @@ fn start_proof_rejects_changed_pose_and_hidden_relay_history() {
         Command::Inhibit,
     );
     current.at_ms = now;
-    current.feedback = feedback(pose, now);
+    current.feedback = full_travel_sample(pose, now);
     for at in (start.at_ms + 200..=now).step_by(100) {
         current.network.observe(at, true);
     }

@@ -695,16 +695,13 @@ bridges at 80°, 85° and 88° can intentionally offset the sky direction. Every
 following-error check includes that offset.
 
 Run the offline [planning example](../crates/ezal-core/examples/tracking-plan.rs)
-or the individual [controller replays](../crates/ezal-core/examples/tracking-sim.rs)
 inside the development shell:
 
 ```bash
 TRACKING_HOST=$(rustc --print host-tuple)
 cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-plan
-cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim
 # Compare proposed timing offline; this does not configure the device:
 cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-plan -- --candidate-timing
-cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim -- --candidate-timing
 ```
 
 The planner requires a serviced, settled copy of the output owner's actuator,

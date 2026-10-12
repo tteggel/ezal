@@ -1,3 +1,7 @@
+#[path = "../common/mod.rs"]
+mod common;
+
+use common::{full_travel_sample, nominal, resting_start, FULL_TRAVEL_CALIBRATION};
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
@@ -10,7 +14,7 @@ use ezal_core::ntp::{self, UtcClock};
 use ezal_core::operator::OperatorToken;
 use ezal_core::orbit::{Observer, MAX_TLE_AGE_S};
 use ezal_core::passes::Ephemeris;
-use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
+use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing};
 use ezal_core::tracking::*;
 use std::sync::OnceLock;
 
@@ -31,21 +35,6 @@ const REVISIONS: PlanRevisions = PlanRevisions {
     clock: 1,
     start: 1,
 };
-const CAL: PositionCalibration = PositionCalibration {
-    azimuth: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 450.0,
-        voltage_min_mv: 200,
-        voltage_max_mv: 2900,
-    },
-    elevation: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 180.0,
-        voltage_min_mv: 2800,
-        voltage_max_mv: 1000,
-    },
-};
-
 fn sample(utc: u64) -> ntp::TimeSample {
     let mut stamp = [0; 8];
     stamp[..4].copy_from_slice(&((utc / 1000 + 2_208_988_800) as u32).to_be_bytes());
@@ -95,12 +84,6 @@ fn catalog() -> OrbitalCatalog {
     );
     catalog
 }
-fn config() -> PlanningConfig {
-    let mut config = PlanningConfig::default();
-    config.scenarios.clear();
-    config.scenarios.push(Scenario::NOMINAL).unwrap();
-    config
-}
 fn action(
     runtime: &mut TrackingRuntime,
     token: OperatorToken,
@@ -145,7 +128,7 @@ fn capture(
         InputSettings::default(),
         current,
         execution_window(current.anchor().unwrap(), aos_utc, los_utc).unwrap(),
-        &config(),
+        &nominal(),
         2000,
     )
 }
@@ -155,48 +138,12 @@ fn report(inputs: &ExecutionInputs) -> PlanningReport {
         .get_or_init(|| {
             let look = inputs.look_at(inputs.window().aos_unix_s).unwrap();
             let pose = Pointing::new(look.azimuth_deg as f32, look.elevation_deg as f32);
-            let installed = InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap();
-            let mut actuator = Actuator::with_config(
-                ActuatorConfig {
-                    duty: DutyConfig::CONFIRMED_AC,
-                    ..ActuatorConfig::DEFAULT
-                },
-                DutyHistory::Known([0, 0]),
-            );
-            let mut network = NetworkGate::new();
-            let mut feedback = None;
-            for at in [0, 2000] {
-                feedback = Some(
-                    FeedbackSample::from_voltages(
-                        installed,
-                        CAL.position_to_feedback(pose).unwrap(),
-                        at,
-                    )
-                    .unwrap(),
-                );
-                let mut interlock = FeedbackInterlock::new(installed);
-                interlock.publish(feedback);
-                network.observe(at, true);
-                actuator.step(
-                    ActuatorInput {
-                        interlock,
-                        network,
-                        command: None,
-                    },
-                    at,
-                );
-            }
             let mut planner = Planner::new(
                 inputs.clone(),
                 inputs.window(),
-                CAL,
-                RestingStart {
-                    at_ms: 2000,
-                    feedback: feedback.unwrap(),
-                    actuator,
-                    network,
-                },
-                config(),
+                FULL_TRAVEL_CALIBRATION,
+                resting_start(FULL_TRAVEL_CALIBRATION, pose, [0, 0]),
+                nominal(),
             )
             .unwrap();
             while !planner.is_finished() {
@@ -404,7 +351,7 @@ fn input_snapshot_propagates_fractional_time_and_binds_clock_satellite_and_plan(
         InputSettings::default(),
         clock(UTC),
         inputs.window(),
-        &config(),
+        &nominal(),
         2000,
     );
     assert!(matches!(wrong, Err(InputError::Binding)));
@@ -420,7 +367,7 @@ fn input_snapshot_propagates_fractional_time_and_binds_clock_satellite_and_plan(
         },
         clock(UTC),
         inputs.window(),
-        &config(),
+        &nominal(),
         2000,
     );
     assert!(matches!(wrong, Err(InputError::Observer)));
@@ -583,7 +530,7 @@ fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacemen
         InputSettings::default(),
         obs.clock,
         execution_window(obs.clock.anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
-        &config(),
+        &nominal(),
         prep,
     )
     .unwrap();
@@ -755,7 +702,7 @@ fn clock_that_is_valid_now_but_exceeds_the_los_budget_blocks_preparation() {
         },
         clock(UTC),
         execution_window(clock(UTC).anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
-        &config(),
+        &nominal(),
         2000,
     )
     .unwrap();

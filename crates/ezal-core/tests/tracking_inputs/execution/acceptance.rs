@@ -26,10 +26,10 @@ fn quantized(pose: Pointing, at: u64) -> FeedbackSample {
         ((mv / code).round() * code) as i32
     };
     FeedbackSample::from_voltages(
-        InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
+        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
         FeedbackVoltages {
-            a0_elevation_mv: voltage(CAL.elevation, pose.elevation_deg),
-            a1_azimuth_mv: voltage(CAL.azimuth, pose.azimuth_deg),
+            a0_elevation_mv: voltage(FULL_TRAVEL_CALIBRATION.elevation, pose.elevation_deg),
+            a1_azimuth_mv: voltage(FULL_TRAVEL_CALIBRATION.azimuth, pose.azimuth_deg),
         },
         at,
     )
@@ -52,7 +52,7 @@ fn planned(
             },
             DutyHistory::Known(used),
         ),
-        model: MotorModel::new(MotorProfile::AC_50HZ, CAL, pose, used).unwrap(),
+        model: MotorModel::new(MotorProfile::AC_50HZ, FULL_TRAVEL_CALIBRATION, pose, used).unwrap(),
         pending: VecDeque::new(),
         owner: 0,
         now: 2000,
@@ -95,7 +95,7 @@ fn planned(
     let mut planner = Planner::new(
         inputs.clone(),
         window,
-        CAL,
+        FULL_TRAVEL_CALIBRATION,
         device.state.resting_start().unwrap(),
         planning,
     )
@@ -118,7 +118,7 @@ fn publish(device: &mut Device, report: PlanningReport, inputs: ExecutionInputs)
 fn arm_recorded() -> Device {
     // Only the quiet nominal assumption admits this fixture. The separate
     // production-profile test must reject it; this does not relax firmware.
-    let (mut device, report, inputs) = planned(FULL_EVENT, config(), [0; 2]);
+    let (mut device, report, inputs) = planned(FULL_EVENT, nominal(), [0; 2]);
     assert!(report.plan.is_some(), "{report:?}");
     publish(&mut device, report, inputs);
     device.request(2, TrackingAction::Arm);
@@ -269,7 +269,7 @@ fn recorded_complete_window_executes_its_admitted_reception_then_holds_without_a
 fn production_assumptions_and_exhausted_duty_refuse_the_recorded_pass_without_motion() {
     for (name, planning, used) in [
         ("nine scenarios", PlanningConfig::default(), [0; 2]),
-        ("exhausted duty", config(), [300_000; 2]),
+        ("exhausted duty", nominal(), [300_000; 2]),
     ] {
         let (mut device, report, inputs) = planned(FULL_EVENT, planning, used);
         assert!(report.plan.is_none(), "{name}: {report:?}");
@@ -345,7 +345,13 @@ fn stalled_hardware_and_missing_feedback_stop_the_full_pass_and_do_not_resume() 
             let mut profile = MotorProfile::AC_50HZ;
             profile.azimuth.rate_deg_per_s = 0.0;
             profile.elevation.rate_deg_per_s = 0.0;
-            device.model = MotorModel::new(profile, CAL, device.model.position(), [0; 2]).unwrap();
+            device.model = MotorModel::new(
+                profile,
+                FULL_TRAVEL_CALIBRATION,
+                device.model.position(),
+                [0; 2],
+            )
+            .unwrap();
         } else {
             device.until(FULL_AOS + 5000);
         }

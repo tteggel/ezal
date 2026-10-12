@@ -7,15 +7,6 @@ use std::collections::VecDeque;
 
 mod acceptance;
 
-fn measured(pose: Pointing, at: u64) -> FeedbackSample {
-    FeedbackSample::from_voltages(
-        InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
-        CAL.position_to_feedback(pose).unwrap(),
-        at,
-    )
-    .unwrap()
-}
-
 struct Device {
     state: CoordinationState,
     actuator: Actuator,
@@ -42,7 +33,8 @@ impl Device {
         let mut device = Self {
             state: CoordinationState::new(),
             actuator: Actuator::with_config(plan.actuator, DutyHistory::Known([0; 2])),
-            model: MotorModel::new(MotorProfile::AC_50HZ, CAL, pose, [0; 2]).unwrap(),
+            model: MotorModel::new(MotorProfile::AC_50HZ, FULL_TRAVEL_CALIBRATION, pose, [0; 2])
+                .unwrap(),
             pending: VecDeque::new(),
             owner: 0,
             now: 0,
@@ -53,7 +45,7 @@ impl Device {
         };
         for at in (0..=2000).step_by(100) {
             device.state.publish_network(true, at);
-            device.feedback(measured(pose, at), at);
+            device.feedback(full_travel_sample(pose, at), at);
             device.apply(at);
         }
         device.now = 2000;
@@ -81,9 +73,9 @@ impl Device {
             let mut planner = Planner::new(
                 inputs.clone(),
                 inputs.window(),
-                CAL,
+                FULL_TRAVEL_CALIBRATION,
                 device.state.resting_start().unwrap(),
-                config(),
+                nominal(),
             )
             .unwrap();
             while !planner.is_finished() {
@@ -135,8 +127,9 @@ impl Device {
             last_valid: Some(sample),
             health: FeedbackHealth::Healthy,
         };
-        let mut interlock =
-            FeedbackInterlock::new(InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap());
+        let mut interlock = FeedbackInterlock::new(
+            InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
+        );
         interlock.publish(Some(sample));
         self.state.publish_feedback(feedback, interlock, at);
     }
@@ -152,7 +145,7 @@ impl Device {
     }
 
     fn tick(&mut self, at: u64) {
-        self.tick_inner(at, Some(measured));
+        self.tick_inner(at, Some(full_travel_sample));
         assert_eq!(
             self.actuator.fault(),
             None,
@@ -336,7 +329,7 @@ fn changed_start_invalidates_preview_before_a_simultaneous_preparation_deadline(
     let mut pose = device.model.position();
     pose.azimuth_deg += 1.0;
     let old_ticket = device.state.tracking().bound_plan().unwrap().ticket();
-    device.feedback(measured(pose, prep - 10), prep);
+    device.feedback(full_travel_sample(pose, prep - 10), prep);
     device.state.publish_network(true, prep);
     device.apply(prep);
     assert!(device.state.tracking().snapshot().run.is_none());
@@ -392,11 +385,18 @@ fn device_late_admission_uses_background_recovery_then_hands_off_to_normal_follo
         InputSettings::default(),
         clock(UTC),
         execution_window(clock(UTC).anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
-        &config(),
+        &nominal(),
         now,
     )
     .unwrap();
-    let mut planner = Planner::new(inputs.clone(), inputs.window(), CAL, start, config()).unwrap();
+    let mut planner = Planner::new(
+        inputs.clone(),
+        inputs.window(),
+        FULL_TRAVEL_CALIBRATION,
+        start,
+        nominal(),
+    )
+    .unwrap();
     while !planner.is_finished() {
         planner.step().unwrap();
     }

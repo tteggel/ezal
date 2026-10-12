@@ -16,8 +16,8 @@ fn late_plan(aos_at_ms: u64, used: [u64; 2], duration_ms: u32) -> PlanningReport
             aos_at_ms,
             ..window(duration_ms)
         },
-        CAL,
-        snapshot(CAL, Pointing::new(180.0, 40.0), used),
+        FULL_TRAVEL_CALIBRATION,
+        resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 40.0), used),
         PlanningConfig::default(),
     )
     .unwrap())
@@ -66,13 +66,13 @@ fn keyhole(t: f64) -> Option<LookAngle> {
 }
 
 fn gap_report(source: impl Ephemeris) -> PlanningReport {
-    let mut cal = CAL;
+    let mut cal = FULL_TRAVEL_CALIBRATION;
     cal.elevation.angle_max_deg = 90.0;
     run(Planner::new(
         source,
         window(90_000),
         cal,
-        snapshot(cal, Pointing::new(120.0, 80.0), [1000; 2]),
+        resting_start(cal, Pointing::new(120.0, 80.0), [1000; 2]),
         nominal(),
     )
     .unwrap())
@@ -126,8 +126,8 @@ fn expired_short_exhausted_and_separated_gap_passes_remain_unsupported() {
                 aos_at_ms: 1000,
                 ..window(1000)
             },
-            CAL,
-            snapshot(CAL, Pointing::new(180.0, 40.0), [0; 2]),
+            FULL_TRAVEL_CALIBRATION,
+            resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 40.0), [0; 2]),
             PlanningConfig::default()
         ),
         Err(PlanningError::PassEnded)
@@ -344,8 +344,8 @@ fn partial_work_yields_and_later_source_failure_discards_it() {
             aos_at_ms: 1000,
             ..window(90_000)
         },
-        CAL,
-        snapshot(CAL, Pointing::new(180.0, 40.0), [0; 2]),
+        FULL_TRAVEL_CALIBRATION,
+        resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 40.0), [0; 2]),
         PlanningConfig::default(),
     )
     .unwrap();
@@ -391,13 +391,13 @@ fn a_planned_gap_cannot_extend_an_earlier_recovery_episode() {
 
 #[test]
 fn partial_admission_does_not_bypass_noisy_scenario_motion_faults() {
-    let mut cal = CAL;
+    let mut cal = FULL_TRAVEL_CALIBRATION;
     cal.elevation.angle_max_deg = 90.0;
     let report = run(Planner::new(
         keyhole,
         window(90_000),
         cal,
-        snapshot(cal, Pointing::new(120.0, 80.0), [1000; 2]),
+        resting_start(cal, Pointing::new(120.0, 80.0), [1000; 2]),
         PlanningConfig::default(),
     )
     .unwrap());

@@ -1,13 +1,16 @@
-use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
+mod common;
+
+use common::{resting_start, FULL_TRAVEL_CALIBRATION};
+use ezal_core::actuator::{Actuator, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
-use ezal_core::duty::{DutyConfig, DutyHistory};
+use ezal_core::duty::DutyHistory;
 use ezal_core::feedback::FeedbackSample;
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::network::NetworkGate;
 use ezal_core::operator::{LeaseError, OperatorToken};
 use ezal_core::orbit::LookAngle;
-use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
+use ezal_core::position::{InstalledCalibration, Pointing};
 use ezal_core::tracking::*;
 use std::sync::OnceLock;
 
@@ -39,53 +42,6 @@ fn report(timing: PreparationTiming) -> PlanningReport {
     };
     cache
         .get_or_init(|| {
-            let calibration = PositionCalibration {
-                azimuth: AxisCalibration {
-                    angle_min_deg: 0.0,
-                    angle_max_deg: 450.0,
-                    voltage_min_mv: 200,
-                    voltage_max_mv: 2900,
-                },
-                elevation: AxisCalibration {
-                    angle_min_deg: 0.0,
-                    angle_max_deg: 180.0,
-                    voltage_min_mv: 2800,
-                    voltage_max_mv: 1000,
-                },
-            };
-            let installed = InstalledCalibration::new(calibration, FEEDBACK_FULL_SCALE).unwrap();
-            let mut actuator = Actuator::with_config(
-                ActuatorConfig {
-                    duty: DutyConfig::CONFIRMED_AC,
-                    ..ActuatorConfig::DEFAULT
-                },
-                DutyHistory::Known([0, 0]),
-            );
-            let mut network = NetworkGate::new();
-            let mut feedback = None;
-            for at in [0, 2000] {
-                feedback = Some(
-                    FeedbackSample::from_voltages(
-                        installed,
-                        calibration
-                            .position_to_feedback(Pointing::new(180.0, 45.0))
-                            .unwrap(),
-                        at,
-                    )
-                    .unwrap(),
-                );
-                let mut interlock = FeedbackInterlock::new(installed);
-                interlock.publish(feedback);
-                network.observe(at, true);
-                actuator.step(
-                    ActuatorInput {
-                        interlock,
-                        network,
-                        command: None,
-                    },
-                    at,
-                );
-            }
             let mut config = PlanningConfig {
                 preparation_timing: timing,
                 ..PlanningConfig::default()
@@ -104,13 +60,8 @@ fn report(timing: PreparationTiming) -> PlanningReport {
                     aos_at_ms: AOS,
                     duration_ms: 30_000,
                 },
-                calibration,
-                RestingStart {
-                    at_ms: 2000,
-                    feedback: feedback.unwrap(),
-                    actuator,
-                    network,
-                },
+                FULL_TRAVEL_CALIBRATION,
+                resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 45.0), [0, 0]),
                 config,
             )
             .unwrap();
