@@ -242,8 +242,9 @@ correct one for our secure-Arm build) and verifying every block lands in
 valid RP2350 flash. It uses Cargo's JSON artifact report to locate the ELF,
 including when `--target-dir` or Cargo configuration changes its directory;
 it never falls back to an older image at the default path, and prints the
-ELF and UF2 paths on stdout. `picotool` and `jq` come from the dev shell. Build and test helpers use `--locked` so dependency
-changes require an explicit lockfile update.
+ELF and UF2 paths on stdout. `picotool` and `jq` come from the dev shell.
+Build and test helpers use `--locked` so dependency changes require an
+explicit lockfile update.
 
 The trade-off versus `cargo run` is that there's no probe attached, so you
 won't see the live defmt log stream — the firmware still emits it over RTT,
@@ -263,14 +264,14 @@ This is equivalent to `cargo test -p ezal-core` with the right `--target`
 override (since the workspace default target is the Pico's ARM core,
 running tests for the host needs an explicit triple — the script takes it
 from `rustc --print host-tuple`). Host tests cover feedback validation, the
-feedback gate and its travel-aware endpoint band, ownership, the command mailbox, and
-the actuator sequence the firmware itself runs, as well as the actual pinned
-picoserve HTTP upgrade/WebSocket parser with deterministic timeouts. Pass
-prediction tests cover TLE validation, the streamed HTTP framing of the
-element download, forecast coverage, and the `/api/passes` JSON. The core's
-only runtime dependencies are `sgp4` (TLE fields and propagation), `libm`
-and `heapless`; picoserve is test-only, sharing the workspace's version pin
-with the firmware so both exercise one parser.
+feedback gate and its travel-aware endpoint band, ownership, the command
+mailbox, and the actuator sequence the firmware itself runs, as well as the
+actual pinned picoserve HTTP upgrade/WebSocket parser with deterministic
+timeouts. Pass prediction tests cover TLE validation, the streamed HTTP
+framing of the element download, forecast coverage, and the `/api/passes`
+JSON. The core's only runtime dependencies are `sgp4` (TLE fields and
+propagation), `libm` and `heapless`; picoserve is test-only, sharing the
+workspace's version pin with the firmware so both exercise one parser.
 
 Apart from one sanity test of the installed calibration, the policy tests use
 their own fixture in `crates/ezal-core/tests/common/`, so replacing
