@@ -107,7 +107,7 @@ impl Actuator {
         Self {
             config,
             configuration_valid: config.is_valid() && history.is_valid(config.duty),
-            guard: ActuatorGuard::with_timing(config.relays),
+            guard: ActuatorGuard::new(config.relays),
             motion: MotionMonitor::new(config.motion, config.travel),
             duty: DutyMonitor::new(config.duty, history, config.relays.min_active_ms),
             network_generation: 0,
@@ -190,9 +190,9 @@ impl Actuator {
         }
     }
 
-    /// Physical deadlines, combined with operating permission by `step`.
+    /// Physical deadlines, combined with operating permission by `step`. The
+    /// interlock is the one `step` bound to this actuator's travel profile.
     fn next_deadline_ms(&self, interlock: &FeedbackInterlock, now_ms: u64) -> Option<u64> {
-        let interlock = interlock.with_travel_profile(self.config.travel);
         let transition = self.guard.next_transition_ms(now_ms);
         let feedback = interlock.deadline_ms(self.guard.actual(), now_ms);
         let duty = if self.fault().is_none() {

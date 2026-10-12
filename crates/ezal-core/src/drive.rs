@@ -22,14 +22,6 @@ pub const OUTPUT_MIN_INACTIVE_MS: u64 = 2_000;
 /// Maximum lifetime of a movement command that has not been refreshed.
 pub const MOVEMENT_LEASE_MS: u64 = 750;
 
-/// Fastest azimuth travel assumed while an output is energised: the G-5500
-/// manual's 58 s per 360° at 60 Hz (6.2°/s), plus margin.
-pub const AZIMUTH_MAX_SPEED_DEG_PER_S: f32 = 7.0;
-
-/// Fastest elevation travel assumed while an output is energised: the G-5500
-/// manual's 67 s per 180° at 60 Hz (2.7°/s), plus margin.
-pub const ELEVATION_MAX_SPEED_DEG_PER_S: f32 = 3.0;
-
 /// Ordinary relay timing, independent of source leases and revocable permissions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RelayConfig {
@@ -247,11 +239,6 @@ struct RelayTiming {
 }
 
 impl RelayTiming {
-    #[cfg(test)]
-    const fn new() -> Self {
-        Self::with_config(RelayConfig::DEFAULT)
-    }
-
     const fn with_config(config: RelayConfig) -> Self {
         Self {
             azimuth: AxisRelay::new(config),
@@ -315,21 +302,11 @@ impl RelayTiming {
         self.actual() != before
     }
 
-    #[cfg(test)]
-    fn update(&mut self, now_ms: u64) -> bool {
-        self.update_until(now_ms, u64::MAX)
-    }
-
     fn update_until(&mut self, now_ms: u64, activation_limit_ms: u64) -> bool {
         let before = self.actual();
         self.azimuth.update(now_ms, activation_limit_ms);
         self.elevation.update(now_ms, activation_limit_ms);
         self.actual() != before
-    }
-
-    #[cfg(test)]
-    fn next_transition_ms(&self, now_ms: u64) -> Option<u64> {
-        self.next_transition_until(now_ms, u64::MAX)
     }
 
     fn next_transition_until(&self, now_ms: u64, activation_limit_ms: u64) -> Option<u64> {
@@ -361,13 +338,8 @@ pub(crate) struct ActuatorGuard {
 }
 
 impl ActuatorGuard {
-    /// Create an idle guard with no active lease.
-    pub const fn new() -> Self {
-        Self::with_timing(RelayConfig::DEFAULT)
-    }
-
     /// Create an idle guard with validated installation timing.
-    pub const fn with_timing(config: RelayConfig) -> Self {
+    pub const fn new(config: RelayConfig) -> Self {
         Self {
             relays: RelayTiming::with_config(config),
             lease_deadline_ms: None,
@@ -478,12 +450,6 @@ impl ActuatorGuard {
             (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
             (None, None) => None,
         }
-    }
-}
-
-impl Default for ActuatorGuard {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

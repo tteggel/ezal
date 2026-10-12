@@ -4,9 +4,7 @@ use super::common;
 
 use common::{installed, sample, TEST_CALIBRATION};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::drive::{
-    AzimuthDirection, Command, DriveCommand, ElevationDirection, AZIMUTH_MAX_SPEED_DEG_PER_S,
-};
+use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection};
 use ezal_core::feedback::{FeedbackMonitor, FEEDBACK_MAX_AGE_MS};
 use ezal_core::interlock::{FeedbackInterlock, TravelProfile};
 use ezal_core::position::{
@@ -297,7 +295,7 @@ fn outward_travel_is_cut_before_it_could_reach_an_endpoint_code() {
     let code_deg = (azimuth.angle_max_deg - azimuth.angle_min_deg) * FEEDBACK_FULL_SCALE.code_mv()
         / (azimuth.voltage_max_mv - azimuth.voltage_min_mv) as f32;
     let worst_travel_deg = (cut_ms - sample_ms + TravelProfile::DEFAULT.azimuth.coast_ms) as f32
-        * AZIMUTH_MAX_SPEED_DEG_PER_S
+        * TravelProfile::DEFAULT.azimuth.max_speed_deg_per_s
         / 1_000.0;
     assert!(start.azimuth_deg + worst_travel_deg < azimuth.angle_max_deg - code_deg);
 
