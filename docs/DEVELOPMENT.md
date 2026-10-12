@@ -241,8 +241,8 @@ resulting elf, tagging the image with the `rp2350-arm-s` family (the
 correct one for our secure-Arm build) and verifying every block lands in
 valid RP2350 flash. It uses Cargo's JSON artifact report to locate the ELF,
 including when `--target-dir` or Cargo configuration changes its directory;
-it never falls back to an older image at the default path. `picotool` and `jq`
-come from the dev shell. Build and test helpers use `--locked` so dependency
+it never falls back to an older image at the default path, and prints the
+ELF and UF2 paths on stdout. `picotool` and `jq` come from the dev shell. Build and test helpers use `--locked` so dependency
 changes require an explicit lockfile update.
 
 The trade-off versus `cargo run` is that there's no probe attached, so you
@@ -261,9 +261,9 @@ straight from the command line.
 
 This is equivalent to `cargo test -p ezal-core` with the right `--target`
 override (since the workspace default target is the Pico's ARM core,
-running tests for the host needs an explicit triple — the script computes
-it from `rustc -vV`). Host tests cover feedback validation, the feedback
-gate and its travel-aware endpoint band, ownership, the command mailbox, and
+running tests for the host needs an explicit triple — the script takes it
+from `rustc --print host-tuple`). Host tests cover feedback validation, the
+feedback gate and its travel-aware endpoint band, ownership, the command mailbox, and
 the actuator sequence the firmware itself runs, as well as the actual pinned
 picoserve HTTP upgrade/WebSocket parser with deterministic timeouts. Pass
 prediction tests cover TLE validation, the streamed HTTP framing of the
@@ -303,18 +303,17 @@ minimum Rust version matches the tested pin in `rust-toolchain.toml`.
 Before pushing:
 
 ```bash
-cargo fmt --all -- --check
-HOST_TRIPLE=$(rustc -vV | sed -n 's/host: //p')
-cargo clippy -p ezal-core --target "$HOST_TRIPLE" --all-targets --all-features -- -D warnings
-cargo clippy -p ezal-firmware --bins -- -D warnings
+./scripts/lint.sh
 ```
 
-Use `cargo fmt --all` to apply formatting. Firmware has no embedded `libtest`,
-so do not select its test targets with `--workspace --all-targets`.
+The script checks formatting, runs clippy with warnings denied on the host
+build of ezal-core (all targets) and on the firmware binary, and builds both
+crates' rustdoc with warnings denied, so a broken intra-doc link fails. Use
+`cargo fmt --all` to apply formatting. Firmware has no embedded `libtest`, so
+do not select its test targets with `--workspace --all-targets`.
 
-CI runs these checks, the test scripts, and one firmware job that builds,
-lints and packages the firmware, uploading its ELF and UF2 under
-`dist/`.
+CI runs the same scripts: the lint script, the three test scripts, and
+`build-uf2.sh`, uploading the firmware's ELF and UF2 under `dist/`.
 
 To dump the CYW43 radio's own console log, enable the driver's
 diagnostic feature with a debug defmt filter:
@@ -479,7 +478,7 @@ still limits azimuth/elevation to 360°/90° until measured replacements are mad
    `cargo-binutils` installation is needed:
 
    ```bash
-   EZAL_TOOLS="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+   EZAL_TOOLS="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host-tuple)/bin"
    "$EZAL_TOOLS/llvm-size" -A target/thumbv8m.main-none-eabihf/release/ezal-firmware
    "$EZAL_TOOLS/llvm-objdump" -d --demangle target/thumbv8m.main-none-eabihf/release/ezal-firmware
    ```

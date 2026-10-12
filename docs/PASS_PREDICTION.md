@@ -699,7 +699,7 @@ or the individual [controller replays](../crates/ezal-core/examples/tracking-sim
 inside the development shell:
 
 ```bash
-TRACKING_HOST=$(rustc -vV | sed -n 's/host: //p')
+TRACKING_HOST=$(rustc --print host-tuple)
 cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-plan
 cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim
 # Compare proposed timing offline; this does not configure the device:

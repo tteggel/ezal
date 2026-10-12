@@ -28,7 +28,6 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![warn(clippy::all)]
 
 // Unit and integration tests share the same calibrated observation fixtures.
 #[cfg(test)]
