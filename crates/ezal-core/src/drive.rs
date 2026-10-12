@@ -239,7 +239,7 @@ struct RelayTiming {
 }
 
 impl RelayTiming {
-    const fn with_config(config: RelayConfig) -> Self {
+    const fn new(config: RelayConfig) -> Self {
         Self {
             azimuth: AxisRelay::new(config),
             elevation: AxisRelay::new(config),
@@ -341,7 +341,7 @@ impl ActuatorGuard {
     /// Create an idle guard with validated installation timing.
     pub const fn new(config: RelayConfig) -> Self {
         Self {
-            relays: RelayTiming::with_config(config),
+            relays: RelayTiming::new(config),
             lease_deadline_ms: None,
         }
     }

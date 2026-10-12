@@ -58,7 +58,7 @@ fn remaining_absolute_lifetime_must_cover_the_minimum_on_time() {
 
 #[test]
 fn relay_timing_holds_active_outputs_for_the_minimum_time() {
-    let mut relay_timing = RelayTiming::with_config(RelayConfig::DEFAULT);
+    let mut relay_timing = RelayTiming::new(RelayConfig::DEFAULT);
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -82,7 +82,7 @@ fn relay_timing_holds_active_outputs_for_the_minimum_time() {
 
 #[test]
 fn relay_timing_delays_reversals_without_conflicting_outputs() {
-    let mut relay_timing = RelayTiming::with_config(RelayConfig::DEFAULT);
+    let mut relay_timing = RelayTiming::new(RelayConfig::DEFAULT);
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -132,7 +132,7 @@ fn relay_timing_delays_reversals_without_conflicting_outputs() {
 
 #[test]
 fn relay_timing_holds_inactive_outputs_for_the_minimum_time() {
-    let mut relay_timing = RelayTiming::with_config(RelayConfig::DEFAULT);
+    let mut relay_timing = RelayTiming::new(RelayConfig::DEFAULT);
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -158,7 +158,7 @@ fn relay_timing_holds_inactive_outputs_for_the_minimum_time() {
 
 #[test]
 fn relay_timing_keeps_axis_timing_independent() {
-    let mut relay_timing = RelayTiming::with_config(RelayConfig::DEFAULT);
+    let mut relay_timing = RelayTiming::new(RelayConfig::DEFAULT);
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
