@@ -384,8 +384,6 @@ fn set_high_endpoint(axis: &mut AxisCalibration, millivolts: i32) {
 
 #[test]
 fn installed_model_keeps_validated_geometry_after_source_settings_change() {
-    use ezal_core::position::InstalledCalibration;
-
     let mut settings = TEST_CALIBRATION;
     let installed = InstalledCalibration::new(settings, FEEDBACK_FULL_SCALE).unwrap();
     let endpoints = FeedbackVoltages {
