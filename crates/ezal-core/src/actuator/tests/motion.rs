@@ -239,7 +239,7 @@ fn feedback_recovery_and_new_commands_never_clear_a_motion_fault() {
     feedback.publish(None);
     actuator.service(&feedback, 5_100);
     for (index, command) in [
-        Command::Stop,
+        Command::Drive(DriveCommand::IDLE),
         Command::Inhibit,
         Command::Drive(REVERSE),
         Command::Jog(BOTH),
@@ -339,7 +339,7 @@ fn short_same_direction_pulses_cannot_repeatedly_spend_the_direction_noise_allow
                 let command = if now_ms % 1_000 < 500 {
                     Command::Drive(drive)
                 } else {
-                    Command::Stop
+                    Command::Drive(DriveCommand::IDLE)
                 };
                 actuator.command(command, &gate(position, now_ms), now_ms);
                 if actuator.fault().is_some() {

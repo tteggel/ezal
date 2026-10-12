@@ -281,7 +281,7 @@ impl FeedbackInterlock {
             }
             Command::Drive(drive) => Command::Drive(self.guard_drive(drive, now_ms)),
             Command::Jog(drive) => Command::Jog(self.guard_drive(drive, now_ms)),
-            Command::Stop | Command::Inhibit => command,
+            Command::Inhibit => command,
         }
     }
 }
