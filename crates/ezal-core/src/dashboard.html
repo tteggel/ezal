@@ -664,29 +664,30 @@ header {
   };
   const restHint = (axis) => `${axis === "azimuth" ? "Azimuth" : "Elevation"} motor needs ${duration(state.duty[axis].cooldown)} of continuous rest.`;
 
+  // Reasons are nested Rust variants ending in a fieldless leaf, e.g. "Unsupported(Some(PointingBudget))".
+  // The innermost variant selects the explanation; any other reason is shown as its full path.
   const trackingReason = (reason) => {
     const explanations = {
       LossOfSignal: "Pass finished", Cancelled: "Cancelled by controller", ManualMode: "Returned to Manual",
       Replaced: "Replaced by another selection", NetworkUnavailable: "Device network unavailable",
       ExecutionDeadline: "Device missed the tracking control deadline", ReacquisitionTimeout: "Recovery deadline reached",
       ReacquisitionLossOfSignal: "Pass ended during recovery", InstallationChanged: "Installation settings changed",
-      SourceInvalid: "Frozen orbital or clock data is no longer valid", ClockOrCounter: "Device clock or counter fault",
+      SourceInvalid: "Frozen plan data could not be evaluated", ClockOrCounter: "Device clock or counter fault",
       Lease: "Control lease expired or belongs to another connection", StaleObservation: "Observation expired",
       ForecastChanged: "That pass is no longer in the current forecast", Settling: "Waiting for the motors to settle",
       NoIntercept: "No reachable intercept found; holding and retrying", WorkLimit: "Search reached its work limit",
       MissedLaunch: "Intercept launch was missed; holding and retrying", ChangedStart: "Starting position changed; replanning",
       MissedIntercept: "Intercept did not establish recovery; retrying", MissedControlDeadline: "Recovery control was delayed; replanning",
       TooLate: "Too late for this preparation schedule", Expired: "Plan validity expired",
+      StateRevision: "Plan changed; review the refreshed preview", NotReady: "No current supported plan for this action",
+      Uncertainty: "Clock uncertainty exceeds the pointing allowance", PointingBudget: "Predicted pointing error exceeds the allowance",
+      NoRecovery: "No supported route with a reachable recovery", Missing: "The selected pass is missing from the forecast",
+      MissingOrbit: "Orbital data for the selected satellite is missing", Ambiguous: "The forecast cannot uniquely identify the selected pass",
+      LatePreparation: "Preparation was not complete at AOS", Deviation: "Measured pointing error exceeded tolerance",
+      LateAcquisition: "Partial plan starts with a late intercept", PlannedGap: "Planned gap in reception",
     };
-    if (explanations[reason]) return explanations[reason];
-    if (reason.includes("StateRevision")) return "Plan changed; review the refreshed preview";
-    if (reason.includes("NotReady")) return "No current supported plan for this action";
-    if (reason.includes("Uncertainty")) return "Clock uncertainty exceeds the pointing allowance";
-    if (reason.includes("PointingBudget")) return "Predicted pointing error exceeds the allowance";
-    if (reason.includes("NoRecovery")) return "No supported route with a reachable recovery";
-    if (reason.includes("Missing")) return "The selected pass or its orbital data is missing";
-    if (reason.includes("Ambiguous")) return "The forecast cannot uniquely identify the selected pass";
-    return reason.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[()_]+/g, " ").trim();
+    return explanations[reason.match(/(\w+)\)*$/)?.[1]]
+      ?? reason.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[()_]+/g, " ").trim();
   };
   const trackElements = Object.fromEntries(["state", "selection", "plan", "reception", "schedule", "message", "deviation", "pointing", "recovery", "summary", "arm", "manual", "prepare", "cancel"]
     .map((name) => [name, document.getElementById(`tracking-${name}`)]));
@@ -730,7 +731,7 @@ header {
     const pointing = (p) => `${p[0].toFixed(2)}° az / ${p[1].toFixed(2)}° el`;
     setText(trackElements.pointing, current ? `At the same sample time: desired sky ${pointing(reading.desired)}; measured dish ${pointing(reading.measured)}. Peak error ${d.maximum_deg?.toFixed(2) ?? "—"}°; observed outside tolerance ${duration(d.outside_ms)}.` : "");
     const r = t.recovery;
-    setText(trackElements.recovery, r ? `${known ? "Reacquiring" : "Last reported recovery"} · attempt ${r.attempts} · ${r.planning ? "searching" : r.hold ? trackingReason(r.hold) : "moving to intercept"} · ${duration(Math.max(0, r.remaining_ms - (known ? elapsed : 0)))} until fixed deadline.${r.intercept_in_ms === null ? " No validated intercept yet." : ` Predicted join in ${duration(Math.max(0, r.intercept_in_ms - (known ? elapsed : 0)))}; measured recovery still required.`}` : "");
+    setText(trackElements.recovery, r ? `${known ? "Reacquiring" : "Last reported recovery"} · ${trackingReason(r.cause)} · attempt ${r.attempts} · ${r.planning ? "searching" : r.hold ? trackingReason(r.hold) : "moving to intercept"} · ${duration(Math.max(0, r.remaining_ms - (known ? elapsed : 0)))} until fixed deadline.${r.intercept_in_ms === null ? " No validated intercept yet." : ` Predicted join in ${duration(Math.max(0, r.intercept_in_ms - (known ? elapsed : 0)))}; measured recovery still required.`}` : "");
     const summary = t.summary;
     setText(trackElements.summary, summary ? `Last finished run ${summary.termination.run}: ${trackingReason(summary.termination.reason)}. Peak measured error ${summary.deviation.maximum_deg?.toFixed(2) ?? "—"}°; observed outside tolerance ${duration(summary.deviation.outside_ms)}. ${receptionText(summary.reception)} These windows are predictions, not receiver-lock measurements.`
       : t.termination ? `${trackingReason(t.termination.reason)}. Holding final position.` : "");

@@ -1,5 +1,8 @@
 //! Bounded tracking wire projections. No route/source clones, propagation, I/O,
 //! lease renewal or lifecycle transitions occur while reading telemetry.
+//! Reasons are written in their `Debug` form, so every reason type nests closed
+//! enums down to fieldless leaves (`Rejected(Lifecycle(StateRevision))`), which the
+//! dashboard explains by innermost variant.
 
 use core::fmt;
 

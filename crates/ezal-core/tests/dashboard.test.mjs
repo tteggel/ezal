@@ -1078,9 +1078,11 @@ test("partial reception and automatic plan replacement are visible before arming
   assert.ok(ui.ids.get("tracking-arm").disabled);
   trackClick(ui, "arm");
   assert.deepEqual(trackingMessages(ui), []);
-  ui.freshness({ tracking: { ...t, revision: "9007199254741002", plan: { status: "blocked", reason: "Unsupported(PointingBudget)", preview: null } } });
+  ui.freshness({ tracking: { ...t, revision: "9007199254741002", plan: { status: "blocked", reason: "Unsupported(Some(PointingBudget))", preview: null } } });
   assert.match(ui.ids.get("tracking-plan").textContent, /Predicted pointing error exceeds/);
   assert.equal(ui.ids.get("tracking-reception").textContent, "", "never retain an older successful preview");
+  ui.freshness({ tracking: { ...t, revision: "9007199254741003", plan: { status: "blocked", reason: "Unsupported(Some(Simulation(TravelLimit(Azimuth))))", preview: null } } });
+  assert.match(ui.ids.get("tracking-plan").textContent, /Tracking blocked: Unsupported Some Simulation Travel Limit Azimuth\./, "an unexplained leaf shows its full path");
 });
 
 test("cancel overrides a pending request and remains available with stale or faulty telemetry", () => {
@@ -1164,7 +1166,7 @@ test("recovery shows its fixed deadline, intercept estimate, retries and retaine
     remaining_ms: 28000, launch_in_ms: 0, intercept_in_ms: 5000, hold: null,
   } });
   ui.freshness({ tracking: t });
-  assert.match(ui.ids.get("tracking-recovery").textContent, /attempt 1.*0:28 until fixed deadline.*Predicted join in 0:05; measured recovery still required/);
+  assert.match(ui.ids.get("tracking-recovery").textContent, /Reacquiring · Measured pointing error exceeded tolerance · attempt 1.*0:28 until fixed deadline.*Predicted join in 0:05; measured recovery still required/);
   ui.freshness({ tracking: { ...t, recovery: { ...t.recovery, attempts: 2, remaining_ms: 25000, hold: "NoIntercept", intercept_in_ms: null } } });
   assert.match(ui.ids.get("tracking-recovery").textContent, /attempt 2.*holding and retrying.*0:25.*No validated intercept/);
   const summary = { termination: { reason: "ReacquisitionTimeout", event: "3", run: "7" },
