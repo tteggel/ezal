@@ -128,7 +128,7 @@ impl Content for ForecastJson<'_> {
     }
 
     fn content_length(&self) -> usize {
-        self.0.borrow().as_ref().map_or(0, Report::json_len)
+        format_args!("{self}").content_length()
     }
 
     async fn write_content<W: PicoserveWrite>(self, mut writer: W) -> Result<(), W::Error> {

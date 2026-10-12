@@ -106,7 +106,7 @@ impl SharedState {
                 intent,
                 freshness,
                 Instant::now().as_millis(),
-                |pass| crate::prediction::report().offers(pass),
+                |pass| pass.offered_by(&crate::prediction::report()),
             )
         });
         self.changed.signal(());

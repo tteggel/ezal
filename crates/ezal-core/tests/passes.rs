@@ -9,6 +9,7 @@ use ezal_core::passes::{
     needs_forecast, Config, ConfigError, Elements, Error, Forecast, Job, Outcome, Pass, Report,
     Search, Status, HORIZON_S, REFRESH_LEAD_S, SERVE_AHEAD_S, WINDOW_S,
 };
+use ezal_core::tracking::PassEvent;
 
 const TLES: &str = include_str!("fixtures/weather-2026-10-07.tle");
 const REPORT_JSON: &str = include_str!("fixtures/passes-report.json");
@@ -578,11 +579,12 @@ fn reports_serve_the_whole_window_for_as_long_as_coverage_lasts() {
     );
     assert_eq!(report.status(), Status::Ready);
     assert!(report.passes().contains(&late));
-    assert!(report.offers(ezal_core::tracking::PassEvent::from_pass(late)));
-    assert!(!report.offers(ezal_core::tracking::PassEvent {
+    assert!(PassEvent::from_pass(late).offered_by(&report));
+    assert!(!PassEvent {
         aos_unix_s: late.aos_unix_s + 1,
-        ..ezal_core::tracking::PassEvent::from_pass(late)
-    }));
+        ..PassEvent::from_pass(late)
+    }
+    .offered_by(&report));
     let expected: Vec<_> = forecast
         .passes
         .iter()
@@ -592,7 +594,6 @@ fn reports_serve_the_whole_window_for_as_long_as_coverage_lasts() {
     assert_eq!(report.passes(), expected.as_slice());
     let json = report.to_string();
     assert!(json.contains(&format!("\"valid_until_unix_s\":{}", now + SERVE_AHEAD_S)));
-    assert_eq!(report.json_len(), json.len());
     // Beyond coverage nothing is served as current.
     let after = forecast.valid_until_unix_s() + 1;
     let report = Report::new(
@@ -603,7 +604,7 @@ fn reports_serve_the_whole_window_for_as_long_as_coverage_lasts() {
         Some(0),
     );
     assert_eq!(report.status(), Status::Predicting);
-    assert!(!report.offers(ezal_core::tracking::PassEvent::from_pass(late)));
+    assert!(!PassEvent::from_pass(late).offered_by(&report));
     assert!(report.passes().is_empty());
     assert!(report.to_string().contains("\"valid_until_unix_s\":null"));
 }

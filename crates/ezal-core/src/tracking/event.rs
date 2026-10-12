@@ -1,4 +1,4 @@
-use crate::passes::{Pass, MAX_PASSES};
+use crate::passes::{Pass, Report, Status, MAX_PASSES};
 
 /// Maximum shift from the original selected event when reconciling a complete
 /// refreshed forecast. Anchoring prevents small updates walking to another orbit.
@@ -34,6 +34,15 @@ impl PassEvent {
             aos_unix_s: pass.aos_unix_s,
             los_unix_s: pass.los_unix_s,
         }
+    }
+
+    /// Only a row of a ready report can become a new tracking selection.
+    pub fn offered_by(self, report: &Report) -> bool {
+        report.status() == Status::Ready
+            && report
+                .passes()
+                .iter()
+                .any(|&pass| Self::from_pass(pass) == self)
     }
 
     /// Supported reception span and representable UTC, consistent with the planner.
