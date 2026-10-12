@@ -43,12 +43,13 @@ When the shell is loaded you have:
 
 - `cargo`, `rustc`, `rustfmt`, `clippy` pinned to the version in
   `rust-toolchain.toml`,
+- `cargo size` and `cargo objdump` (`cargo-binutils` over the toolchain's
+  `llvm-tools`) for inspecting the firmware image,
 - `probe-rs` — used by `cargo run` to flash and stream defmt logs,
 - `picotool` — optional, for UF2 / BOOTSEL flashing without a probe,
 - `jq` — reads Cargo's executable artifact path during UF2 packaging,
 - `node` — runs dashboard behavior tests with its built-in test runner,
-- `python3` with `schemdraw` and `matplotlib` ready to go for
-  `python3 design/circuit.py`.
+- `python3` with `schemdraw` ready to go for `python3 design/circuit.py`.
 
 ### 3. Linux only: udev rules
 
@@ -121,10 +122,11 @@ for the dashboard tests, and picotool and jq separately for UF2 packaging.
 ```bash
 rustup show                                # installs the pinned toolchain
 cargo install --locked probe-rs-tools
+cargo install --locked cargo-binutils      # cargo size / cargo objdump
 node --version                            # Node.js 18+ for dashboard tests
 # picotool: https://github.com/raspberrypi/picotool
 # Only needed if you're re-rendering the schematic:
-pip install --user schemdraw matplotlib
+pip install --user schemdraw
 ```
 
 You're then responsible for keeping versions roughly in sync with what
@@ -349,19 +351,15 @@ Wipes `target/`. Rare; cargo handles incremental builds well.
 cargo size -p ezal-firmware --release -- -A
 ```
 
-Requires `cargo-binutils` (`cargo install --locked cargo-binutils`) as well as
-the `llvm-tools` component already in our toolchain file. The optional Cargo
-subcommands are not installed by the Nix shell. `.text` is executable code;
-flash also contains read-only data and initial values for `.data`. `.data` and
-`.bss` describe static RAM usage, excluding runtime stack use.
+`.text` is executable code; flash also contains read-only data and initial
+values for `.data`. `.data` and `.bss` describe static RAM usage, excluding
+runtime stack use.
 
 ### Inspecting the disassembly
 
 ```bash
 cargo objdump -p ezal-firmware --release -- --disassemble --no-show-raw-insn
 ```
-
-Uses the same `cargo-binutils` and `llvm-tools` prerequisites.
 
 ### Running a debugger session
 
@@ -475,13 +473,11 @@ leads disconnected and suitable feedback simulation first; use the existing
 commissioning procedure before powered movement. The installed calibration
 still limits azimuth/elevation to 360°/90° until measured replacements are made.
 
-1. Build the release image and inspect RAM with the pinned tools; no extra
-   `cargo-binutils` installation is needed:
+1. Build the release image and inspect RAM and the stack frames:
 
    ```bash
-   EZAL_TOOLS="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host-tuple)/bin"
-   "$EZAL_TOOLS/llvm-size" -A target/thumbv8m.main-none-eabihf/release/ezal-firmware
-   "$EZAL_TOOLS/llvm-objdump" -d --demangle target/thumbv8m.main-none-eabihf/release/ezal-firmware
+   cargo size -p ezal-firmware --release -- -A
+   cargo objdump -p ezal-firmware --release -- -d --demangle
    ```
 
    Include `.data`, `.bss` and `.uninit`; Embassy task pools include all eight

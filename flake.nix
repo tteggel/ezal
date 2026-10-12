@@ -10,11 +10,12 @@
 # What's inside the shell:
 #   * Rust toolchain (channel, components, targets all read straight from
 #     `rust-toolchain.toml` so there is one source of truth)
+#   * cargo-binutils — `cargo size` / `cargo objdump` over the toolchain's
+#     llvm-tools
 #   * probe-rs       — flashes the Pico 2 and streams defmt logs
 #   * picotool       — optional, for UF2 / BOOTSEL flashing
 #   * Node.js        — executes the dashboard behavior tests without npm
-#   * Python 3 + schemdraw + matplotlib — for re-rendering design/circuit.py
-#   * libusb / udev (Linux) / IOKit (macOS) — backend libs probe-rs uses
+#   * Python 3 + schemdraw — for re-rendering design/circuit.py
 #
 # Updating any of the above: change the pin here, run `nix flake update`,
 # review the diff to flake.lock, commit.
@@ -65,16 +66,14 @@
         # Python environment for re-rendering design/circuit.py. We
         # bake the deps into a `python3` derivation so `python3` Just
         # Works inside the shell — no `pip install` needed.
-        pythonEnv = pkgs.python3.withPackages (ps: with ps; [
-          schemdraw
-          matplotlib
-        ]);
+        pythonEnv = pkgs.python3.withPackages (ps: [ ps.schemdraw ]);
       in
       {
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             # ── Rust ────────────────────────────────────────────────
             rustToolchain
+            cargo-binutils # `cargo size` / `cargo objdump` over llvm-tools
             nodejs
             jq             # read Cargo's actual ELF path for UF2 packaging
 
@@ -89,21 +88,7 @@
             picotool
 
             # ── Hardware-design tooling ─────────────────────────────
-            pythonEnv     # python3 + schemdraw + matplotlib
-
-            # ── General build helpers ───────────────────────────────
-            pkg-config
-          ]
-          ++ lib.optionals stdenv.hostPlatform.isLinux [
-            # probe-rs talks to debug probes via libusb, and reads
-            # device permissions via libudev (Linux only).
-            udev
-            libusb1
-          ]
-          ++ lib.optionals stdenv.hostPlatform.isDarwin [
-            # macOS USB backend. The Darwin stdenv supplies the Apple SDK;
-            # individual darwin.apple_sdk.frameworks packages were removed.
-            libusb1
+            pythonEnv     # python3 + schemdraw
           ];
 
           # A small banner so it's obvious the shell is active and
@@ -135,7 +120,7 @@
         # which is all the host-side ezal-core tests need to link.
         #
         # Deliberately omits probe-rs, Node.js, and the
-        # python/matplotlib stack from the default shell: CI's Rust jobs
+        # python/schemdraw stack from the default shell: CI's Rust jobs
         # never flash hardware, run the dashboard tests, or re-render the
         # schematic, and those closures would slow every run. `ci.yml`
         # loads this with `nix develop .#ci`, so flake.lock is the single

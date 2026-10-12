@@ -96,8 +96,7 @@ embedded Rust.
 ├── design/
 │   ├── pinout.md                   # G-5500 8-pin DIN pinout
 │   ├── circuit.py                  # schemdraw source for the schematic
-│   ├── circuit.svg                 # rendered schematic (vector)
-│   └── circuit.png                 # rendered schematic (raster)
+│   └── circuit.svg                 # rendered schematic (vector)
 ├── scripts/                        # build, test, flash helpers
 └── .github/workflows/ci.yml        # CI (Nix flake): fmt, clippy, tests, UF2
 ```
