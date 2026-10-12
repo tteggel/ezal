@@ -32,24 +32,20 @@ static TIMING: Mutex<ThreadModeRawMutex, Cell<Timing>> = Mutex::new(Cell::new(Ti
     planning_steps: 0,
 }));
 
-pub fn record_control(elapsed_us: u64, gap_us: u64, tracking: bool) {
+fn record(update: impl FnOnce(&mut Timing)) {
     TIMING.lock(|cell| {
         let mut timing = cell.get();
-        timing.control_us = timing.control_us.max(elapsed_us);
-        if tracking {
-            timing.control_gap_us = timing.control_gap_us.max(gap_us);
-        }
+        update(&mut timing);
         cell.set(timing);
     });
 }
 
-fn record_worker(begin: Instant) {
-    TIMING.lock(|cell| {
-        let mut timing = cell.get();
-        timing.worker_poll_us = timing
-            .worker_poll_us
-            .max(Instant::now().duration_since(begin).as_micros());
-        cell.set(timing);
+pub fn record_control(elapsed_us: u64, gap_us: u64, tracking: bool) {
+    record(|timing| {
+        timing.control_us = timing.control_us.max(elapsed_us);
+        if tracking {
+            timing.control_gap_us = timing.control_gap_us.max(gap_us);
+        }
     });
 }
 
@@ -122,6 +118,43 @@ fn capture(state: &SharedState, ticket: PlanTicket) -> Result<Option<Captured>, 
     }))
 }
 
+/// Capture a ticket's inputs and build its planner into `work`, or publish the
+/// refusal to the runtime. `work` stays empty without a publication while the
+/// start pose is not yet resting; the next poll tries again. The planner is
+/// written into the task's slot, not returned, so its workspace never takes a
+/// second copy in the caller's stack frame.
+fn start_job(state: &SharedState, ticket: PlanTicket, work: &mut Option<Planner<ExecutionInputs>>) {
+    let captured = match capture(state, ticket) {
+        Ok(Some(captured)) => captured,
+        Ok(None) => return,
+        Err(error) => {
+            state.with(|s| {
+                s.tracking_operation(Instant::now().as_millis(), |runtime, observation| {
+                    let _ = runtime.reject_inputs(ticket, error, observation);
+                })
+            });
+            return;
+        }
+    };
+    let inputs = captured.inputs;
+    match Planner::new(
+        inputs.clone(),
+        inputs.window(),
+        HARD_CODED_CALIBRATION,
+        captured.start,
+        captured.config,
+    ) {
+        Ok(planner) => *work = Some(planner),
+        Err(error) => {
+            state.with(|s| {
+                s.tracking_operation(Instant::now().as_millis(), |runtime, observation| {
+                    let _ = runtime.publish_plan(ticket, Err(error), inputs, observation);
+                })
+            });
+        }
+    }
+}
+
 #[embassy_executor::task]
 pub async fn run(state: &'static SharedState) -> ! {
     // Embassy stores this bounded planner in the task's static future, not a
@@ -154,63 +187,23 @@ pub async fn run(state: &'static SharedState) -> ! {
                 runtime.step_reacquisition(observation).unwrap_or(false)
             })
         });
-        let recovery_us = Instant::now().duration_since(begin).as_micros();
-        TIMING.lock(|cell| {
-            let mut timing = cell.get();
-            timing.recovery_step_us = timing.recovery_step_us.max(recovery_us);
-            cell.set(timing);
-        });
-        if recovery {
-            record_worker(now);
-            yield_now().await;
-            continue;
-        }
-        if work.is_none() {
+        let recovery_us = begin.elapsed().as_micros();
+        record(|timing| timing.recovery_step_us = timing.recovery_step_us.max(recovery_us));
+        // A reacquisition step takes this poll; planning resumes when it is idle.
+        if !recovery && work.is_none() {
             if let Some(ticket) = ticket {
-                match capture(state, ticket) {
-                    Ok(Some(captured)) => {
-                        let inputs = captured.inputs;
-                        match Planner::new(
-                            inputs.clone(),
-                            inputs.window(),
-                            HARD_CODED_CALIBRATION,
-                            captured.start,
-                            captured.config,
-                        ) {
-                            Ok(planner) => work = Some(planner),
-                            Err(error) => state.with(|s| {
-                                s.tracking_operation(
-                                    Instant::now().as_millis(),
-                                    |runtime, observation| {
-                                        let _ = runtime.publish_plan(
-                                            ticket,
-                                            Err(error),
-                                            inputs,
-                                            observation,
-                                        );
-                                    },
-                                )
-                            }),
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => state.with(|s| {
-                        s.tracking_operation(Instant::now().as_millis(), |runtime, observation| {
-                            let _ = runtime.reject_inputs(ticket, error, observation);
-                        })
-                    }),
-                }
+                start_job(state, ticket, &mut work);
             }
         }
-        if let Some(job) = work.as_mut() {
+        let planning = if recovery { None } else { work.as_mut() };
+        let busy = recovery || planning.is_some();
+        if let Some(job) = planning {
             let begin = Instant::now();
             let _ = job.step();
-            let elapsed = Instant::now().duration_since(begin).as_micros();
-            TIMING.lock(|cell| {
-                let mut timing = cell.get();
+            let elapsed = begin.elapsed().as_micros();
+            record(|timing| {
                 timing.planning_step_us = timing.planning_step_us.max(elapsed);
                 timing.planning_steps = timing.planning_steps.saturating_add(1);
-                cell.set(timing);
             });
             if job.is_finished() {
                 let inputs = job.source().clone();
@@ -220,16 +213,17 @@ pub async fn run(state: &'static SharedState) -> ! {
                         let _ = runtime.publish_plan(inputs.ticket(), result, inputs, observation);
                     })
                 });
-            }
-            if job.is_finished() {
                 work = None;
             }
+        }
+        record(|timing| {
+            timing.worker_poll_us = timing.worker_poll_us.max(now.elapsed().as_micros())
+        });
+        if busy {
             // No millisecond timer per simulation step: millions of bounded
             // units still cooperate without imposing hours of artificial delay.
-            record_worker(now);
             yield_now().await;
         } else {
-            record_worker(now);
             Timer::after_millis(10).await;
         }
     }
