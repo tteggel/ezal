@@ -2,11 +2,10 @@
 //! Reads never renew leases or drain commands. Firmware serializes mutations.
 
 use crate::actuator::{Actuator, ActuatorInput};
-use crate::drive::DriveCommand;
+use crate::drive::{CommandEnvelope, DriveCommand};
 use crate::duty::DutyStatus;
 use crate::feedback::{FeedbackHealth, FeedbackSnapshot};
 use crate::interlock::FeedbackInterlock;
-use crate::mailbox::CommandEnvelope;
 use crate::motion::MotionFault;
 use crate::network::NetworkGate;
 use crate::ntp::UtcClock;

@@ -1,11 +1,10 @@
 use super::*;
 use crate::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use crate::ads1015::FEEDBACK_FULL_SCALE;
-use crate::drive::{AzimuthDirection, Command, DriveCommand};
+use crate::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
 use crate::duty::{DutyConfig, DutyHistory};
 use crate::feedback::FeedbackSample;
 use crate::interlock::FeedbackInterlock;
-use crate::mailbox::CommandEnvelope;
 use crate::network::NetworkGate;
 use crate::orbit::LookAngle;
 use crate::position::{AxisCalibration, InstalledCalibration, PositionCalibration};

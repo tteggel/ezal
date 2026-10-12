@@ -5,11 +5,10 @@
 //! is consumed before a pending activation. Firmware supplies time, applies
 //! the resulting GPIO state, and wakes for the returned deadline.
 
-use crate::drive::{ActuatorGuard, Command, DriveCommand, RelayConfig};
+use crate::drive::{ActuatorGuard, Command, CommandEnvelope, DriveCommand, RelayConfig};
 use crate::duty::{DutyConfig, DutyHistory, DutyMonitor, DutyStatus};
 use crate::feedback::FEEDBACK_MAX_AGE_MS;
 use crate::interlock::{FeedbackInterlock, TravelProfile};
-use crate::mailbox::CommandEnvelope;
 use crate::motion::{MotionConfig, MotionFault, MotionMonitor};
 use crate::network::NetworkGate;
 

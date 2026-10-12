@@ -1,10 +1,9 @@
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::drive::{AzimuthDirection, Command, DriveCommand};
+use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
 use ezal_core::duty::{DutyConfig, DutyHistory};
 use ezal_core::feedback::FeedbackSample;
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::network::NetworkGate;
 use ezal_core::operator::{LeaseError, OperatorToken};
 use ezal_core::orbit::LookAngle;

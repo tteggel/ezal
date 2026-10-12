@@ -55,7 +55,6 @@ embedded Rust.
 │   │       ├── coordination.rs    # ownership, coherent snapshots, command delivery
 │   │       ├── session.rs         # source freshness and ordered manual intent
 │   │       ├── interlock.rs       # fresh feedback and endpoint motion gate
-│   │       ├── mailbox.rs         # pending inhibition has priority
 │   │       ├── actuator.rs        # complete output decision in one step
 │   │       ├── motion.rs          # latched progress, direction, and speed checks
 │   │       ├── duty.rs            # per-axis energized allowance and continuous rest

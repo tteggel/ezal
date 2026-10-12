@@ -3,14 +3,14 @@
 //! No method performs I/O or GPIO. `S` owns immutable execution inputs; `TrackingRuntime`
 //! supplies their gates. Transport never supplies those inputs or planning results directly.
 
+use super::mailbox::CommandMailbox;
 use super::{
     reconcile_event, AdmissionPolicy, CandidateFailure, EventError, EventId, InputError, PassEvent,
     PlanningError, PlanningReport, PreparationTiming, ReceptionCoverage, TrackingPlan,
     REACQUISITION_LIMIT_MS,
 };
-use crate::drive::{Command, MOVEMENT_LEASE_MS};
+use crate::drive::{Command, CommandEnvelope, MOVEMENT_LEASE_MS};
 use crate::feedback::FeedbackHealth;
-use crate::mailbox::{CommandEnvelope, CommandMailbox};
 use crate::motion::MotionFault;
 use crate::operator::{LeaseError, OperatorGrant, OperatorLease, OperatorToken};
 

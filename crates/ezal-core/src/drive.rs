@@ -3,7 +3,8 @@
 //! The two independent axes of the G-5500 rotator — azimuth and elevation —
 //! and the [`Command`]s that move them, expressed independently of any
 //! transport. Manual input uses [`DriveCommand`] without knowing anything
-//! about GPIOs.
+//! about GPIOs. A [`CommandEnvelope`] carries a command with the expiry its
+//! source assigned.
 //!
 //! Private relay timing enforces ordinary minimum on/off intervals.
 //! The actuator's lease guard adds movement expiry and safety inhibition, which can
@@ -132,6 +133,23 @@ pub enum Command {
     /// Immediately remove motion for a fault, expired lease, or operator stop.
     /// Unlike ordinary release, safety inhibition bypasses minimum active time.
     Inhibit,
+}
+
+/// A request and the original exclusive expiry assigned at admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandEnvelope {
+    /// Operator jog or immediate safety inhibition.
+    pub command: Command,
+    /// Monotonic source deadline; unused for inhibition.
+    pub valid_until_ms: u64,
+}
+
+impl CommandEnvelope {
+    /// Immediate inhibition has no movement lease.
+    pub const INHIBIT: Self = Self {
+        command: Command::Inhibit,
+        valid_until_ms: 0,
+    };
 }
 
 /// One axis's relay state. Only the applied direction owns a minimum-on

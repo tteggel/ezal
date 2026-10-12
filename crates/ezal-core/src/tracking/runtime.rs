@@ -12,11 +12,10 @@ use super::{
 };
 use crate::actuator::Actuator;
 use crate::ads1015::FEEDBACK_FULL_SCALE;
-use crate::drive::{Command, DriveCommand, MOVEMENT_LEASE_MS};
+use crate::drive::{Command, CommandEnvelope, DriveCommand, MOVEMENT_LEASE_MS};
 use crate::feedback::{
     FeedbackHealth, FeedbackSample, FeedbackSnapshot, FEEDBACK_MAX_AGE_MS, FEEDBACK_MAX_LATENCY_MS,
 };
-use crate::mailbox::CommandEnvelope;
 use crate::network::NetworkGate;
 use crate::ntp::{UtcAnchor, UtcClock};
 use crate::operator::{OperatorGrant, OperatorToken};

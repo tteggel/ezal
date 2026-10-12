@@ -1,13 +1,12 @@
 use super::{Axis, FollowingController, MotorModel, MotorProfile, SimulationError, TrackingTarget};
 use crate::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use crate::ads1015::FEEDBACK_FULL_SCALE;
-use crate::drive::{Command, DriveCommand, MOVEMENT_LEASE_MS};
+use crate::drive::{Command, CommandEnvelope, DriveCommand, MOVEMENT_LEASE_MS};
 use crate::duty::DutyHistory;
 use crate::feedback::{
     FeedbackHealth, FeedbackMonitor, FeedbackSample, FEEDBACK_MAX_LATENCY_MS, FEEDBACK_PERIOD_MS,
 };
 use crate::interlock::FeedbackInterlock;
-use crate::mailbox::CommandEnvelope;
 use crate::network::NetworkGate;
 use crate::position::{AxisCalibration, FeedbackVoltages, Pointing, PositionCalibration};
 

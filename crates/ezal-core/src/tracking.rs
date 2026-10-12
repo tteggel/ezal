@@ -19,6 +19,7 @@ mod deviation;
 mod event;
 mod inputs;
 mod lifecycle;
+mod mailbox;
 mod model;
 mod planner;
 mod reception;

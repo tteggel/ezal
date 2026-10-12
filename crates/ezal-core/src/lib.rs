@@ -12,7 +12,7 @@
 //! * [`actuator::Actuator::step`] is the complete physical-output decision.
 //!
 //! [`interlock`], [`motion`], [`network`] and private [`drive`] timing helpers
-//! support that boundary. [`mailbox::CommandEnvelope`] preserves a source's
+//! support that boundary. [`drive::CommandEnvelope`] preserves a source's
 //! absolute deadline. [`protocol`] supplies wire parsing and telemetry encoding;
 //! [`dashboard`] supplies the page and firmware-owned client configuration.
 //!
@@ -46,7 +46,6 @@ pub mod duty;
 pub mod feedback;
 pub mod http;
 pub mod interlock;
-pub mod mailbox;
 pub mod motion;
 pub mod network;
 pub mod ntp;
