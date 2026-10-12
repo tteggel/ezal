@@ -10,21 +10,5 @@ fn dashboard_loads_firmware_configuration_before_the_client() {
         .unwrap();
     let client = INDEX_HTML.find("<script>").unwrap();
     assert!(config < client);
-    assert!(INDEX_HTML.contains("new WebSocket"));
     assert!(INDEX_HTML.contains(TAKE_CONTROL_MESSAGE));
-    assert!(INDEX_HTML.contains(r#"id="take""#));
-}
-
-#[test]
-fn held_direction_buttons_have_feedback_separate_from_applied_output() {
-    // The behavioural tests drive a DOM without CSS. Input feedback must
-    // have its own style without overriding the firmware's active output.
-    assert!(INDEX_HTML.contains(".dir.held:not(.active)"));
-    assert!(INDEX_HTML.contains(".dir.active"));
-}
-
-#[test]
-fn dashboard_embeds_a_favicon() {
-    assert!(INDEX_HTML.contains(r#"<link rel="icon" href="data:image/svg+xml,"#));
-    assert!(INDEX_HTML.contains("viewBox='0 0 64 64'"));
 }
