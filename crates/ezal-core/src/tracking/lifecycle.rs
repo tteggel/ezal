@@ -476,7 +476,7 @@ impl<S> TrackingLifecycle<S> {
 
     fn fail_clock(&mut self, now_ms: u64) {
         if !self.failed {
-            self.stop(TrackingStop::ClockOrCounter, TrackingPhase::Stopped, now_ms);
+            self.stop(TrackingStop::ClockOrCounter, now_ms);
             self.failed = true;
         }
         self.commands.submit(CommandEnvelope::INHIBIT);
@@ -505,7 +505,7 @@ impl<S> TrackingLifecycle<S> {
         Ok(serial)
     }
 
-    fn stop(&mut self, reason: TrackingStop, phase: TrackingPhase, now_ms: u64) {
+    fn stop(&mut self, reason: TrackingStop, now_ms: u64) {
         self.termination = Some(TrackingTermination {
             event: self.selection.map(|s| s.id),
             run: self.run,
@@ -513,7 +513,7 @@ impl<S> TrackingLifecycle<S> {
             at_ms: now_ms,
         });
         self.mode = TrackingMode::Manual;
-        self.phase = phase;
+        self.phase = terminal_phase(reason);
         self.run = None;
         self.recovery = None;
         self.planned_recovery_handled = false;
@@ -572,7 +572,7 @@ impl<S> TrackingLifecycle<S> {
                 self.bump(now_ms)?;
                 let previous_termination = self.termination;
                 let replacing_run = self.mode == TrackingMode::Tracking;
-                self.stop(TrackingStop::Replaced, TrackingPhase::Idle, now_ms);
+                self.stop(TrackingStop::Replaced, now_ms);
                 if !replacing_run {
                     self.termination = previous_termination;
                 }
@@ -616,7 +616,6 @@ impl<S> TrackingLifecycle<S> {
                     } else {
                         TrackingStop::ManualMode
                     },
-                    TrackingPhase::Cancelled,
                     now_ms,
                 );
             }
@@ -677,7 +676,10 @@ impl<S> TrackingLifecycle<S> {
         };
         match reconcile_event(selection.original, forecast) {
             Ok(pass) => {
-                self.selection.as_mut().unwrap().current = Some(pass);
+                self.selection = Some(Selection {
+                    current: Some(pass),
+                    ..selection
+                });
                 if changed || selection.current != Some(pass) || self.ticket.is_none() {
                     self.start_job(now_ms)?;
                 }
@@ -686,7 +688,10 @@ impl<S> TrackingLifecycle<S> {
                 let status = PlanStatus::Blocked(PlanProblem::Event(error));
                 if self.plan_status != status || changed {
                     self.bump(now_ms)?;
-                    self.selection.as_mut().unwrap().current = None;
+                    self.selection = Some(Selection {
+                        current: None,
+                        ..selection
+                    });
                     self.ticket = None;
                     self.plan = None;
                     self.plan_status = status;
@@ -796,11 +801,7 @@ impl<S> TrackingLifecycle<S> {
                 .is_some_and(|deadline| now_ms >= deadline)
         {
             self.bump(now_ms)?;
-            self.stop(
-                TrackingStop::LatePreparation,
-                TrackingPhase::Stopped,
-                now_ms,
-            );
+            self.stop(TrackingStop::LatePreparation, now_ms);
             return Ok(());
         }
         if self.run.is_some() {
@@ -836,22 +837,15 @@ impl<S> TrackingLifecycle<S> {
                     } else {
                         TrackingStop::ReacquisitionTimeout
                     },
-                    TrackingPhase::Stopped,
                     now_ms,
                 );
             } else if now_ms >= los {
                 self.bump(now_ms)?;
-                let complete = self.phase == TrackingPhase::Following;
                 self.stop(
-                    if complete {
+                    if self.phase == TrackingPhase::Following {
                         TrackingStop::LossOfSignal
                     } else {
                         TrackingStop::LatePreparation
-                    },
-                    if complete {
-                        TrackingPhase::Complete
-                    } else {
-                        TrackingPhase::Stopped
                     },
                     now_ms,
                 );
@@ -1003,10 +997,11 @@ impl<S> TrackingLifecycle<S> {
     }
 
     /// Physical/network/source interruption is independent of operator authority.
+    /// Callers pass fault reasons only, so the run ends `Stopped` (see `terminal_phase`).
     pub fn interrupt(&mut self, reason: TrackingStop, now_ms: u64) -> Result<(), LifecycleError> {
         self.advance(now_ms)?;
         self.bump(now_ms)?;
-        self.stop(reason, TrackingPhase::Stopped, now_ms);
+        self.stop(reason, now_ms);
         Ok(())
     }
 
@@ -1071,6 +1066,18 @@ impl<S> TrackingLifecycle<S> {
                 CommandEnvelope::INHIBIT
             }
         })
+    }
+}
+
+/// The phase a stop leaves is a function of its reason: LOS completes the run,
+/// the operator's cancel or switch to Manual cancels it, a replacement selection
+/// returns to Idle, and every other reason is a fault that stops it.
+const fn terminal_phase(reason: TrackingStop) -> TrackingPhase {
+    match reason {
+        TrackingStop::LossOfSignal => TrackingPhase::Complete,
+        TrackingStop::Cancelled | TrackingStop::ManualMode => TrackingPhase::Cancelled,
+        TrackingStop::Replaced => TrackingPhase::Idle,
+        _ => TrackingPhase::Stopped,
     }
 }
 
