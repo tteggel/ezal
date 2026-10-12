@@ -5,7 +5,7 @@
 //! The incremental simulator exercises that controller through the production
 //! actuator, using explicit, unmeasured motor assumptions. Its sampled results
 //! are development diagnostics, not permission to track a pass on hardware.
-//! [`TrackingSession`] binds a single selected event, revisioned plans and
+//! [`TrackingLifecycle`] binds a single selected event, revisioned plans and
 //! executor generations to an exclusive operator lease. It owns frozen input
 //! snapshots independently of browser connections.
 //! [`TrackingRuntime`] adds validated input publication and execution gating;
@@ -40,8 +40,9 @@ pub use inputs::{
 };
 pub use lifecycle::{
     BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
-    RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingMode, TrackingPhase,
-    TrackingRequest, TrackingSession, TrackingSnapshot, TrackingStop, TrackingTermination,
+    RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingLifecycle,
+    TrackingMode, TrackingPhase, TrackingRequest, TrackingSnapshot, TrackingStop,
+    TrackingTermination,
 };
 pub use model::MotorModel;
 pub use planner::{

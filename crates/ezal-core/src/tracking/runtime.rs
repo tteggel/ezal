@@ -7,7 +7,7 @@ use super::{
     BoundTrackingPlan, DeviationStatus, ExecutionInputs, FollowingController, InputError,
     LifecycleError, PassEvent, PlanRevisions, PlanTicket, PlanningError, PlanningReport,
     PlanningWindow, ReceptionCoverage, RecoveryHold, RecoveryStatus, RestingStart, RunToken,
-    TimingError, TrackingAction, TrackingMode, TrackingPhase, TrackingRequest, TrackingSession,
+    TimingError, TrackingAction, TrackingLifecycle, TrackingMode, TrackingPhase, TrackingRequest,
     TrackingSnapshot, TrackingStop, TrackingTermination, REACQUISITION_DWELL_MS,
 };
 use crate::actuator::Actuator;
@@ -69,11 +69,11 @@ pub struct TrackingSummary {
     pub deviation: DeviationStatus,
 }
 
-/// Device-owned lifecycle, input boundary and bounded recovery. No mutable session
+/// Device-owned lifecycle, input boundary and bounded recovery. No mutable lifecycle
 /// accessor can bypass checks on output admission/drain. Actual GPIO, feedback,
 /// duty and motion protection remain the production actuator's responsibility.
 pub struct TrackingRuntime {
-    session: TrackingSession<ExecutionInputs>,
+    lifecycle: TrackingLifecycle<ExecutionInputs>,
     network_generation: Option<u64>,
     latest_clock: Option<UtcAnchor>,
     observed_ms: Option<u64>,
@@ -99,7 +99,7 @@ impl TrackingRuntime {
     /// Reboot always starts in Manual with no selected pass or output authority.
     pub const fn new() -> Self {
         Self {
-            session: TrackingSession::new(),
+            lifecycle: TrackingLifecycle::new(),
             network_generation: None,
             latest_clock: None,
             observed_ms: None,
@@ -117,7 +117,7 @@ impl TrackingRuntime {
     }
     /// Read-only lifecycle status; does not renew any lease.
     pub const fn snapshot(&self) -> TrackingSnapshot {
-        self.session.snapshot()
+        self.lifecycle.snapshot()
     }
     /// Fresh timestamp-matched pointing, or unavailable, plus retained metrics.
     pub fn deviation(&self, now_ms: u64) -> DeviationStatus {
@@ -138,11 +138,11 @@ impl TrackingRuntime {
     }
     /// Immutable accepted plan and exact execution inputs.
     pub const fn bound_plan(&self) -> Option<&BoundTrackingPlan<ExecutionInputs>> {
-        self.session.bound_plan()
+        self.lifecycle.bound_plan()
     }
     /// Latest device planning job, if any.
     pub fn planning_ticket(&self) -> Option<PlanTicket> {
-        self.session.planning_ticket()
+        self.lifecycle.planning_ticket()
     }
     /// A changed physical starting state invalidates preview work immediately,
     /// before a simultaneous preparation deadline can freeze it. The worker
@@ -152,13 +152,13 @@ impl TrackingRuntime {
             && (self.bound_plan().is_some() || self.planning_ticket().is_some())
         {
             let _ = self
-                .session
+                .lifecycle
                 .invalidate_inputs(InputError::RevisionChanged, observation.now_ms);
         }
     }
     /// Read-only operator grant at the supplied uptime.
     pub fn operator(&self, now_ms: u64) -> Option<OperatorGrant> {
-        self.session.operator(now_ms)
+        self.lifecycle.operator(now_ms)
     }
 
     /// Claim exclusive browser authority independently of any executing pass.
@@ -168,7 +168,7 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<OperatorGrant, LifecycleError> {
         self.service(observation)?;
-        self.session.claim(client_id, observation.now_ms)
+        self.lifecycle.claim(client_id, observation.now_ms)
     }
     /// Renew only the current browser grant; it does not renew source validity.
     pub fn renew(
@@ -177,7 +177,7 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<OperatorGrant, LifecycleError> {
         self.service(observation)?;
-        self.session.renew(token, observation.now_ms)
+        self.lifecycle.renew(token, observation.now_ms)
     }
     /// Browser disconnect leaves tracking running under device authority.
     pub fn release(
@@ -186,7 +186,7 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<bool, LifecycleError> {
         self.service(observation)?;
-        self.session.release(token, observation.now_ms)
+        self.lifecycle.release(token, observation.now_ms)
     }
     /// Apply operator intent before servicing a simultaneous preparation deadline.
     pub fn request(
@@ -198,8 +198,8 @@ impl TrackingRuntime {
         if request.action == TrackingAction::Arm && !observation.network.ready(observation.now_ms) {
             return Err(RuntimeError::NetworkUnavailable);
         }
-        let result = self.session.request(request, observation.now_ms)?;
-        if self.session.snapshot().mode == TrackingMode::Tracking
+        let result = self.lifecycle.request(request, observation.now_ms)?;
+        if self.lifecycle.snapshot().mode == TrackingMode::Tracking
             && self.network_generation.is_none()
         {
             self.network_generation = Some(observation.network.generation());
@@ -217,7 +217,7 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<(), LifecycleError> {
         self.check_inputs(observation)?;
-        self.session
+        self.lifecycle
             .refresh(forecast, revisions, observation.now_ms)?;
         self.service(observation)
     }
@@ -231,7 +231,7 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<(), RuntimeError> {
         self.check_inputs(observation)?;
-        if self.session.planning_ticket() != Some(ticket) {
+        if self.lifecycle.planning_ticket() != Some(ticket) {
             return Err(LifecycleError::StaleJob.into());
         }
         let error = if inputs.ticket() != ticket
@@ -248,11 +248,12 @@ impl TrackingRuntime {
                 .err()
         };
         if let Some(error) = error {
-            self.session.invalidate_inputs(error, observation.now_ms)?;
+            self.lifecycle
+                .invalidate_inputs(error, observation.now_ms)?;
             return Err(error.into());
         }
         let deadline = inputs.freeze_before_ms()?;
-        self.session
+        self.lifecycle
             .publish_plan(ticket, result, inputs, deadline, observation.now_ms)?;
         self.service(observation)?;
         Ok(())
@@ -265,29 +266,30 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<(), LifecycleError> {
         self.check_inputs(observation)?;
-        if self.session.planning_ticket() != Some(ticket) {
+        if self.lifecycle.planning_ticket() != Some(ticket) {
             return Err(LifecycleError::StaleJob);
         }
-        self.session.invalidate_inputs(error, observation.now_ms)?;
+        self.lifecycle
+            .invalidate_inputs(error, observation.now_ms)?;
         self.service(observation)
     }
     /// Service input validity before the lifecycle can freeze or follow. Failed
     /// internet refreshes are not outages: still-valid caches remain usable.
     pub fn service(&mut self, observation: RuntimeObservation) -> Result<(), LifecycleError> {
         self.check_inputs(observation)?;
-        self.session.tick(observation.now_ms)?;
+        self.lifecycle.tick(observation.now_ms)?;
         self.sync_execution(observation.now_ms);
-        if self.session.snapshot().run.is_some()
-            && self.session.snapshot().phase != TrackingPhase::Reacquiring
+        if self.lifecycle.snapshot().run.is_some()
+            && self.lifecycle.snapshot().phase != TrackingPhase::Reacquiring
             && self.last_control_at_ms.is_some_and(|last| {
                 observation.now_ms.saturating_sub(last)
-                    > self.session.bound_plan().unwrap().plan().config.step_ms
+                    > self.lifecycle.bound_plan().unwrap().plan().config.step_ms
             })
         {
-            self.session
+            self.lifecycle
                 .interrupt(TrackingStop::ExecutionDeadline, observation.now_ms)?;
         }
-        if self.session.snapshot().run.is_some()
+        if self.lifecycle.snapshot().run.is_some()
             && self.feedback.is_some_and(|sample| {
                 observation
                     .now_ms
@@ -295,14 +297,14 @@ impl TrackingRuntime {
                     .is_none_or(|age| age >= FEEDBACK_MAX_AGE_MS)
             })
         {
-            self.session.interrupt(
+            self.lifecycle.interrupt(
                 TrackingStop::Feedback(FeedbackHealth::Stale),
                 observation.now_ms,
             )?;
         }
         self.sync_execution(observation.now_ms);
         self.check_recovery_schedule(observation.now_ms);
-        if self.session.snapshot().mode == TrackingMode::Manual {
+        if self.lifecycle.snapshot().mode == TrackingMode::Manual {
             self.network_generation = None;
         }
         Ok(())
@@ -312,7 +314,7 @@ impl TrackingRuntime {
         let Some(recovery) = self.recovery.as_mut() else {
             return;
         };
-        let step_ms = self.session.bound_plan().unwrap().plan().config.step_ms;
+        let step_ms = self.lifecycle.bound_plan().unwrap().plan().config.step_ms;
         let reason = if recovery
             .search
             .as_ref()
@@ -331,22 +333,22 @@ impl TrackingRuntime {
         };
         if let Some(reason) = reason {
             recovery.hold(reason, now);
-            self.session
+            self.lifecycle
                 .recovery_command(recovery.status.episode, CommandEnvelope::INHIBIT, now);
         }
     }
 
     fn sync_execution(&mut self, now: u64) {
-        let state = self.session.snapshot();
+        let state = self.lifecycle.snapshot();
         if state.run.is_some() && state.run != self.deviation_run {
             self.deviation_run = state.run;
             self.run_prediction = self
-                .session
+                .lifecycle
                 .bound_plan()
                 .map(|b| (b.plan().window, b.plan().reception()));
             self.feedback = None;
             self.deviation = self
-                .session
+                .lifecycle
                 .bound_plan()
                 .map(|b| DeviationMonitor::new(b.plan().config.tolerance_deg));
             self.follower = None;
@@ -405,13 +407,13 @@ impl TrackingRuntime {
     ) -> Result<(), LifecycleError> {
         let now = observation.now_ms;
         self.check_inputs(observation)?;
-        self.session.tick(now)?;
+        self.lifecycle.tick(now)?;
         self.sync_execution(now);
-        if self.session.snapshot().run != Some(run) {
+        if self.lifecycle.snapshot().run != Some(run) {
             return Ok(());
         }
         self.check_recovery_schedule(now);
-        let bound = self.session.bound_plan().unwrap();
+        let bound = self.lifecycle.bound_plan().unwrap();
         let reason = if let Some(fault) = actuator.fault() {
             Some(TrackingStop::Motion(fault))
         } else if actuator.configuration() != bound.plan().actuator {
@@ -440,7 +442,7 @@ impl TrackingRuntime {
             }
         };
         if let Some(reason) = reason {
-            self.session.interrupt(reason, now)?;
+            self.lifecycle.interrupt(reason, now)?;
             self.sync_execution(now);
             return Ok(());
         }
@@ -452,7 +454,7 @@ impl TrackingRuntime {
         }
         if repeated_sample
             || !matches!(
-                self.session.snapshot().phase,
+                self.lifecycle.snapshot().phase,
                 TrackingPhase::Following | TrackingPhase::Reacquiring
             )
             || sample.sampled_at_ms() < bound.plan().window.aos_at_ms
@@ -460,7 +462,7 @@ impl TrackingRuntime {
             return Ok(());
         }
         let Some(look) = bound.inputs().look_at_uptime(sample.sampled_at_ms()) else {
-            self.session.interrupt(TrackingStop::SourceInvalid, now)?;
+            self.lifecycle.interrupt(TrackingStop::SourceInvalid, now)?;
             self.sync_execution(now);
             return Ok(());
         };
@@ -486,14 +488,14 @@ impl TrackingRuntime {
             )
             .is_none()
         {
-            self.session.interrupt(
+            self.lifecycle.interrupt(
                 TrackingStop::Feedback(FeedbackHealth::TimestampInvalid),
                 now,
             )?;
-        } else if self.session.snapshot().phase == TrackingPhase::Following
+        } else if self.lifecycle.snapshot().phase == TrackingPhase::Following
             && monitor.needs_recovery()
         {
-            if let Some(episode) = self.session.begin_reacquisition(run, now)? {
+            if let Some(episode) = self.lifecycle.begin_reacquisition(run, now)? {
                 self.recovery = Some(Recovery::new(episode));
             }
         } else if monitor.recovered() {
@@ -503,7 +505,7 @@ impl TrackingRuntime {
                         sample.sampled_at_ms() >= i.join_at_ms + REACQUISITION_DWELL_MS
                     })
             }) {
-                self.session
+                self.lifecycle
                     .finish_reacquisition(recovery.status.episode, now)?;
             }
         }
@@ -550,7 +552,7 @@ impl TrackingRuntime {
             self.reacquisition_command(run, feedback, actuator, observation);
             return;
         }
-        let bound = self.session.bound_plan().unwrap();
+        let bound = self.lifecycle.bound_plan().unwrap();
         let plan = bound.plan();
         let preparing = matches!(state.phase, TrackingPhase::Preparing | TrackingPhase::Ready);
         let offset = if preparing {
@@ -597,7 +599,7 @@ impl TrackingRuntime {
                 }
                 let since = *self.ready_since_ms.get_or_insert(stamp);
                 if stamp.saturating_sub(since) >= REACQUISITION_DWELL_MS {
-                    let _ = self.session.preparation_ready(run, now);
+                    let _ = self.lifecycle.preparation_ready(run, now);
                 }
             }
             self.ready_sample_ms = Some(sample.sampled_at_ms());
@@ -664,9 +666,9 @@ impl TrackingRuntime {
             recovery.hold(RecoveryHold::MissedLaunch, now);
             return Ok(false);
         }
-        let bound = self.session.bound_plan().unwrap();
+        let bound = self.lifecycle.bound_plan().unwrap();
         if search.step(bound.plan(), bound.inputs()).is_err() {
-            self.session.interrupt(TrackingStop::SourceInvalid, now)?;
+            self.lifecycle.interrupt(TrackingStop::SourceInvalid, now)?;
             self.sync_execution(now);
             return Ok(false);
         }
@@ -701,8 +703,8 @@ impl TrackingRuntime {
         if self
             .observe_tracking(run, feedback, actuator, observation)
             .is_err()
-            || self.session.snapshot().run != Some(run)
-            || self.session.snapshot().phase != TrackingPhase::Reacquiring
+            || self.lifecycle.snapshot().run != Some(run)
+            || self.lifecycle.snapshot().phase != TrackingPhase::Reacquiring
         {
             return false;
         }
@@ -710,7 +712,7 @@ impl TrackingRuntime {
             return false;
         };
         let now = observation.now_ms;
-        let bound = self.session.bound_plan().unwrap();
+        let bound = self.lifecycle.bound_plan().unwrap();
         let start = RestingStart {
             at_ms: now,
             feedback: self.feedback.unwrap(),
@@ -756,7 +758,7 @@ impl TrackingRuntime {
                 }
             }
         }
-        self.session.recovery_command(
+        self.lifecycle.recovery_command(
             recovery.status.episode,
             CommandEnvelope {
                 command,
@@ -770,7 +772,7 @@ impl TrackingRuntime {
     fn check_inputs(&mut self, observation: RuntimeObservation) -> Result<(), LifecycleError> {
         let now = observation.now_ms;
         if self.observed_ms.is_some_and(|old| now < old) {
-            let result = self.session.clock_failure(now);
+            let result = self.lifecycle.clock_failure(now);
             self.sync_execution(now);
             return result;
         }
@@ -786,20 +788,20 @@ impl TrackingRuntime {
         if !clock_regressed && current.is_some() {
             self.latest_clock = current;
         }
-        let state = self.session.snapshot();
+        let state = self.lifecycle.snapshot();
         if state.mode == TrackingMode::Tracking
             && (!observation.network.ready(now)
                 || self
                     .network_generation
                     .is_some_and(|generation| generation != observation.network.generation()))
         {
-            self.session
+            self.lifecycle
                 .interrupt(TrackingStop::NetworkUnavailable, now)?;
             self.network_generation = None;
             self.sync_execution(now);
             return Ok(());
         }
-        let Some(bound) = self.session.bound_plan() else {
+        let Some(bound) = self.lifecycle.bound_plan() else {
             return Ok(());
         };
         // At/after LOS, the lifecycle's normal completion/late-preparation rule
@@ -831,11 +833,11 @@ impl TrackingRuntime {
         };
         if let Some(error) = error {
             if state.run.is_some() {
-                self.session.interrupt(TrackingStop::Inputs(error), now)?;
+                self.lifecycle.interrupt(TrackingStop::Inputs(error), now)?;
                 self.network_generation = None;
                 self.sync_execution(now);
             } else {
-                self.session.invalidate_inputs(error, now)?;
+                self.lifecycle.invalidate_inputs(error, now)?;
             }
         }
         Ok(())
@@ -847,7 +849,7 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<bool, LifecycleError> {
         self.service(observation)?;
-        self.session.preparation_ready(run, observation.now_ms)
+        self.lifecycle.preparation_ready(run, observation.now_ms)
     }
     /// Fresh manual intent still passes through the same lease and output gate.
     pub fn manual_command(
@@ -859,7 +861,7 @@ impl TrackingRuntime {
         self.service(observation).is_ok()
             && observation.network.ready(observation.now_ms)
             && self
-                .session
+                .lifecycle
                 .manual_command(token, command, observation.now_ms)
     }
     /// Every executor refresh checks frozen source/clock/network validity.
@@ -871,13 +873,13 @@ impl TrackingRuntime {
     ) -> bool {
         self.service(observation).is_ok()
             && self
-                .session
+                .lifecycle
                 .tracking_command(run, command, observation.now_ms)
     }
     /// Recheck current observations before the sole output task drains a command.
     pub fn take_command(&mut self, observation: RuntimeObservation) -> Option<CommandEnvelope> {
         let _ = self.service(observation);
-        let command = self.session.take_command(observation.now_ms);
+        let command = self.lifecycle.take_command(observation.now_ms);
         if let Some(recovery) = self.recovery.as_mut() {
             recovery.launch_pending = false;
         }
@@ -891,7 +893,7 @@ impl TrackingRuntime {
     ) -> Result<(), LifecycleError> {
         self.check_inputs(observation)?;
         self.network_generation = None;
-        self.session.interrupt(reason, observation.now_ms)?;
+        self.lifecycle.interrupt(reason, observation.now_ms)?;
         self.sync_execution(observation.now_ms);
         Ok(())
     }

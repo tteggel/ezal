@@ -129,7 +129,7 @@ fn report(timing: PreparationTiming) -> PlanningReport {
 }
 
 fn request(
-    session: &TrackingSession<&'static str>,
+    session: &TrackingLifecycle<&'static str>,
     owner: OperatorToken,
     sequence: u64,
     action: TrackingAction,
@@ -142,8 +142,8 @@ fn request(
     }
 }
 
-fn selected() -> (TrackingSession<&'static str>, OperatorToken) {
-    let mut session = TrackingSession::new();
+fn selected() -> (TrackingLifecycle<&'static str>, OperatorToken) {
+    let mut session = TrackingLifecycle::new();
     let token = session.claim(1, 2000).unwrap().token;
     session
         .request(
@@ -166,7 +166,7 @@ fn selected() -> (TrackingSession<&'static str>, OperatorToken) {
     (session, token)
 }
 
-fn armed() -> (TrackingSession<&'static str>, OperatorToken) {
+fn armed() -> (TrackingLifecycle<&'static str>, OperatorToken) {
     let (mut session, token) = selected();
     session
         .request(request(&session, token, 2, TrackingAction::Arm), 2000)
@@ -184,7 +184,7 @@ fn output(now: u64, command: Command) -> CommandEnvelope {
 
 #[test]
 fn boot_and_selection_are_manual_and_do_not_begin_preparation() {
-    let empty = TrackingSession::<()>::new();
+    let empty = TrackingLifecycle::<()>::new();
     assert_eq!(empty.snapshot().selection, None);
     assert_eq!(empty.snapshot().mode, TrackingMode::Manual);
     assert_eq!(empty.snapshot().run, None);
@@ -604,7 +604,7 @@ fn manual_admission_cannot_cross_tracking_mode_or_reuse_a_moving_starting_pose()
 
 #[test]
 fn manual_owner_expiry_and_source_deadlines_still_stop_manual_output() {
-    let mut session = TrackingSession::<()>::new();
+    let mut session = TrackingLifecycle::<()>::new();
     let owner = session.claim(1, 0).unwrap().token;
     session.take_command(0);
     assert!(session.manual_command(owner, output(4900, Command::Jog(CW)), 4900));
@@ -856,7 +856,7 @@ fn cancellation_reaches_real_actuator_before_a_pending_activation_at_the_same_de
     let calibration = plan.calibration;
     let installed = InstalledCalibration::new(calibration, FEEDBACK_FULL_SCALE).unwrap();
     let mut actuator = Actuator::with_config(plan.actuator, DutyHistory::Known([0, 0]));
-    let service = |session: &mut TrackingSession<&'static str>, actuator: &mut Actuator, now| {
+    let service = |session: &mut TrackingLifecycle<&'static str>, actuator: &mut Actuator, now| {
         let mut interlock = FeedbackInterlock::new(installed);
         interlock.publish(Some(
             FeedbackSample::from_voltages(

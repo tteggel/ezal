@@ -160,7 +160,7 @@ fn publish(
     report: PlanningReport,
     now: u64,
 ) -> (
-    TrackingSession<&'static str>,
+    TrackingLifecycle<&'static str>,
     ezal_core::operator::OperatorToken,
 ) {
     let window = report.plan.as_ref().unwrap().window;
@@ -169,7 +169,7 @@ fn publish(
         aos_unix_s: window.aos_unix_s as i64,
         los_unix_s: window.aos_unix_s as i64 + i64::from(window.duration_ms / 1000),
     };
-    let mut session = TrackingSession::new();
+    let mut session = TrackingLifecycle::new();
     let owner = session.claim(1, now).unwrap().token;
     act(&mut session, owner, 1, TrackingAction::Select(event), now).unwrap();
     session
@@ -195,7 +195,7 @@ fn publish(
 }
 
 fn act(
-    session: &mut TrackingSession<&'static str>,
+    session: &mut TrackingLifecycle<&'static str>,
     owner: ezal_core::operator::OperatorToken,
     sequence: u64,
     action: TrackingAction,

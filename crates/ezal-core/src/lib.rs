@@ -7,7 +7,8 @@
 //! The control path has four owners:
 //! * [`feedback`] validates acquisition results using [`position::InstalledCalibration`].
 //! * [`session`] admits fresh, ordered operator intent.
-//! * [`coordination`] owns the operator lease and coherent command delivery.
+//! * [`coordination`] serializes inputs and delivers commands coherently; its
+//!   [`tracking::TrackingLifecycle`] owns the Manual/Tracking mode, operator lease and mailbox.
 //! * [`actuator::Actuator::step`] is the complete physical-output decision.
 //!
 //! [`interlock`], [`motion`], [`network`] and private [`drive`] timing helpers

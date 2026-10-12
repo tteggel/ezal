@@ -1,7 +1,7 @@
-//! Device-owned single-pass policy. Firmware must serialize these transitions
-//! with input publication and output admission. No method performs I/O or GPIO.
-//! `S` owns immutable execution inputs; `TrackingRuntime` supplies their gates. Transport
-//! never supplies those inputs or planning results directly.
+//! Device-owned single-pass policy. It owns the Manual/Tracking mode, the operator lease and
+//! the command mailbox; [`crate::coordination`] serializes its inputs and delivers its commands.
+//! No method performs I/O or GPIO. `S` owns immutable execution inputs; `TrackingRuntime`
+//! supplies their gates. Transport never supplies those inputs or planning results directly.
 
 use super::{
     reconcile_event, AdmissionPolicy, CandidateFailure, EventError, EventId, InputError, PassEvent,
@@ -350,11 +350,11 @@ struct Receipt {
     result: Result<u64, LifecycleError>,
 }
 
-/// Pure coordination ready for firmware integration: one operator lease, one
-/// selection, one plan and one output mailbox. Browser loss only removes the
-/// operator; tracking requests use a separate execution generation. Keep the
-/// final production actuator/network/feedback gates downstream of this policy.
-pub struct TrackingSession<S> {
+/// One operator lease, one selection, one plan and one output mailbox. Browser
+/// loss only removes the operator; tracking requests use a separate execution
+/// generation. Keep the final production actuator/network/feedback gates
+/// downstream of this policy.
+pub struct TrackingLifecycle<S> {
     operator: OperatorLease,
     revision: u64,
     serial: u64,
@@ -376,13 +376,13 @@ pub struct TrackingSession<S> {
     commands: CommandMailbox,
 }
 
-impl<S> Default for TrackingSession<S> {
+impl<S> Default for TrackingLifecycle<S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S> TrackingSession<S> {
+impl<S> TrackingLifecycle<S> {
     /// Boot Manual, disarmed and without a selection or operator.
     pub const fn new() -> Self {
         Self {

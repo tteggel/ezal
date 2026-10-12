@@ -62,7 +62,7 @@ elements and calculate reception windows. UTC never drives motion timers.
 
 Tracking has separate ownership for operator authority and
 the selected run. `operator::OperatorLease` enforces exclusive, expiring grants;
-`tracking::TrackingSession` binds the selection, planning tickets, frozen inputs,
+`tracking::TrackingLifecycle` binds the selection, planning tickets, frozen inputs,
 executor generations and pending output. Releasing a browser grant does not
 release an armed run. The planner and lifecycle both use the existing actuator
 policy, so simulation, preparation and later following share duty and relay

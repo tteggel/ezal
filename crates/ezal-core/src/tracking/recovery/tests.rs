@@ -290,7 +290,7 @@ fn start_proof_rejects_changed_pose_and_hidden_relay_history() {
 
 #[test]
 fn recovery_episode_has_one_deadline_and_old_sources_cannot_resume() {
-    let mut session = TrackingSession::new();
+    let mut session = TrackingLifecycle::new();
     let owner = session.claim(1, 2000).unwrap().token;
     let pass = PassEvent {
         norad_id: 39260,

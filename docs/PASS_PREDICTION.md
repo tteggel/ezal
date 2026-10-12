@@ -794,7 +794,7 @@ lifecycle below. T7/T8 subsequently integrated execution and the dashboard.
 
 ### Current lifecycle milestone
 
-[`TrackingSession`](../crates/ezal-core/src/tracking/lifecycle.rs) implements
+[`TrackingLifecycle`](../crates/ezal-core/src/tracking/lifecycle.rs) implements
 the device-owned selection and lifecycle in the pure core. It starts disarmed
 in Manual mode, owns at most one selection and accepts only a supported plan
 when arming. Selection alone previews a pass. Tracking rejects manual movement
