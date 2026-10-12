@@ -2,11 +2,11 @@
 
 mod common;
 
-use common::TEST_CALIBRATION;
+use common::{installed, TEST_CALIBRATION};
 use ezal_core::ads1015::{count_to_mv, FullScale, FEEDBACK_FULL_SCALE, FEEDBACK_SUPPLY_RAIL_MV};
 use ezal_core::position::{
-    AxisCalibration, CalibrationError, FeedbackVoltages, Pointing, PositionCalibration,
-    FEEDBACK_ENDPOINT_MARGIN_MV, HARD_CODED_CALIBRATION,
+    AxisCalibration, CalibrationError, FeedbackVoltages, InstalledCalibration, Pointing,
+    PositionCalibration, FEEDBACK_ENDPOINT_MARGIN_MV, HARD_CODED_CALIBRATION,
 };
 
 #[test]
@@ -46,8 +46,9 @@ fn the_installed_calibration_is_supervisable_and_maps_both_channels() {
         feedback.a0_elevation_mv,
         HARD_CODED_CALIBRATION.elevation.voltage_min_mv
     );
-    let decoded = HARD_CODED_CALIBRATION
-        .feedback_to_position_for_adc(feedback, FEEDBACK_FULL_SCALE)
+    let decoded = InstalledCalibration::new(HARD_CODED_CALIBRATION, FEEDBACK_FULL_SCALE)
+        .unwrap()
+        .feedback_to_position(feedback)
         .unwrap();
     assert!((decoded.azimuth_deg - low.azimuth_deg).abs() < 0.001);
     assert!((decoded.elevation_deg - low.elevation_deg).abs() < 0.001);
@@ -309,9 +310,11 @@ fn adc_and_supply_rails_are_rejected_before_endpoint_noise_clamping() {
             .azimuth_deg,
         360.0
     );
+    // Hardware supervision refuses to install that calibration, so the
+    // saturation code never reaches the clamp.
     assert_eq!(
-        near_full_scale.feedback_to_position_for_adc(saturated, FullScale::V2_048),
-        Err(CalibrationError::AdcSaturated)
+        InstalledCalibration::new(near_full_scale, FullScale::V2_048),
+        Err(CalibrationError::AdcRangeTooNarrow)
     );
 
     for invalid_mv in [
@@ -332,7 +335,7 @@ fn adc_and_supply_rails_are_rejected_before_endpoint_noise_clamping() {
             },
         ] {
             assert_eq!(
-                TEST_CALIBRATION.feedback_to_position_for_adc(invalid, FEEDBACK_FULL_SCALE),
+                installed().feedback_to_position(invalid),
                 Err(CalibrationError::AdcSaturated)
             );
         }
@@ -347,9 +350,7 @@ fn wider_adc_quantisation_preserves_angles_and_exposes_overrange() {
         a0_elevation_mv: count_to_mv((raw.a0_elevation_mv / 2) as i16, FEEDBACK_FULL_SCALE),
         a1_azimuth_mv: count_to_mv((raw.a1_azimuth_mv / 2) as i16, FEEDBACK_FULL_SCALE),
     };
-    let measured = TEST_CALIBRATION
-        .feedback_to_position_for_adc(quantised, FEEDBACK_FULL_SCALE)
-        .unwrap();
+    let measured = installed().feedback_to_position(quantised).unwrap();
     assert!((measured.azimuth_deg - expected.azimuth_deg).abs() < 0.4);
     assert!((measured.elevation_deg - expected.elevation_deg).abs() < 0.2);
 
@@ -358,7 +359,7 @@ fn wider_adc_quantisation_preserves_angles_and_exposes_overrange() {
         a1_azimuth_mv: TEST_CALIBRATION.azimuth.voltage_max_mv + FEEDBACK_ENDPOINT_MARGIN_MV + 1,
     };
     assert_eq!(
-        TEST_CALIBRATION.feedback_to_position_for_adc(overrange, FEEDBACK_FULL_SCALE),
+        installed().feedback_to_position(overrange),
         Err(CalibrationError::VoltageOutOfRange)
     );
 }
