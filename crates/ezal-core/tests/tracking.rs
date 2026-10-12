@@ -73,10 +73,7 @@ fn simulation(initial: Pointing, plant: MotorProfile) -> Simulation {
         FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap(),
         settings(plant),
         ActuatorConfig {
-            duty: DutyConfig {
-                energized_ms: plant.duty_limit_ms,
-                rest_ms: plant.rest_ms,
-            },
+            duty: plant.duty,
             ..ActuatorConfig::DEFAULT
         },
         [0, 0],
@@ -233,8 +230,8 @@ fn reversal_waits_for_coast_and_a_new_startup() {
 #[test]
 fn brief_idle_does_not_replenish_duty_and_full_rest_is_per_axis() {
     let mut profile = ideal_profile(1.0);
-    profile.duty_limit_ms = 1_000;
-    profile.rest_ms = 2_000;
+    profile.duty.energized_ms = 1_000;
+    profile.duty.rest_ms = 2_000;
     let mut motor = MotorModel::new(
         profile,
         FULL_TRAVEL_CALIBRATION,
@@ -506,7 +503,7 @@ fn actual_actuator_catches_stalls_and_implausible_speed() {
 #[test]
 fn simulator_checks_duty_at_its_exact_deadline_and_latches_failure() {
     let mut profile = ideal_profile(1.0);
-    profile.duty_limit_ms = 1_005;
+    profile.duty.energized_ms = 1_005;
     let mut sim = simulation(Pointing::new(100.0, 45.0), profile);
     loop {
         if let Err(error) = sim.step(Some(Pointing::new(300.0, 45.0))) {
@@ -536,7 +533,7 @@ fn complete_over_the_top_pass_is_followed_without_azimuth_reversal() {
     assert_eq!(summary.energized_ms[0], 0);
     assert_eq!(summary.reversals[0], 0);
     assert!(summary.energized_ms[1] > 0);
-    assert!(summary.energized_ms[1] < MotorProfile::AC_50HZ.duty_limit_ms);
+    assert!(summary.energized_ms[1] < MotorProfile::AC_50HZ.duty.energized_ms);
     assert!(peak <= 2.0, "{peak}");
     assert!(sim.position().elevation_deg > 165.0);
 }
@@ -722,7 +719,7 @@ fn recorded_orbit_replays_through_the_real_actuator_until_los() {
     );
     assert!(peak < 10.0, "{peak}");
     for used in sim.summary().energized_ms {
-        assert!(used > 0 && used < MotorProfile::AC_50HZ.duty_limit_ms);
+        assert!(used > 0 && used < MotorProfile::AC_50HZ.duty.energized_ms);
     }
 }
 

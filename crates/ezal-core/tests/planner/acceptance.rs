@@ -224,7 +224,7 @@ fn accept(
         assert!(observed
             .energized_ms
             .iter()
-            .all(|used| *used < scenario.motor.duty_limit_ms));
+            .all(|used| *used < scenario.motor.duty.energized_ms));
         for (actual, predicted) in observed
             .energized_ms
             .iter()

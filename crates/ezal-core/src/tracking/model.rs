@@ -1,6 +1,7 @@
 use super::{Axis, AxisProfile, MotorProfile, SimulationError};
 use crate::ads1015::FEEDBACK_FULL_SCALE;
 use crate::drive::DriveCommand;
+use crate::duty::{DutyConfig, DutyHistory};
 use crate::position::{InstalledCalibration, Pointing, PositionCalibration};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,7 +40,7 @@ impl AxisModel {
         direction: Option<bool>,
         elapsed_ms: u64,
         profile: AxisProfile,
-        duty: MotorProfile,
+        duty: DutyConfig,
         axis: Axis,
     ) -> Result<(), SimulationError> {
         if direction != self.applied {
@@ -58,7 +59,7 @@ impl AxisModel {
         }
 
         if direction.is_some() {
-            if elapsed_ms > duty.duty_limit_ms - self.used_ms {
+            if elapsed_ms > duty.energized_ms - self.used_ms {
                 return Err(SimulationError::DutyLimit(axis));
             }
             self.used_ms += elapsed_ms;
@@ -174,7 +175,7 @@ impl MotorModel {
         initial: Pointing,
         used_ms: [u64; 2],
     ) -> Result<Self, SimulationError> {
-        if !profile.is_valid() || used_ms.iter().any(|used| *used > profile.duty_limit_ms) {
+        if !profile.is_valid() || !DutyHistory::Known(used_ms).is_valid(profile.duty) {
             return Err(SimulationError::InvalidProfile);
         }
         let installed = InstalledCalibration::new(calibration, FEEDBACK_FULL_SCALE)
@@ -219,7 +220,7 @@ impl MotorModel {
                 applied.azimuth.map(|d| d.increases_angle()),
                 elapsed_ms,
                 self.profile.azimuth,
-                self.profile,
+                self.profile.duty,
                 Axis::Azimuth,
             )
             .and_then(|()| {
@@ -227,7 +228,7 @@ impl MotorModel {
                     applied.elevation.map(|d| d.increases_angle()),
                     elapsed_ms,
                     self.profile.elevation,
-                    self.profile,
+                    self.profile.duty,
                     Axis::Elevation,
                 )
             });
@@ -251,8 +252,8 @@ impl MotorModel {
     /// Energized time each axis may still accumulate before its duty limit.
     pub(super) const fn remaining_duty_ms(&self) -> [u64; 2] {
         [
-            self.profile.duty_limit_ms - self.azimuth.used_ms,
-            self.profile.duty_limit_ms - self.elevation.used_ms,
+            self.profile.duty.energized_ms - self.azimuth.used_ms,
+            self.profile.duty.energized_ms - self.elevation.used_ms,
         ]
     }
 

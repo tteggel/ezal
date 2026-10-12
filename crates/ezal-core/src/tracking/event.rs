@@ -2,7 +2,7 @@ use crate::passes::{Pass, Report, Status, MAX_PASSES};
 
 /// Maximum shift from the original selected event when reconciling a complete
 /// refreshed forecast. Anchoring prevents small updates walking to another orbit.
-pub const MAX_EVENT_SHIFT_S: i64 = 300;
+const MAX_EVENT_SHIFT_S: i64 = 300;
 
 /// Server-side identity for one selection, retained across forecast revisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

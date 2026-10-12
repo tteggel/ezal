@@ -34,7 +34,7 @@ pub use deviation::{
     DeviationReading, DeviationStatus, REACQUISITION_DWELL_MS, REACQUISITION_ENTER_MS,
     REACQUISITION_LIMIT_MS, REACQUISITION_TOLERANCE_DEG,
 };
-pub use event::{reconcile_event, EventError, EventId, PassEvent, MAX_EVENT_SHIFT_S};
+pub use event::{reconcile_event, EventError, EventId, PassEvent};
 pub use inputs::{ExecutionInputs, InputError, InputSettings};
 pub use lifecycle::{
     BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
@@ -52,12 +52,13 @@ pub use reception::{ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_AD
 pub use recovery::{
     RecoveryHold, RecoveryStatus, INTERCEPT_GRID_MS, INTERCEPT_PLANNING_LEAD_MS, INTERCEPT_RETRY_MS,
 };
-pub use route::{Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
+pub use route::{Route, RouteChoice, RouteKind};
 pub use runtime::{RuntimeError, RuntimeObservation, TrackingRuntime, TrackingSummary};
 pub use simulation::{
     RestingStart, Scenario, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
 };
 
+use crate::duty::DutyConfig;
 use crate::feedback::FeedbackHealth;
 use crate::motion::MotionFault;
 use crate::position::Pointing;
@@ -128,10 +129,8 @@ pub struct MotorProfile {
     pub azimuth: AxisProfile,
     /// Elevation response, initially symmetric in both directions.
     pub elevation: AxisProfile,
-    /// Maximum accumulated energized time on each axis before a full rest.
-    pub duty_limit_ms: u64,
-    /// Continuous de-energized interval that replenishes that axis's allowance.
-    pub rest_ms: u64,
+    /// Per-axis energized allowance and the full rest that replenishes it.
+    pub duty: DutyConfig,
 }
 
 impl MotorProfile {
@@ -149,8 +148,7 @@ impl MotorProfile {
             coast_ms: 500,
             backlash_deg: 1.0,
         },
-        duty_limit_ms: 300_000,
-        rest_ms: 900_000,
+        duty: DutyConfig::CONFIRMED_AC,
     };
 
     /// Slower loaded-rate scenario used for preparation/intercept estimates.
@@ -181,10 +179,7 @@ impl MotorProfile {
 
     /// Reject non-finite physics and empty duty/rest allowances.
     pub fn is_valid(self) -> bool {
-        self.azimuth.is_valid()
-            && self.elevation.is_valid()
-            && self.duty_limit_ms > 0
-            && self.rest_ms > 0
+        self.azimuth.is_valid() && self.elevation.is_valid() && self.duty.is_valid()
     }
 }
 
