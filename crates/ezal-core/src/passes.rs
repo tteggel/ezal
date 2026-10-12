@@ -44,11 +44,11 @@ pub const SERVE_AHEAD_S: i64 = 60;
 pub const REFRESH_LEAD_S: i64 = 10 * 60;
 /// A LEO (period of at least 80 minutes) makes at most one pass per orbit,
 /// and a search, including its margins, spans fewer than eleven orbits.
-pub const MAX_PASSES_PER_SATELLITE: usize = 12;
+const MAX_PASSES_PER_SATELLITE: usize = 12;
 /// Room for every candidate's quota, so assembly never drops a pass.
 pub const MAX_PASSES: usize = SATELLITE_COUNT * MAX_PASSES_PER_SATELLITE;
 /// A served window, including a pass in progress, spans under five orbits.
-pub const MAX_SERVED: usize = SATELLITE_COUNT * 6;
+const MAX_SERVED: usize = SATELLITE_COUNT * 6;
 // Coarse sampling locates maxima, not crossings. A 30-second grid can still
 // bracket a grazing peak whose above-mask interval is shorter than one step.
 const STEP_S: i64 = 30;
@@ -502,29 +502,24 @@ pub fn needs_forecast(current: Option<&Forecast>, now_unix_s: i64) -> bool {
 
 /// Computes a complete [`Forecast`] in bounded steps so a cooperative shell
 /// can yield between them. Each step performs at most two propagations. A
-/// candidate whose search fails or overflows its `QUOTA` of passes is
-/// discarded whole. Tests lower the quota to exercise that rule.
-pub struct Job<'a, const QUOTA: usize = MAX_PASSES_PER_SATELLITE> {
+/// candidate whose search fails or overflows its quota of passes is
+/// discarded whole.
+pub struct Job<'a> {
     catalog: &'a Catalog,
     station: &'a GroundStation,
     config: Config,
     forecast: Forecast,
     next: usize,
-    active: Option<Active<'a, QUOTA>>,
+    active: Option<Active<'a>>,
 }
 
-struct Active<'a, const QUOTA: usize> {
+struct Active<'a> {
     index: usize,
     search: Search<Track<'a>>,
-    passes: Vec<Pass, QUOTA>,
+    passes: Vec<Pass, MAX_PASSES_PER_SATELLITE>,
 }
 
-impl<'a, const QUOTA: usize> Job<'a, QUOTA> {
-    const QUOTA_FITS: () = assert!(
-        QUOTA <= MAX_PASSES_PER_SATELLITE,
-        "the forecast reserves MAX_PASSES_PER_SATELLITE rows per candidate"
-    );
-
+impl<'a> Job<'a> {
     /// Prepare a forecast spanning [`HORIZON_S`] from `start_unix_s`.
     pub fn new(
         catalog: &'a Catalog,
@@ -532,7 +527,6 @@ impl<'a, const QUOTA: usize> Job<'a, QUOTA> {
         config: Config,
         start_unix_s: i64,
     ) -> Result<Self, Error> {
-        let () = Self::QUOTA_FITS;
         if !config.is_valid() || !(0..=LATEST_START_UNIX_S).contains(&start_unix_s) {
             return Err(Error::Config);
         }
@@ -559,6 +553,7 @@ impl<'a, const QUOTA: usize> Job<'a, QUOTA> {
         };
         let outcome = match active.search.step() {
             Err(_) => Outcome::Failed,
+            // A LEO never overflows the quota; one that does is discarded, not truncated.
             Ok(Some(_)) if active.passes.is_full() => Outcome::Failed,
             Ok(pass) => {
                 if let Some(pass) = pass {

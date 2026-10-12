@@ -157,8 +157,7 @@ pub async fn run(stack: Stack<'static>) -> ! {
         let due = SHARED.lock(|cell| needs_forecast(cell.borrow().forecast.as_ref(), now));
         if elements_changed || due {
             // NTP only yields 2020–2099 UTC, which a job always accepts.
-            let job: Result<Job, _> = Job::new(catalog.catalog(), &station, CONFIG, now);
-            if let Ok(mut job) = job {
+            if let Ok(mut job) = Job::new(catalog.catalog(), &station, CONFIG, now) {
                 // A timer yields even if every socket and CPU operation is
                 // immediately ready. ADC, network and actuator tasks keep running.
                 while !job.step() {

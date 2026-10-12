@@ -204,7 +204,7 @@ fn device_prepares_follows_and_finishes_after_browser_disconnect_under_backgroun
     }
     let catalog = catalog();
     let station = ezal_core::orbit::GroundStation::new(Observer::CLEVEDON).unwrap();
-    let mut prediction: Job = Job::new(
+    let mut prediction = Job::new(
         catalog.catalog(),
         &station,
         Config::DEFAULT,

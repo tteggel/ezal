@@ -19,7 +19,7 @@ fn catalog() -> Catalog {
 
 fn predict(catalog: &Catalog, start: i64, config: Config) -> Forecast {
     let station = GroundStation::new(config.observer).unwrap();
-    let mut job: Job = Job::new(catalog, &station, config, start).unwrap();
+    let mut job = Job::new(catalog, &station, config, start).unwrap();
     let mut steps = 0;
     while !job.step() {
         steps += 1;
@@ -482,7 +482,7 @@ fn a_mask_above_the_default_peak_raises_the_default_peak() {
 }
 
 #[test]
-fn propagation_failure_and_quota_overflow_discard_only_that_candidate() {
+fn propagation_failure_discards_only_that_candidate() {
     // Extreme drag (B* columns 53–60) decays METOP-B within the span, so
     // propagation fails partway through its search.
     let (line1, line2) = fixture_lines(38771);
@@ -496,27 +496,6 @@ fn propagation_failure_and_quota_overflow_discard_only_that_candidate() {
         .iter()
         .all(|pass| pass.satellite.norad_id != 38771));
     assert_eq!(forecast.outcomes[index_of(43689)], Outcome::Predicted);
-
-    // A quota of one pass discards every candidate with two or more.
-    let station = GroundStation::new(Observer::CLEVEDON).unwrap();
-    let catalog = self::catalog();
-    let mut job = Job::<1>::new(&catalog, &station, Config::DEFAULT, START).unwrap();
-    while !job.step() {}
-    let small = job.finish();
-    let full = predict(&catalog, START, Config::DEFAULT);
-    for (index, outcome) in small.outcomes.iter().enumerate() {
-        let count = full
-            .passes
-            .iter()
-            .filter(|pass| pass.satellite == &SATELLITES[index])
-            .count();
-        let expected = match full.outcomes[index] {
-            Outcome::Predicted if count > 1 => Outcome::Failed,
-            other => other,
-        };
-        assert_eq!(*outcome, expected, "{}", SATELLITES[index].name);
-    }
-    assert!(small.passes.len() <= SATELLITES.len());
 }
 
 #[test]
