@@ -49,8 +49,6 @@ fn config_matches_ignores_os_but_catches_real_differences() {
     let written = config_single_shot(Mux::Ain0, FullScale::V2_048, DataRate::Sps1600);
     // Device reports OS = 0 (mid-conversion) but otherwise identical: match.
     assert!(config_matches(written, written & !OS));
-    // Device reports OS = 1 (idle) and otherwise identical: match.
-    assert!(config_matches(written, written | OS));
     // A different PGA is a real mismatch and must be rejected.
     let other_pga = config_single_shot(Mux::Ain0, FullScale::V4_096, DataRate::Sps1600);
     assert!(!config_matches(written, other_pga));

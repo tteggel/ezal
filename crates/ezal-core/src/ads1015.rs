@@ -26,9 +26,10 @@ pub const FEEDBACK_FULL_SCALE: FullScale = FullScale::V4_096;
 /// that rail reads far below the ±4.096 V saturation code. Readings within
 /// 100 mV of the nominal rail are not trusted as feedback.
 pub const FEEDBACK_SUPPLY_RAIL_MV: i32 = 3_200;
+const _: () = assert!(FEEDBACK_SUPPLY_RAIL_MV < FEEDBACK_FULL_SCALE.positive_saturation_mv());
 
 /// Conversion codes between zero and positive full scale.
-pub const CODES_PER_FULL_SCALE: i32 = 2048;
+const CODES_PER_FULL_SCALE: i32 = 2048;
 
 /// The four ADS1015 registers, selected by the *pointer* byte that opens
 /// every I²C transaction.
@@ -88,7 +89,7 @@ impl FullScale {
     }
 
     /// Full-scale magnitude in millivolts (the voltage at +2048 codes).
-    pub const fn full_scale_mv(self) -> i32 {
+    const fn full_scale_mv(self) -> i32 {
         match self {
             FullScale::V6_144 => 6144,
             FullScale::V4_096 => 4096,

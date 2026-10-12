@@ -14,7 +14,7 @@ use ezal_core::session::TELEMETRY_PERIOD_MS;
 /// Maximum time spent in one receive operation. Idle connections still return
 /// their telemetry signal normally; once a message starts, this deadline also
 /// covers the remaining frame header, payload, and every continuation frame.
-pub const MESSAGE_TIMEOUT: Duration = Duration::from_secs(2);
+const MESSAGE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Per-connection capacity includes a tracking selection with maximum-width
 /// identifiers and RFC 6455 §5.5's 125-byte control frames. Keep this shared

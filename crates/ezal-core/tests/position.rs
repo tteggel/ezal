@@ -278,7 +278,6 @@ fn adc_range_validation_covers_both_axes_and_both_limits() {
             Err(CalibrationError::AdcRangeTooNarrow)
         );
     }
-    assert!(FEEDBACK_SUPPLY_RAIL_MV < FEEDBACK_FULL_SCALE.positive_saturation_mv());
 
     // A 2 V endpoint leaves no fault margin under the narrower ±2.048 V range.
     let mut near_full_scale = TEST_CALIBRATION;

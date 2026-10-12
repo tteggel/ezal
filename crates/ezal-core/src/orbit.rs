@@ -33,7 +33,7 @@ pub const MAX_FUTURE_EPOCH_S: i64 = 86_400;
 /// Number of curated reception candidates.
 pub const SATELLITE_COUNT: usize = 7;
 /// Every TLE data line is exactly this many ASCII characters.
-pub const TLE_LINE_LEN: usize = 69;
+const TLE_LINE_LEN: usize = 69;
 
 /// A curated L-band receiver candidate; status is not inferred from its TLE.
 #[derive(Clone, Copy, Debug, PartialEq)]

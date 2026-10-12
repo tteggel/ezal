@@ -59,8 +59,6 @@ fn empty_ssid_is_rejected_before_the_password() {
 /// The SSID boundary: 32 octets is the longest allowed; 33 is too long.
 #[test]
 fn ssid_length_boundary_is_32_octets() {
-    assert_eq!(SSID_MAX_LEN, 32);
-
     let ssid_32 = n_chars(32);
     assert_eq!(
         Credentials {
@@ -86,8 +84,6 @@ fn ssid_length_boundary_is_32_octets() {
 /// too short and 64 is too long.
 #[test]
 fn password_length_boundaries_are_8_and_63_octets() {
-    assert_eq!((PSK_MIN_LEN, PSK_MAX_LEN), (8, 63));
-
     let ssid = "ground-station";
     let check = |pw: &str| Credentials { ssid, password: pw }.validate();
 

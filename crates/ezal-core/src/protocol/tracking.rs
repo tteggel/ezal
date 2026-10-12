@@ -110,7 +110,7 @@ impl TrackingIntent {
     }
 
     /// Connection identity is supplied by the transport, never by this message.
-    pub fn authorize(
+    fn authorize(
         self,
         grant: Option<OperatorGrant>,
         freshness: &CommandFreshness,
