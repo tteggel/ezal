@@ -5,7 +5,7 @@ on a fresh machine, and explains the day-to-day workflow.
 
 ## One-time setup
 
-ezal pins the regular build and test tools — Rust, probe-rs, flip-link, picotool, Node.js,
+ezal pins the regular build and test tools — Rust, probe-rs, picotool, Node.js,
 the Python + schemdraw stack used to re-render the schematic — into a
 single `flake.nix` so every contributor gets the same toolchain on every
 platform. The flake is loaded automatically by [direnv](https://direnv.net)
@@ -44,9 +44,6 @@ When the shell is loaded you have:
 - `cargo`, `rustc`, `rustfmt`, `clippy` pinned to the version in
   `rust-toolchain.toml`,
 - `probe-rs` — used by `cargo run` to flash and stream defmt logs,
-- `flip-link` — optional linker wrapper for stack-overflow trapping
-  (off by default in `.cargo/config.toml`; uncomment the `linker =`
-  line to enable it),
 - `picotool` — optional, for UF2 / BOOTSEL flashing without a probe,
 - `jq` — reads Cargo's executable artifact path during UF2 packaging,
 - `node` — runs dashboard behavior tests with its built-in test runner,
@@ -124,7 +121,6 @@ for the dashboard tests, and picotool and jq separately for UF2 packaging.
 ```bash
 rustup show                                # installs the pinned toolchain
 cargo install --locked probe-rs-tools
-cargo install --locked flip-link           # optional
 node --version                            # Node.js 18+ for dashboard tests
 # picotool: https://github.com/raspberrypi/picotool
 # Only needed if you're re-rendering the schematic:
@@ -398,8 +394,13 @@ watchdog timeout. A debugger reset clears that inhibition.
 
   The address should be just past `.vector_table` (≈ `0x10000114`), not
   several KiB in.
-- **Stack overflow** → inspect stack usage and large local buffers; enable
-  `flip-link` so an overflow traps before corrupting static state.
+- **Stack overflow** → inspect stack usage and large local buffers. Reset
+  loads MSPLIM with `_stack_end` (cortex-m-rt's `set-msplim` feature), so a
+  stack pointer below the reserved stack faults instead of overwriting static
+  state. Once `direction_task` has armed the watchdog, the fault stops the
+  feeding and the board reboots with motion inhibited; before that, the core
+  stays in the fault handler until a manual reset, with the direction outputs
+  low or still in their reset state, so every switch stays off.
 
 ### Hardware verification after safety changes
 

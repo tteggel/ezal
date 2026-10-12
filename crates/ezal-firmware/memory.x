@@ -63,7 +63,7 @@ _stext = ADDR(.start_block) + SIZEOF(.start_block);
  * bounded stack frames. This is a capacity check, not a stack high-water test.
  * cortex-m-rt sets `_stack_end` to the location counter after `.uninit`, so
  * a FLASH section inserted after `.uninit` would move it out of RAM and make
- * this check vacuous.
+ * both this check and the MSPLIM stack limit loaded from it vacuous.
  */
 ASSERT(_stack_start - _stack_end >= 192K,
        "ezal requires at least 192 KiB for the shared execution/interrupt stack");

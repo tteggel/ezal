@@ -44,7 +44,10 @@ cyw43-firmware-logs = ["cyw43/firmware-logs"]
 ezal-core = { path = "../ezal-core" }
 
 cortex-m         = { workspace = true }
-cortex-m-rt      = { workspace = true }
+# `set-msplim`: Reset loads MSPLIM with `_stack_end`, so a stack overflow faults
+# instead of overwriting statics. memory.x reserves that stack and keeps
+# `_stack_end` in RAM.
+cortex-m-rt      = { workspace = true, features = ["set-msplim"] }
 defmt            = { workspace = true }
 defmt-rtt        = { workspace = true }
 panic-probe      = { workspace = true }
