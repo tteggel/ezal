@@ -1,6 +1,7 @@
 //! Reception claims are separate from motor-route geometry. A failed nominal
 //! trajectory is never made armable merely by relabeling its pointing errors.
 
+use super::deviation::MEASURED_RECOVERY_MS;
 use super::{PlanningWindow, REACQUISITION_LIMIT_MS};
 
 /// Preview time reserved before a late acquisition's fixed execution start.
@@ -100,10 +101,7 @@ impl ReceptionCoverage {
         let Some(los) = window.aos_at_ms.checked_add(u64::from(window.duration_ms)) else {
             return false;
         };
-        let Some(recovered) = gap
-            .latest_join_at_ms
-            .checked_add(super::REACQUISITION_DWELL_MS + crate::feedback::FEEDBACK_MAX_AGE_MS)
-        else {
+        let Some(recovered) = gap.latest_join_at_ms.checked_add(MEASURED_RECOVERY_MS) else {
             return false;
         };
         gap.missed.start_ms < gap.missed.end_ms

@@ -1,7 +1,7 @@
 //! Input supervision around the pure lifecycle. Firmware serializes source
 //! publications through this owner before draining commands to the actuator.
 
-use super::deviation::DeviationMonitor;
+use super::deviation::{DeviationMonitor, MEASURED_RECOVERY_MS};
 use super::recovery::{InterceptSearch, Recovery};
 use super::{
     BoundTrackingPlan, DeviationStatus, ExecutionInputs, FollowingController, InputError,
@@ -750,7 +750,7 @@ impl TrackingRuntime {
                     recovery.launch_pending = true;
                 }
             }
-            if now >= intercept.join_at_ms + REACQUISITION_DWELL_MS + FEEDBACK_MAX_AGE_MS {
+            if now >= intercept.join_at_ms + MEASURED_RECOVERY_MS {
                 recovery.hold(RecoveryHold::MissedIntercept, now);
             }
             if let Some(follower) = recovery.follower.as_mut() {

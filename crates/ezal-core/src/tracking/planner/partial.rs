@@ -4,11 +4,10 @@
 //! the first qualifying partial route wins, not a claim of global optimality.
 
 use super::*;
-use crate::feedback::FEEDBACK_MAX_AGE_MS;
+use crate::tracking::deviation::MEASURED_RECOVERY_MS;
 use crate::tracking::recovery::{InterceptSearch, SearchRoute};
 use crate::tracking::{
-    ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS, REACQUISITION_DWELL_MS,
-    REACQUISITION_LIMIT_MS,
+    ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS, REACQUISITION_LIMIT_MS,
 };
 
 pub(super) struct PartialEvaluation {
@@ -192,8 +191,7 @@ impl<E: Ephemeris> Planner<E> {
                 } else {
                     (partial.recovery_at_ms - self.window.aos_at_ms) as u32
                 },
-                end_ms: (partial.latest_join + REACQUISITION_DWELL_MS + FEEDBACK_MAX_AGE_MS
-                    - self.window.aos_at_ms) as u32,
+                end_ms: (partial.latest_join + MEASURED_RECOVERY_MS - self.window.aos_at_ms) as u32,
             },
             late_acquisition: partial.late,
             recovery_at_ms: partial.recovery_at_ms,

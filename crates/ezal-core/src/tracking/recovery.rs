@@ -3,9 +3,11 @@
 //! Every configured scenario must complete the remaining pass and final coast
 //! using the copied production actuator, including its existing duty history.
 
+use super::deviation::MEASURED_RECOVERY_MS;
+use super::planner::{intersample_bound, DEVIATION_SLACK_DEG};
 use super::{
     pointing_deviation_deg, FollowingController, RecoveryToken, RestingStart, Simulation,
-    SimulationSettings, TrackingPlan, TrackingTarget, MAX_PLANNING_STEPS, REACQUISITION_DWELL_MS,
+    SimulationSettings, TrackingPlan, TrackingTarget, MAX_PLANNING_STEPS,
     REACQUISITION_TOLERANCE_DEG,
 };
 use crate::feedback::FEEDBACK_MAX_AGE_MS;
@@ -276,11 +278,7 @@ impl InterceptSearch {
         }
         self.work_steps += 1;
         // Leave time for two seconds of fresh measured recovery before expiry.
-        if self
-            .join_at_ms
-            .saturating_add(REACQUISITION_DWELL_MS + FEEDBACK_MAX_AGE_MS)
-            >= self.deadline_ms
-        {
+        if self.join_at_ms.saturating_add(MEASURED_RECOVERY_MS) >= self.deadline_ms {
             self.finished = true;
             return Ok(());
         }
@@ -343,30 +341,18 @@ impl InterceptSearch {
         };
         if let Some(sky) = sky {
             let error = pointing_deviation_deg(sample.position, sky).ok_or(())?;
-            let mut bound = error + 0.002;
-            let mut whole_bound = bound;
-            if let Some((previous_ms, previous_error, previous_sky)) = self.previous {
-                let dt = (now - previous_ms) as f32 / 1000.0;
-                if pointing_deviation_deg(previous_sky, sky).ok_or(())?
-                    > plan.config.sky_rate_bound_deg_per_s * dt + 0.002
-                {
-                    return Err(());
-                }
-                let az = case.motor.azimuth.rate_deg_per_s;
-                let el = case.motor.elevation.rate_deg_per_s;
-                whole_bound = error.max(previous_error)
-                    + (libm::sqrtf(az * az + el * el) + plan.config.sky_rate_bound_deg_per_s) * dt
-                        / 2.0
-                    + 0.002;
-                if previous_ms >= self.join_at_ms {
-                    bound = whole_bound;
-                }
-            }
+            let whole_bound =
+                intersample_bound(plan.config, case.motor, self.previous, now, error, sky)
+                    .map_err(|_| ())?;
+            // The allocation applies from the join; an earlier interval holds only its sample.
+            let bound = match self.previous {
+                Some((previous_ms, ..)) if previous_ms >= self.join_at_ms => whole_bound,
+                _ => error + DEVIATION_SLACK_DEG,
+            };
             self.previous = Some((now, error, sky));
             self.metrics.peak = self.metrics.peak.max(error);
             self.metrics.bound = self.metrics.bound.max(whole_bound);
-            let allocation = (plan.config.tolerance_deg - plan.config.uncertainty_deg)
-                .min(REACQUISITION_TOLERANCE_DEG);
+            let allocation = REACQUISITION_TOLERANCE_DEG.min(plan.config.allocation_deg());
             if now >= self.join_at_ms && bound > allocation {
                 self.reject_candidate();
                 return Ok(());

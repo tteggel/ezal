@@ -149,7 +149,7 @@ fn execute(
             )
             .unwrap();
             observed.peak_deg = observed.peak_deg.max(error);
-            if error > plan.config.tolerance_deg - plan.config.uncertainty_deg {
+            if error > plan.config.allocation_deg() {
                 observed.outside_ms += dt;
             }
         }

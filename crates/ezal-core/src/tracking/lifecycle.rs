@@ -1101,7 +1101,7 @@ fn has_preparation_time(plan: &TrackingPlan, now_ms: u64) -> bool {
 fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
     let window = plan.window;
     let assessment = &plan.assessment;
-    let allocation = plan.config.tolerance_deg - plan.config.uncertainty_deg;
+    let allocation = plan.config.allocation_deg();
     window.aos_unix_s.is_finite()
         && (window.aos_unix_s - ticket.pass.aos_unix_s as f64).abs() <= 1.0
         && (window.aos_unix_s + f64::from(window.duration_ms) / 1000.0
@@ -1109,7 +1109,7 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
             .abs()
             <= 1.0
         && window.duration_ms > 0
-        && window.duration_ms <= 1_800_000
+        && window.duration_ms <= super::PlanningWindow::MAX_DURATION_MS
         && window
             .aos_at_ms
             .checked_add(u64::from(window.duration_ms))
