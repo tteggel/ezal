@@ -347,6 +347,29 @@ fn changed_start_invalidates_preview_before_a_simultaneous_preparation_deadline(
 }
 
 #[test]
+fn a_disarmed_clock_publication_blocks_preview_and_stops_a_run() {
+    let mut disarmed = clock(UTC);
+    assert_eq!(
+        disarmed.synchronize_sample(1000, sample(UTC)),
+        Err(ntp::ClockError::MonotonicOrCounter)
+    );
+    let unavailable = InputError::Timing(TimingError::Unavailable);
+    let mut device = Device::new();
+    device.state.publish_clock(disarmed, device.now);
+    assert_eq!(
+        device.state.tracking().snapshot().plan,
+        PlanStatus::Blocked(PlanProblem::Inputs(unavailable))
+    );
+    let mut device = Device::new();
+    device.until(AOS + 1000);
+    device.state.publish_clock(disarmed, device.now);
+    device.apply(device.now);
+    let stopped = device.state.tracking().snapshot().termination.unwrap();
+    assert_eq!(stopped.reason, TrackingStop::Inputs(unavailable));
+    assert!(!device.actuator.actual().is_active());
+}
+
+#[test]
 fn device_late_admission_uses_background_recovery_then_hands_off_to_normal_following() {
     let mut device = Device::new();
     device.until(AOS + 1000);
