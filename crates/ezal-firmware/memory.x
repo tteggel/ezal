@@ -58,12 +58,17 @@ SECTIONS {
 /* Move .text to start *after* the boot info, so they don't overlap. */
 _stext = ADDR(.start_block) + SIZEOF(.start_block);
 
+/* The stack's lowest address, which Reset loads into MSPLIM. MSPLIM ignores
+ * the low three bits of a limit, so `_stack_end` is the first 8-byte boundary
+ * at or past the statics; a 4-byte-aligned limit would let the stack overwrite
+ * the last static word before it faults. This definition overrides
+ * cortex-m-rt's `PROVIDE(_stack_end = .)`.
+ */
+_stack_end = ALIGN(__euninit, 8);
+
 /* Reserve room for the shared thread/interrupt stack as the task pools grow.
  * Planning uses static storage, but report publication still has sizeable
  * bounded stack frames. This is a capacity check, not a stack high-water test.
- * cortex-m-rt sets `_stack_end` to the location counter after `.uninit`, so
- * a FLASH section inserted after `.uninit` would move it out of RAM and make
- * both this check and the MSPLIM stack limit loaded from it vacuous.
  */
 ASSERT(_stack_start - _stack_end >= 192K,
        "ezal requires at least 192 KiB for the shared execution/interrupt stack");

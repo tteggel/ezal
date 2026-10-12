@@ -45,8 +45,8 @@ ezal-core = { path = "../ezal-core" }
 
 cortex-m         = { workspace = true }
 # `set-msplim`: Reset loads MSPLIM with `_stack_end`, so a stack overflow faults
-# instead of overwriting statics. memory.x reserves that stack and keeps
-# `_stack_end` in RAM.
+# instead of overwriting statics. memory.x defines `_stack_end` and reserves
+# the stack above it.
 cortex-m-rt      = { workspace = true, features = ["set-msplim"] }
 defmt            = { workspace = true }
 defmt-rtt        = { workspace = true }

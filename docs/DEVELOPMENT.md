@@ -397,10 +397,13 @@ watchdog timeout. A debugger reset clears that inhibition.
 - **Stack overflow** → inspect stack usage and large local buffers. Reset
   loads MSPLIM with `_stack_end` (cortex-m-rt's `set-msplim` feature), so a
   stack pointer below the reserved stack faults instead of overwriting static
-  state. Once `direction_task` has armed the watchdog, the fault stops the
-  feeding and the board reboots with motion inhibited; before that, the core
-  stays in the fault handler until a manual reset, with the direction outputs
-  low or still in their reset state, so every switch stays off.
+  state; `memory.x` puts `_stack_end` on an 8-byte boundary because MSPLIM
+  ignores the low three bits. Once `direction_task` has armed the watchdog,
+  the fault stops the feeding and the board reboots with motion inhibited;
+  before that, the core halts (in HardFault, or locked up when the handler's
+  first push crosses the limit again) until a manual reset, with the
+  direction outputs low or still in their reset state, so every switch stays
+  off.
 
 ### Hardware verification after safety changes
 
