@@ -127,9 +127,7 @@ impl Device {
             last_valid: Some(sample),
             health: FeedbackHealth::Healthy,
         };
-        let mut interlock = FeedbackInterlock::new(
-            InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
-        );
+        let mut interlock = FeedbackInterlock::new(full_travel_installed());
         interlock.publish(Some(sample));
         self.state.publish_feedback(feedback, interlock, at);
     }

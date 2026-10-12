@@ -1,5 +1,6 @@
-//! Fixtures shared by policy tests. They never use `HARD_CODED_CALIBRATION`,
-//! so replacing the installed calibration cannot break a policy test.
+//! Fixtures shared by the integration binaries and in-crate tests. They never
+//! use `HARD_CODED_CALIBRATION`, so replacing the installed calibration cannot
+//! break a policy test.
 
 #![allow(dead_code)]
 
@@ -53,6 +54,10 @@ pub fn installed() -> InstalledCalibration {
     InstalledCalibration::new(TEST_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap()
 }
 
+pub fn full_travel_installed() -> InstalledCalibration {
+    InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap()
+}
+
 /// Policy fixtures begin with explicitly known rested motors. Production boot
 /// uses unknown history and must complete a full rest before movement.
 pub fn rested_actuator() -> Actuator {
@@ -65,10 +70,11 @@ pub fn sample(position: Pointing, sampled_at_ms: u64) -> FeedbackSample {
     FeedbackSample::from_voltages(installed(), voltages, sampled_at_ms).unwrap()
 }
 
-/// Build a [`FULL_TRAVEL_CALIBRATION`] observation through the same checked conversion.
+/// Build a [`FULL_TRAVEL_CALIBRATION`] observation through the same checked
+/// conversion as hardware, like [`sample`].
 pub fn full_travel_sample(position: Pointing, sampled_at_ms: u64) -> FeedbackSample {
     FeedbackSample::from_voltages(
-        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
+        full_travel_installed(),
         FULL_TRAVEL_CALIBRATION
             .position_to_feedback(position)
             .unwrap(),

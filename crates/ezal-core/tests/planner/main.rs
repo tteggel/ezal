@@ -1,7 +1,8 @@
+// A directory binary resolves `mod common;` inside its own directory.
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{nominal, resting_start, FULL_TRAVEL_CALIBRATION};
+use common::{full_travel_installed, nominal, resting_start, FULL_TRAVEL_CALIBRATION};
 use ezal_core::actuator::ActuatorInput;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{
@@ -442,8 +443,7 @@ fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
         }),
         Err(SimulationError::InvalidStart)
     ));
-    let installed =
-        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap();
+    let installed = full_travel_installed();
     let old = FeedbackSample::from_voltages(
         installed,
         FULL_TRAVEL_CALIBRATION
@@ -483,8 +483,7 @@ fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
 #[test]
 fn simulation_copies_recent_relay_holds_and_consumed_duty_from_the_output_owner() {
     let mut start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(100.0, 30.0), [0, 0]);
-    let installed =
-        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap();
+    let installed = full_travel_installed();
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,

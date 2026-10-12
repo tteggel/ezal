@@ -1,7 +1,10 @@
+// A directory binary resolves `mod common;` inside its own directory.
 #[path = "../common/mod.rs"]
 mod common;
 
-use common::{full_travel_sample, nominal, resting_start, FULL_TRAVEL_CALIBRATION};
+use common::{
+    full_travel_installed, full_travel_sample, nominal, resting_start, FULL_TRAVEL_CALIBRATION,
+};
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
@@ -14,7 +17,7 @@ use ezal_core::ntp::{self, UtcClock};
 use ezal_core::operator::OperatorToken;
 use ezal_core::orbit::{Observer, MAX_TLE_AGE_S};
 use ezal_core::passes::Ephemeris;
-use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing};
+use ezal_core::position::{AxisCalibration, Pointing};
 use ezal_core::tracking::*;
 use std::sync::OnceLock;
 

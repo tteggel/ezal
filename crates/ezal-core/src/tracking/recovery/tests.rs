@@ -1,13 +1,11 @@
 use super::*;
 use crate::actuator::{Actuator, ActuatorConfig, ActuatorInput};
-use crate::ads1015::FEEDBACK_FULL_SCALE;
 use crate::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
 use crate::duty::{DutyConfig, DutyHistory};
 use crate::interlock::FeedbackInterlock;
 use crate::network::NetworkGate;
 use crate::orbit::LookAngle;
-use crate::position::InstalledCalibration;
-use crate::test_support::{full_travel_sample, FULL_TRAVEL_CALIBRATION};
+use crate::test_support::{full_travel_installed, full_travel_sample, FULL_TRAVEL_CALIBRATION};
 use crate::tracking::*;
 use std::cell::Cell;
 use std::sync::OnceLock;
@@ -42,9 +40,7 @@ fn service(
     network: NetworkGate,
     command: Command,
 ) {
-    let mut interlock = FeedbackInterlock::new(
-        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
-    );
+    let mut interlock = FeedbackInterlock::new(full_travel_installed());
     interlock.publish(Some(full_travel_sample(pose, at)));
     actuator.step(
         ActuatorInput {

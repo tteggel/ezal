@@ -1,13 +1,12 @@
 mod common;
 
-use common::FULL_TRAVEL_CALIBRATION;
+use common::{full_travel_installed, FULL_TRAVEL_CALIBRATION};
 use ezal_core::actuator::ActuatorConfig;
-use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection, RelayConfig};
 use ezal_core::duty::DutyConfig;
 use ezal_core::feedback::{FeedbackSample, FEEDBACK_MAX_AGE_MS};
 use ezal_core::motion::MotionFault;
-use ezal_core::position::{InstalledCalibration, Pointing};
+use ezal_core::position::Pointing;
 use ezal_core::tracking::{
     pointing_deviation_deg, Axis, FollowingController, MotorModel, MotorProfile, Scenario,
     Simulation, SimulationError, SimulationSample, SimulationSettings, TrackingTarget,
@@ -288,7 +287,7 @@ fn follower_requires_current_feedback_and_preserves_continuous_coordinates() {
         FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap();
     let position = Pointing::new(359.0, 45.0);
     let feedback = FeedbackSample::from_voltages(
-        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
+        full_travel_installed(),
         FULL_TRAVEL_CALIBRATION
             .position_to_feedback(position)
             .unwrap(),

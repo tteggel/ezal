@@ -32,9 +32,7 @@ impl Rig {
         pose.elevation_deg += offset;
         let mut actuator = Actuator::with_config(plan.actuator, DutyHistory::Known(used));
         let feedback = healthy(full_travel_sample(pose, AOS - 100));
-        let mut interlock = FeedbackInterlock::new(
-            InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
-        );
+        let mut interlock = FeedbackInterlock::new(full_travel_installed());
         for at in [AOS - 2000, AOS] {
             interlock.publish(Some(full_travel_sample(pose, at)));
             actuator.step(
@@ -70,9 +68,7 @@ impl Rig {
         while self.pending.front().is_some_and(|(ready, _)| *ready <= at) {
             self.feedback = healthy(self.pending.pop_front().unwrap().1);
         }
-        let mut interlock = FeedbackInterlock::new(
-            InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
-        );
+        let mut interlock = FeedbackInterlock::new(full_travel_installed());
         interlock.publish(self.feedback.last_valid);
         let obs = observation(at);
         // A coherent snapshot is serviced before planning; GPIO would be applied
@@ -150,9 +146,7 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         },
         DutyHistory::Known([0; 2]),
     );
-    let mut interlock = FeedbackInterlock::new(
-        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
-    );
+    let mut interlock = FeedbackInterlock::new(full_travel_installed());
     for now in [at - 2000, at] {
         interlock.publish(Some(full_travel_sample(pose, now)));
         actuator.step(
@@ -443,9 +437,7 @@ fn physical_fault_and_network_loss_discard_validated_intercepts() {
         rig.plan();
         let mut obs = observation(rig.now);
         let reason = if physical {
-            let mut interlock = FeedbackInterlock::new(
-                InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
-            );
+            let mut interlock = FeedbackInterlock::new(full_travel_installed());
             interlock.publish(rig.feedback.last_valid);
             rig.actuator.step(
                 ActuatorInput {
@@ -552,9 +544,7 @@ fn delayed_output_drain_and_missed_control_tick_hold_before_reusing_a_command() 
         let launch = rig.plan().launch_at_ms.unwrap();
         if delayed_launch {
             rig.until(launch - 20);
-            let mut interlock = FeedbackInterlock::new(
-                InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
-            );
+            let mut interlock = FeedbackInterlock::new(full_travel_installed());
             interlock.publish(rig.feedback.last_valid);
             rig.actuator.step(
                 ActuatorInput {

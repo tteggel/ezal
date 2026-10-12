@@ -26,7 +26,7 @@ fn quantized(pose: Pointing, at: u64) -> FeedbackSample {
         ((mv / code).round() * code) as i32
     };
     FeedbackSample::from_voltages(
-        InstalledCalibration::new(FULL_TRAVEL_CALIBRATION, FEEDBACK_FULL_SCALE).unwrap(),
+        full_travel_installed(),
         FeedbackVoltages {
             a0_elevation_mv: voltage(FULL_TRAVEL_CALIBRATION.elevation, pose.elevation_deg),
             a1_azimuth_mv: voltage(FULL_TRAVEL_CALIBRATION.azimuth, pose.azimuth_deg),
