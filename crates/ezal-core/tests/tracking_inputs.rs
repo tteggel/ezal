@@ -627,7 +627,7 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
         assert_eq!(runtime.take_command(obs), Some(CommandEnvelope::INHIBIT));
         assert_eq!(
             runtime.snapshot().termination.unwrap().reason,
-            TrackingStop::Timing(TimingError::Correction)
+            TrackingStop::Inputs(InputError::Timing(TimingError::Correction))
         );
         assert!(!runtime.tracking_command(run, command(now + 1), observation(now + 1)));
         assert_eq!(runtime.snapshot().mode, TrackingMode::Manual);
@@ -683,7 +683,7 @@ fn missing_clock_invalid_input_reports_and_reboot_remain_disarmed() {
     runtime.service(lost).unwrap();
     assert_eq!(
         runtime.snapshot().termination.unwrap().reason,
-        TrackingStop::Timing(TimingError::Unavailable)
+        TrackingStop::Inputs(InputError::Timing(TimingError::Unavailable))
     );
     let (mut runtime, _) = selected(EVENT, observation(2000));
     let inputs = capture(
@@ -821,6 +821,6 @@ fn runtime_cancel_at_preparation_prevents_a_freeze_and_stale_clock_publications_
     );
     assert_eq!(
         runtime.snapshot().termination.unwrap().reason,
-        TrackingStop::Timing(TimingError::ClockOrder)
+        TrackingStop::Inputs(InputError::Timing(TimingError::ClockOrder))
     );
 }

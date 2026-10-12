@@ -831,13 +831,7 @@ impl TrackingRuntime {
         };
         if let Some(error) = error {
             if state.run.is_some() {
-                self.session.interrupt(
-                    match error {
-                        InputError::Timing(error) => TrackingStop::Timing(error),
-                        other => TrackingStop::Inputs(other),
-                    },
-                    now,
-                )?;
+                self.session.interrupt(TrackingStop::Inputs(error), now)?;
                 self.network_generation = None;
                 self.sync_execution(now);
             } else {
