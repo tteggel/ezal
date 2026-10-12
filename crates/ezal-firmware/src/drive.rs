@@ -7,8 +7,10 @@
 //! watchdog. Its wait is bounded by the next policy deadline and a fixed
 //! service period.
 
-use embassy_rp::gpio::Output;
+use embassy_rp::gpio::{Level, Output};
+use embassy_rp::peripherals::{PIN_10, PIN_11, PIN_20, PIN_21};
 use embassy_rp::watchdog::Watchdog;
+use embassy_rp::Peri;
 use embassy_time::{with_deadline, Duration, Instant};
 
 use ezal_core::actuator::Actuator;
@@ -34,19 +36,29 @@ pub struct DirectionOutputs {
 }
 
 impl DirectionOutputs {
-    /// Wrap the four idle-low direction GPIOs, ordered CW, CCW, UP, DOWN to
-    /// match the schematic. Starts with no axis energised.
+    /// Claim the four direction GPIOs, driven low so no axis is energised.
+    /// The schematic fixes the wiring:
+    ///
+    /// | role        | GPIO | DIN   | LED |
+    /// |-------------|------|-------|-----|
+    /// | CW (right)  | GP10 | DIN 2 | D1  |
+    /// | CCW (left)  | GP11 | DIN 4 | D2  |
+    /// | UP          | GP20 | DIN 3 | D3  |
+    /// | DOWN        | GP21 | DIN 5 | D4  |
+    ///
+    /// Their distinct peripheral types mean the compiler rejects a mis-wired
+    /// call, so the positional arguments are safe.
     pub fn new(
-        cw: Output<'static>,
-        ccw: Output<'static>,
-        up: Output<'static>,
-        down: Output<'static>,
+        cw: Peri<'static, PIN_10>,
+        ccw: Peri<'static, PIN_11>,
+        up: Peri<'static, PIN_20>,
+        down: Peri<'static, PIN_21>,
     ) -> Self {
         Self {
-            cw,
-            ccw,
-            up,
-            down,
+            cw: Output::new(cw, Level::Low),
+            ccw: Output::new(ccw, Level::Low),
+            up: Output::new(up, Level::Low),
+            down: Output::new(down, Level::Low),
             applied: DriveCommand::IDLE,
         }
     }
