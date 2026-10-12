@@ -473,15 +473,11 @@ fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
     let start = snapshot(CAL, Pointing::new(100.0, 30.0), [1000, 2000]);
     let follower =
         FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap();
-    let make = |start| {
-        Simulation::from_rest(
-            CAL,
-            MotorProfile::AC_50HZ,
-            follower,
-            SimulationSettings::default(),
-            start,
-        )
+    let settings = SimulationSettings {
+        step_ms: 20,
+        scenario: Scenario::NOMINAL,
     };
+    let make = |start| Simulation::from_rest(CAL, follower, settings, start);
     assert!(make(start).is_ok());
     assert!(matches!(
         make(RestingStart {
@@ -511,18 +507,16 @@ fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
     assert_eq!(sim.step(None).unwrap().requested, Command::Inhibit);
     assert_eq!(sim.actuator().status().duty.azimuth.remaining_ms, 300_000);
     assert_eq!(sim.summary().energized_ms, [0, 0]);
-    let mut settings = SimulationSettings::default();
-    settings.actuator.relays = RelayConfig {
-        min_active_ms: 600,
-        ..RelayConfig::DEFAULT
-    };
+    let mut actuator = start.actuator.configuration();
+    actuator.relays.min_active_ms = 600;
     assert!(matches!(
         Simulation::new(
             CAL,
             start.feedback.position(),
-            MotorProfile::AC_50HZ,
             follower,
-            settings
+            settings,
+            actuator,
+            [0, 0],
         ),
         Err(SimulationError::InvalidSettings)
     ));
@@ -539,8 +533,11 @@ fn simulation_copies_recent_relay_holds_and_consumed_duty_from_the_output_owner(
     let follower =
         FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap();
     let settings = SimulationSettings {
-        feedback_latency_ms: 0,
-        ..SimulationSettings::default()
+        step_ms: 20,
+        scenario: Scenario {
+            latency_ms: 0,
+            ..Scenario::NOMINAL
+        },
     };
     for (now, azimuth, command) in [
         (2000, 100.0, Command::Drive(cw)),
@@ -572,13 +569,12 @@ fn simulation_copies_recent_relay_holds_and_consumed_duty_from_the_output_owner(
         );
         if now < 3000 {
             assert!(matches!(
-                Simulation::from_rest(CAL, MotorProfile::AC_50HZ, follower, settings, start),
+                Simulation::from_rest(CAL, follower, settings, start),
                 Err(SimulationError::InvalidStart)
             ));
         }
     }
-    let mut sim =
-        Simulation::from_rest(CAL, MotorProfile::AC_50HZ, follower, settings, start).unwrap();
+    let mut sim = Simulation::from_rest(CAL, follower, settings, start).unwrap();
     while sim.now_ms() < 4500 {
         assert_eq!(
             sim.step(Some(Pointing::new(90.0, 30.0))).unwrap().applied,

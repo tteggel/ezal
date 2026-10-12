@@ -4,7 +4,7 @@
 use super::route::{self, Bridge, Knot, Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
 use super::{
     pointing_deviation_deg, AdmissionPolicy, FollowingController, MotorProfile, ReceptionCoverage,
-    RestingStart, Simulation, SimulationError, SimulationSettings, TrackingTarget,
+    RestingStart, Scenario, Simulation, SimulationError, SimulationSettings, TrackingTarget,
 };
 use crate::passes::Ephemeris;
 use crate::position::{Pointing, PositionCalibration};
@@ -33,36 +33,6 @@ pub struct PlanningWindow {
     pub aos_at_ms: u64,
     /// Complete reception duration, at most 30 minutes.
     pub duration_ms: u32,
-}
-
-/// One repeatable uncertainty case. These finite cases do not prove all
-/// intermediate combinations of motor behavior, noise or atmospheric effects.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Scenario {
-    /// Assumed loaded motor response; the follower keeps its own fixed reference.
-    pub motor: MotorProfile,
-    /// Total paired acquisition latency, at most 150 ms.
-    pub latency_ms: u64,
-    /// Delay between capturing A0 and A1, included in that latency.
-    pub channel_skew_ms: u64,
-    /// Azimuth/elevation ADC-code offsets before quantization.
-    pub noise_codes: [i8; 2],
-    /// Alternating offsets exercise code-boundary chatter as well as fixed bias.
-    pub alternate_noise: bool,
-    /// Explicit gear engagement at preparation start, where known/assumed.
-    pub initial_engagement: [Option<bool>; 2],
-}
-
-impl Scenario {
-    /// Nominal AC case, initially engaged in the first requested direction.
-    pub const NOMINAL: Self = Self {
-        motor: MotorProfile::AC_50HZ,
-        latency_ms: 100,
-        channel_skew_ms: 0,
-        noise_codes: [0, 0],
-        alternate_noise: false,
-        initial_engagement: [None, None],
-    };
 }
 
 /// Preparation schedule that must be included in the complete simulation.
@@ -473,9 +443,11 @@ impl<E: Ephemeris> Planner<E> {
             }
             Simulation::from_rest(
                 calibration,
-                scenario.motor,
                 follower,
-                Self::settings(&config, start, *scenario),
+                SimulationSettings {
+                    step_ms: config.step_ms,
+                    scenario: *scenario,
+                },
                 start,
             )
             .map_err(|error| {
@@ -524,24 +496,6 @@ impl<E: Ephemeris> Planner<E> {
             partial_cut: None,
             partial: None,
         })
-    }
-
-    fn settings(
-        config: &PlanningConfig,
-        start: RestingStart,
-        scenario: Scenario,
-    ) -> SimulationSettings {
-        SimulationSettings {
-            step_ms: config.step_ms,
-            feedback_latency_ms: scenario.latency_ms,
-            channel_skew_ms: scenario.channel_skew_ms,
-            noise_codes: scenario.noise_codes,
-            alternate_noise: scenario.alternate_noise,
-            initial_engagement: scenario.initial_engagement,
-            actuator: start.actuator.configuration(),
-            tolerance_deg: config.tolerance_deg - config.uncertainty_deg,
-            ..SimulationSettings::default()
-        }
     }
 
     /// True after a terminal error, complete search or validated partial fallback.
@@ -746,9 +700,11 @@ impl<E: Ephemeris> Planner<E> {
         .map_err(|_| PlanningError::Configuration)?;
         let mut sim = Simulation::from_rest(
             self.calibration,
-            case.motor,
             follower,
-            Self::settings(&self.config, self.start, case),
+            SimulationSettings {
+                step_ms: self.config.step_ms,
+                scenario: case,
+            },
             self.start,
         )
         .map_err(|_| PlanningError::StartingState)?;

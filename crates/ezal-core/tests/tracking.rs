@@ -6,8 +6,8 @@ use ezal_core::feedback::{FeedbackSample, FEEDBACK_MAX_AGE_MS};
 use ezal_core::motion::MotionFault;
 use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
 use ezal_core::tracking::{
-    pointing_deviation_deg, Axis, FollowingController, MotorModel, MotorProfile, Simulation,
-    SimulationError, SimulationSettings, TrackingTarget,
+    pointing_deviation_deg, Axis, FollowingController, MotorModel, MotorProfile, Scenario,
+    Simulation, SimulationError, SimulationSample, SimulationSettings, TrackingTarget,
 };
 
 // Synthetic full-travel installation, not an extrapolation of the hardware's calibration.
@@ -33,6 +33,11 @@ const CCW: DriveCommand = DriveCommand {
     azimuth: Some(AzimuthDirection::CounterClockwise),
     elevation: None,
 };
+// Offline output policy: installed relay timing with confirmed AC duty.
+const ACTUATOR: ActuatorConfig = ActuatorConfig {
+    duty: DutyConfig::CONFIRMED_AC,
+    ..ActuatorConfig::DEFAULT
+};
 
 fn close(actual: f32, expected: f32) {
     assert!((actual - expected).abs() < 0.0001, "{actual} != {expected}");
@@ -49,6 +54,21 @@ fn ideal_profile(rate: f32) -> MotorProfile {
     profile
 }
 
+fn settings(plant: MotorProfile) -> SimulationSettings {
+    SimulationSettings {
+        step_ms: 20,
+        scenario: Scenario {
+            motor: plant,
+            ..Scenario::NOMINAL
+        },
+    }
+}
+
+/// True sky deviation of the actual pose, the simulation's ground truth.
+fn deviation(sample: SimulationSample, sky: Pointing) -> f32 {
+    pointing_deviation_deg(sample.position, sky).unwrap()
+}
+
 fn model(profile: MotorProfile) -> MotorModel {
     MotorModel::new(profile, CALIBRATION, Pointing::new(100.0, 45.0), [0, 0]).unwrap()
 }
@@ -57,18 +77,16 @@ fn simulation(initial: Pointing, plant: MotorProfile) -> Simulation {
     Simulation::new(
         CALIBRATION,
         initial,
-        plant,
         FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap(),
-        SimulationSettings {
-            actuator: ActuatorConfig {
-                duty: DutyConfig {
-                    energized_ms: plant.duty_limit_ms,
-                    rest_ms: plant.rest_ms,
-                },
-                ..ActuatorConfig::DEFAULT
+        settings(plant),
+        ActuatorConfig {
+            duty: DutyConfig {
+                energized_ms: plant.duty_limit_ms,
+                rest_ms: plant.rest_ms,
             },
-            ..SimulationSettings::default()
+            ..ActuatorConfig::DEFAULT
         },
+        [0, 0],
     )
     .unwrap()
 }
@@ -326,14 +344,17 @@ fn channel_skew_preserves_oldest_timestamp_and_each_channels_capture_position() 
     let mut sim = Simulation::new(
         CALIBRATION,
         Pointing::new(100.0, 45.0),
-        plant,
         FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap(),
         SimulationSettings {
             step_ms: 50,
-            feedback_latency_ms: 150,
-            channel_skew_ms: 150,
-            ..SimulationSettings::default()
+            scenario: Scenario {
+                latency_ms: 150,
+                channel_skew_ms: 150,
+                ..settings(plant).scenario
+            },
         },
+        ACTUATOR,
+        [0, 0],
     )
     .unwrap();
     let mut elevation_at_capture = 0.0;
@@ -362,14 +383,18 @@ fn noisy_feedback_is_applied_before_adc_quantization_and_alternates_per_read() {
     let mut sim = Simulation::new(
         CALIBRATION,
         Pointing::new(100.11, 45.07),
-        MotorProfile::AC_50HZ,
         FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap(),
         SimulationSettings {
-            feedback_latency_ms: 0,
-            noise_codes: [1, -1],
-            alternate_noise: true,
-            ..SimulationSettings::default()
+            step_ms: 20,
+            scenario: Scenario {
+                latency_ms: 0,
+                noise_codes: [1, -1],
+                alternate_noise: true,
+                ..Scenario::NOMINAL
+            },
         },
+        ACTUATOR,
+        [0, 0],
     )
     .unwrap();
     let first = sim.step(None).unwrap().feedback.unwrap();
@@ -404,30 +429,23 @@ fn pulse_aware_follower_avoids_reversal_chatter_with_both_relay_policies() {
             let mut sim = Simulation::new(
                 CALIBRATION,
                 Pointing::new(180.0, 10.0),
-                plant,
                 FollowingController::new(MotorProfile::AC_50HZ, 0.15, relays).unwrap(),
-                SimulationSettings {
-                    actuator: ActuatorConfig {
-                        relays,
-                        ..SimulationSettings::default().actuator
-                    },
-                    ..SimulationSettings::default()
-                },
+                settings(plant),
+                ActuatorConfig { relays, ..ACTUATOR },
+                [0, 0],
             )
             .unwrap();
+            let mut peak = 0.0_f32;
             while sim.now_ms() < 600_000 {
-                sim.step(Some(Pointing::new(
-                    180.0,
-                    10.0 + 160.0 * sim.now_ms() as f32 / 600_000.0,
-                )))
-                .unwrap();
+                let target = Pointing::new(180.0, 10.0 + 160.0 * sim.now_ms() as f32 / 600_000.0);
+                peak = peak.max(deviation(sim.step(Some(target)).unwrap(), target));
             }
             sim.step(None).unwrap();
             while !sim.is_settled() {
                 sim.step(None).unwrap();
             }
             let summary = sim.summary();
-            assert!(summary.max_deviation_deg < 1.5, "{summary:?}");
+            assert!(peak < 1.5, "{peak} {summary:?}");
             assert_eq!(summary.reversals, [0, 0]);
             assert_eq!(summary.energized_ms[0], 0);
             assert!(summary.energized_ms[1] < 70_000);
@@ -440,10 +458,11 @@ fn stationary_target_needs_no_drive_and_cancellation_holds_after_coast() {
     let target = Pointing::new(100.0, 45.0);
     let mut sim = simulation(target, MotorProfile::AC_50HZ);
     while sim.now_ms() < 1_000 {
-        assert_eq!(sim.step(Some(target)).unwrap().applied, DriveCommand::IDLE);
+        let sample = sim.step(Some(target)).unwrap();
+        assert_eq!(sample.applied, DriveCommand::IDLE);
+        close(deviation(sample, target), 0.0);
     }
     assert_eq!(sim.summary().energized_ms, [0, 0]);
-    close(sim.summary().max_deviation_deg, 0.0);
     while sim.now_ms() < 2_000 {
         sim.step(Some(Pointing::new(200.0, 45.0))).unwrap();
     }
@@ -501,9 +520,10 @@ fn simulator_checks_duty_at_its_exact_deadline_and_latches_failure() {
 #[test]
 fn complete_over_the_top_pass_is_followed_without_azimuth_reversal() {
     let mut sim = simulation(Pointing::new(180.0, 10.0), MotorProfile::AC_50HZ);
+    let mut peak = 0.0_f32;
     while sim.now_ms() < 600_000 {
-        let elevation = 10.0 + 160.0 * sim.now_ms() as f32 / 600_000.0;
-        sim.step(Some(Pointing::new(180.0, elevation))).unwrap();
+        let target = Pointing::new(180.0, 10.0 + 160.0 * sim.now_ms() as f32 / 600_000.0);
+        peak = peak.max(deviation(sim.step(Some(target)).unwrap(), target));
     }
     sim.step(None).unwrap();
     while !sim.is_settled() {
@@ -514,29 +534,25 @@ fn complete_over_the_top_pass_is_followed_without_azimuth_reversal() {
     assert_eq!(summary.reversals[0], 0);
     assert!(summary.energized_ms[1] > 0);
     assert!(summary.energized_ms[1] < MotorProfile::AC_50HZ.duty_limit_ms);
-    assert!(summary.max_deviation_deg < 3.0, "{summary:?}");
-    assert_eq!(summary.outside_tolerance_ms, 0);
+    assert!(peak <= 2.0, "{peak}");
     assert!(sim.position().elevation_deg > 165.0);
 }
 
 #[test]
 fn impossible_target_rate_is_reported_as_deviation_without_a_false_motion_fault() {
     let mut sim = simulation(Pointing::new(100.0, 45.0), MotorProfile::AC_SLOW);
+    let mut peak = 0.0_f32;
     while sim.now_ms() < 10_000 {
-        sim.step(Some(Pointing::new(
-            100.0 + sim.now_ms() as f32 / 100.0,
-            45.0,
-        )))
-        .unwrap();
+        let target = Pointing::new(100.0 + sim.now_ms() as f32 / 100.0, 45.0);
+        peak = peak.max(deviation(sim.step(Some(target)).unwrap(), target));
     }
-    assert!(sim.summary().max_deviation_deg > 30.0);
-    assert!(sim.summary().outside_tolerance_ms > 5_000);
+    assert!(peak > 30.0, "{peak}");
     sim.step(None).unwrap();
     assert_eq!(sim.actuator().actual(), DriveCommand::IDLE);
 }
 
 #[test]
-fn intentional_keyhole_offset_is_included_in_reported_sky_deviation() {
+fn intentional_keyhole_offset_is_followed_on_the_route_not_the_sky() {
     let mechanical = Pointing::new(180.0, 90.0);
     let mut sim = simulation(mechanical, MotorProfile::AC_50HZ);
     let target = TrackingTarget {
@@ -545,39 +561,38 @@ fn intentional_keyhole_offset_is_included_in_reported_sky_deviation() {
     };
     while sim.now_ms() < 1_000 {
         let sample = sim.step_target(Some(target)).unwrap();
+        // The motor path is followed exactly; the planned offset remains.
         assert_eq!(sample.applied, DriveCommand::IDLE);
-        close(sample.deviation_deg.unwrap(), 2.5);
+        close(deviation(sample, target.sky), 2.5);
     }
-    close(sim.summary().max_deviation_deg, 2.5);
-    // Exceeds the 2° modeled allocation, even though the motor path is followed exactly.
-    assert!(sim.summary().outside_tolerance_ms > 900);
 }
 
 #[test]
 fn invalid_simulation_inputs_never_create_or_retain_output() {
     let controller =
         FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap();
+    let nominal = settings(MotorProfile::AC_50HZ);
     for settings in [
         SimulationSettings {
             step_ms: 0,
-            ..SimulationSettings::default()
+            ..nominal
         },
         SimulationSettings {
-            feedback_latency_ms: 151,
-            ..SimulationSettings::default()
-        },
-        SimulationSettings {
-            tolerance_deg: f32::NAN,
-            ..SimulationSettings::default()
+            scenario: Scenario {
+                latency_ms: 151,
+                ..nominal.scenario
+            },
+            ..nominal
         },
     ] {
         assert!(matches!(
             Simulation::new(
                 CALIBRATION,
                 Pointing::new(100.0, 45.0),
-                MotorProfile::AC_50HZ,
                 controller,
-                settings
+                settings,
+                ACTUATOR,
+                [0, 0],
             ),
             Err(SimulationError::InvalidSettings)
         ));
@@ -670,6 +685,7 @@ fn recorded_orbit_replays_through_the_real_actuator_until_los() {
         Pointing::new(initial.azimuth_deg as f32, initial.elevation_deg as f32),
         MotorProfile::AC_50HZ,
     );
+    let mut peak = 0.0_f32;
     while sim.now_ms() < duration_ms {
         let look = orbit
             .look_at(&station, aos + sim.now_ms() as f64 / 1_000.0)
@@ -678,11 +694,14 @@ fn recorded_orbit_replays_through_the_real_actuator_until_los() {
             + (look.azimuth_deg - previous_azimuth + 180.0).rem_euclid(360.0)
             - 180.0;
         previous_azimuth = azimuth;
-        sim.step_target(Some(TrackingTarget {
+        let target = TrackingTarget {
             mechanical: Pointing::new(azimuth as f32, look.elevation_deg as f32),
             sky: Pointing::new(look.azimuth_deg as f32, look.elevation_deg as f32),
-        }))
-        .unwrap();
+        };
+        peak = peak.max(deviation(
+            sim.step_target(Some(target)).unwrap(),
+            target.sky,
+        ));
     }
     assert_eq!(sim.step(None).unwrap().applied, DriveCommand::IDLE);
     while !sim.is_settled() {
@@ -699,9 +718,8 @@ fn recorded_orbit_replays_through_the_real_actuator_until_los() {
         .unwrap()
             < 5.0
     );
-    let summary = sim.summary();
-    assert!(summary.max_deviation_deg.is_finite() && summary.max_deviation_deg < 10.0);
-    for used in summary.energized_ms {
+    assert!(peak < 10.0, "{peak}");
+    for used in sim.summary().energized_ms {
         assert!(used > 0 && used < MotorProfile::AC_50HZ.duty_limit_ms);
     }
 }
@@ -717,16 +735,20 @@ fn candidate_timing_preserves_healthy_coast_and_reversal_with_delayed_feedback()
         let mut sim = Simulation::new(
             CALIBRATION,
             Pointing::new(180.0, 60.0),
-            profile,
             FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap(),
             SimulationSettings {
-                feedback_latency_ms: 150,
-                actuator: ActuatorConfig {
-                    relays: RelayConfig::TRACKING_CANDIDATE,
-                    ..SimulationSettings::default().actuator
+                step_ms: 20,
+                scenario: Scenario {
+                    motor: profile,
+                    latency_ms: 150,
+                    ..Scenario::NOMINAL
                 },
-                ..SimulationSettings::default()
             },
+            ActuatorConfig {
+                relays: RelayConfig::TRACKING_CANDIDATE,
+                ..ACTUATOR
+            },
+            [0, 0],
         )
         .unwrap();
         while sim.now_ms() < 12_000 {

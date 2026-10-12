@@ -46,8 +46,8 @@ pub use lifecycle::{
 pub use model::MotorModel;
 pub use planner::{
     Assessment, CandidateFailure, EvaluationPhase, PlannedGap, Planner, PlanningConfig,
-    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, Scenario, TrackingPlan,
-    MAX_GAPS, MAX_PLANNING_STEPS, MAX_SCENARIOS,
+    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, TrackingPlan, MAX_GAPS,
+    MAX_PLANNING_STEPS, MAX_SCENARIOS,
 };
 pub use reception::{
     AdmissionPolicy, ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS,
@@ -58,7 +58,7 @@ pub use recovery::{
 pub use route::{Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
 pub use runtime::{RuntimeError, RuntimeObservation, TrackingRuntime, TrackingSummary};
 pub use simulation::{
-    RestingStart, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
+    RestingStart, Scenario, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
 };
 
 use crate::feedback::FeedbackHealth;
@@ -202,7 +202,7 @@ pub enum SimulationError {
     InvalidCalibration,
     /// Controller thresholds were non-finite or outside their supported range.
     InvalidController,
-    /// Simulation cadence, ADC latency or tolerance was invalid.
+    /// Sampling cadence, acquisition, output policy or consumed duty was invalid.
     InvalidSettings,
     /// Initial/commanded mechanical coordinates were outside installed travel.
     InvalidPointing,

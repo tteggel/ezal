@@ -1,13 +1,15 @@
 //! Offline development replay. No network access, GPIOs or installed calibration.
 //! Run with `cargo run -p ezal-core --target <host> --example tracking-sim`.
 
+use ezal_core::actuator::ActuatorConfig;
 use ezal_core::drive::RelayConfig;
+use ezal_core::duty::DutyConfig;
 use ezal_core::orbit::{Catalog, GroundStation, Observer};
 use ezal_core::passes::{Config, Search, Track};
 use ezal_core::position::{AxisCalibration, Pointing, PositionCalibration};
 use ezal_core::tracking::{
-    FollowingController, MotorProfile, Simulation, SimulationError, SimulationSettings,
-    TrackingTarget,
+    pointing_deviation_deg, FollowingController, MotorProfile, Scenario, Simulation,
+    SimulationError, SimulationSettings, TrackingTarget,
 };
 
 // Synthetic full-travel calibration. This never replaces the firmware constants.
@@ -26,27 +28,42 @@ const CALIBRATION: PositionCalibration = PositionCalibration {
     },
 };
 const START: i64 = 1_791_385_200; // Fixture epoch: 2026-10-07T15:00:00Z
+                                  // Modeled deviation allocation, leaving 1° of the proposed 3° budget for uncertainty.
+const ALLOCATION_DEG: f32 = 2.0;
 
 fn replay(
     name: &str,
     duration_ms: u64,
     profile: MotorProfile,
-    settings: SimulationSettings,
+    actuator: ActuatorConfig,
     mut target_at: impl FnMut(u64) -> TrackingTarget,
 ) {
     let initial = target_at(0).mechanical;
     let mut sim = Simulation::new(
         CALIBRATION,
         initial,
-        profile,
-        FollowingController::new(MotorProfile::AC_50HZ, 0.15, settings.actuator.relays).unwrap(),
-        settings,
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15, actuator.relays).unwrap(),
+        SimulationSettings {
+            step_ms: 20,
+            scenario: Scenario {
+                motor: profile,
+                ..Scenario::NOMINAL
+            },
+        },
+        actuator,
+        [0, 0],
     )
     .unwrap();
+    let (mut peak_deg, mut outside_ms) = (0.0_f32, 0);
     let result = (|| -> Result<(), SimulationError> {
         while sim.now_ms() < duration_ms {
             let target = target_at(sim.now_ms());
-            sim.step_target(Some(target))?;
+            let sample = sim.step_target(Some(target))?;
+            let deviation = pointing_deviation_deg(sample.position, target.sky).unwrap();
+            peak_deg = peak_deg.max(deviation);
+            if deviation > ALLOCATION_DEG {
+                outside_ms += sim.now_ms() - sample.at_ms;
+            }
         }
         // Inhibit even if the relays are currently idle: activation may be pending.
         sim.step(None)?;
@@ -58,15 +75,13 @@ fn replay(
     let summary = sim.summary();
     let outcome = match result {
         Err(error) => format!("stopped: {error:?}"),
-        Ok(()) if summary.max_deviation_deg > settings.tolerance_deg => {
-            "complete; exceeds modeled allocation".to_owned()
-        }
+        Ok(()) if peak_deg > ALLOCATION_DEG => "complete; exceeds modeled allocation".to_owned(),
         Ok(()) => "complete; within sampled allocation".to_owned(),
     };
     println!(
         "{name:<31} {:>6.2}° {:>7.1}s  {:>5.1}/{:<5.1}s  {:>4}/{:<4}  {outcome}",
-        summary.max_deviation_deg,
-        summary.outside_tolerance_ms as f64 / 1_000.0,
+        peak_deg,
+        outside_ms as f64 / 1_000.0,
         summary.energized_ms[0] as f64 / 1_000.0,
         summary.energized_ms[1] as f64 / 1_000.0,
         summary.reversals[0],
@@ -98,11 +113,14 @@ fn synthetic_target(at_ms: u64, miss_deg: f64, over_top: bool) -> TrackingTarget
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    let mut settings = SimulationSettings::default();
+    let mut actuator = ActuatorConfig {
+        duty: DutyConfig::CONFIRMED_AC,
+        ..ActuatorConfig::DEFAULT
+    };
     match args.as_slice() {
         [] => println!("Tracking development replay — installed 500 ms on / 2 s off timing."),
         [flag] if flag == "--candidate-timing" => {
-            settings.actuator.relays = RelayConfig::TRACKING_CANDIDATE;
+            actuator.relays = RelayConfig::TRACKING_CANDIDATE;
             println!("Tracking development replay — proposed 500 ms on / 500 ms same / 1 s reverse off timing.");
         }
         _ => panic!("usage: tracking-sim [--candidate-timing]"),
@@ -128,7 +146,7 @@ fn main() {
                 &format!("{label} {name}"),
                 600_000,
                 profile,
-                settings,
+                actuator,
                 |at_ms| synthetic_target(at_ms, miss, over_top),
             );
         }
@@ -178,7 +196,7 @@ fn main() {
             &format!("recorded conventional {name}"),
             (pass.los_unix_s - pass.aos_unix_s) as u64 * 1_000,
             profile,
-            settings,
+            actuator,
             |at_ms| {
                 let look = orbit
                     .look_at(&station, pass.aos_unix_s as f64 + at_ms as f64 / 1_000.0)

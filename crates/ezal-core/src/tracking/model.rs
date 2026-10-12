@@ -248,6 +248,14 @@ impl MotorModel {
         [self.azimuth.used_ms, self.elevation.used_ms]
     }
 
+    /// Energized time each axis may still accumulate before its duty limit.
+    pub(super) const fn remaining_duty_ms(&self) -> [u64; 2] {
+        [
+            self.profile.duty_limit_ms - self.azimuth.used_ms,
+            self.profile.duty_limit_ms - self.elevation.used_ms,
+        ]
+    }
+
     /// Whether neither axis has active drive or remaining coast.
     pub fn is_settled(&self) -> bool {
         self.azimuth.settled() && self.elevation.settled()
