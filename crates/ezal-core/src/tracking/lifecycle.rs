@@ -416,7 +416,7 @@ impl<S> TrackingLifecycle<S> {
     }
 
     /// Claim unowned control without taking over a current lease or stopping tracking.
-    pub fn claim(&mut self, client_id: u64, now_ms: u64) -> Result<OperatorGrant, LifecycleError> {
+    pub fn claim(&mut self, client_id: u32, now_ms: u64) -> Result<OperatorGrant, LifecycleError> {
         self.advance(now_ms)?;
         let previous = self.operator.current(now_ms);
         let grant = self

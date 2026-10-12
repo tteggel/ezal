@@ -11,7 +11,12 @@ use crate::coordination::CoordinationState;
 use crate::feedback::{FeedbackHealth, FeedbackSnapshot, FEEDBACK_MAX_AGE_MS};
 use crate::operator::OperatorGrant;
 use crate::session::CommandFreshness;
-use crate::tracking::*;
+use crate::tracking::{
+    DeviationStatus, EventId, PassEvent, PlanStatus, PlanningWindow, ReceptionCoverage,
+    RecoveryStatus, RouteChoice, RouteKind, RunToken, RuntimeError, TrackingAction, TrackingMode,
+    TrackingPhase, TrackingRequest, TrackingRuntime, TrackingSnapshot, TrackingSummary,
+    TrackingTermination,
+};
 
 // Representation adapters use the owner's public serialized boundary; the
 // coordination domain remains independent of the browser wire format.
@@ -39,7 +44,7 @@ impl CoordinationState {
         let result = self.tracking_operation(now_ms, |runtime, observation| {
             let grant = runtime
                 .operator(now_ms)
-                .filter(|g| g.token.client_id() == u64::from(client_id));
+                .filter(|g| g.token.client_id() == client_id);
             let request = intent.authorize(grant, freshness, now_ms)?;
             if let TrackingAction::Select(pass) = intent.action {
                 if !offered(pass) {

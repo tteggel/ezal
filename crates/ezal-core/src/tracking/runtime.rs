@@ -163,7 +163,7 @@ impl TrackingRuntime {
     /// Claim exclusive browser authority independently of any executing pass.
     pub fn claim(
         &mut self,
-        client_id: u64,
+        client_id: u32,
         observation: RuntimeObservation,
     ) -> Result<OperatorGrant, LifecycleError> {
         self.service(observation)?;
