@@ -65,9 +65,9 @@ The ADC task and output task remain separate. The output task wakes for state
 changes and the earliest applicable deadline, and otherwise services the
 actuator every 100 ms while idle and every 10 ms while a pass is armed or
 running (firmware `drive::SERVICE_PERIOD` and `drive::TRACKING_PERIOD`). Only
-the output task feeds the watchdog, after applying the permitted GPIO state. A stalled whole
-executor can only cut output on resumption or watchdog reset, so the tracking
-execution interval is not a physical release guarantee.
+the output task feeds the watchdog, after applying the permitted GPIO state. A
+stalled whole executor can only cut output on resumption or watchdog reset, so
+the tracking execution interval is not a physical release guarantee.
 
 All relay/command timing uses monotonic uptime; an armed pass freezes its
 validated UTC-to-uptime mapping before execution.

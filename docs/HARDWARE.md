@@ -319,12 +319,14 @@ the firmware's output timing is in the [control contract](CONTROL_CONTRACT.md).
 
 Startup, coast and pulse values are selected budgets, not guarantees from
 Yaesu. Simulate the slower and faster cases with the same controller and
-actuator timing that will run on the device; if timing relaxation cannot
-maintain useful movement and supervision on the bench, retain the longer
-intervals. A maximum-rate-times-coast-time bound initially reserves 3.5°
-azimuth and 1.5° elevation for post-release travel, in addition to feedback
-age and quantization. It is deliberately conservative and should be replaced
-with measured stopping travel. The endpoint gate now includes that allowance.
+actuator timing that will run on the device; if the shorter off-times of
+[`RelayConfig::TRACKING_CANDIDATE`](CONTROL_CONTRACT.md#ordering-and-time)
+cannot maintain useful movement and supervision on the bench, keep
+`RelayConfig::DEFAULT`. A maximum-rate-times-coast-time bound initially
+reserves 3.5° azimuth and 1.5° elevation for post-release travel, in addition
+to feedback age and quantization. It is deliberately conservative and should be
+replaced with measured stopping travel. The endpoint gate now includes that
+allowance.
 
 The DC time tolerance implies possible rates up to 7.5°/s azimuth and about
 3.46°/s elevation. The current 7/3°/s bounds therefore cannot be assumed to
@@ -338,7 +340,8 @@ motion with the [motion-profile worksheet](CALIBRATION.md#motion-profile-workshe
 ### Watchdog reset
 
 The hardware watchdog covers executor stalls, disabled interrupts and panics
-once the output task has started; the contract's executor-failure row gives its
+once the output task has started; the contract's
+[executor-failure row](CONTROL_CONTRACT.md#ownership-and-recovery) gives its
 timeout, who feeds it and what boot does after it. The RP2350 watchdog reset
 includes SIO and both CPUs, taking the pins out of the stalled executor's
 control, and the board's 10 K base pull-downs then keep the switches off. That
