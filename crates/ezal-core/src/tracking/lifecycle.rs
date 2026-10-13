@@ -207,8 +207,8 @@ pub enum TrackingStop {
     NetworkUnavailable,
     /// Frozen plan data could not be evaluated.
     SourceInvalid,
-    /// Frozen orbital or clock input failed its execution validity checks, including
-    /// timing uncertainty, sample age and a new correction.
+    /// Frozen orbital or clock input failed its execution validity checks;
+    /// [`InputError`] names the check.
     Inputs(InputError),
     /// A physical output fault, independently enforced by the actuator.
     Motion(MotionFault),

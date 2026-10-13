@@ -1,19 +1,21 @@
-# Position calibration
+# Calibration and commissioning
 
 ezal converts the G-5500's two feedback voltages into angles with a linear
 two-point calibration for each axis. Manual and tracking control use that mapping
-with the real ADS1015. For now the four installed-system endpoints are
-deliberately hard-coded; this document is the procedure for replacing them
-with measurements from your unit.
+with the real ADS1015. The four installed-system endpoints are hard-coded;
+this document is the procedure for replacing them with measurements from your
+unit, measuring the motion profile, and then verifying the installation on the
+bench with the [commissioning checklist](#bench-verification).
 
 The tracking installation has an 80 cm parabolic dish with a custom
 helical feed and permits over-the-top movement. Its full-travel calibration
-and pointing tolerance remain unmeasured. Follow this procedure before using
-that extra travel. Device-owned tracking and its dashboard are implemented;
-[host acceptance](PASS_PREDICTION.md#complete-pass-acceptance-t9) does not establish
-physical or RF performance. The [tracking design](PASS_PREDICTION.md#planned-tracking)
-and [provisional motor profile](HARDWARE.md#provisional-tracking-profile)
-describe provisional assumptions, not measured installation values.
+and pointing tolerance are unmeasured. Follow this procedure before using
+that extra travel. Host acceptance of [tracking](TRACKING.md#verification) does
+not establish physical or RF performance; the tracking defaults and the
+[provisional motor profile](HARDWARE.md#provisional-tracking-profile) are
+assumptions, not measured installation values, and the
+[known model limits](#known-model-limits) say where execution departs from
+prediction.
 
 ## Current hard-coded values
 
@@ -251,17 +253,8 @@ dish's radio beam to agree with the predicted sky direction:
 Measurements can follow initial tracking development; use the documented
 provisional profile for simulation meanwhile. Record actual loaded behavior
 when commissioning hardware, keeping each value separate from its assumption.
-Position endpoints must be measured before extending permitted travel.
-
-Complete the [tracking load check](DEVELOPMENT.md#tracking-execution-load-check)
-with simulated feedback before supervised powered passes. Log predicted and
-actual preparation/recovery times and measured deviation through the whole pass.
-T9's nominal recorded replay recovered within its deadline but took 22.46 s
-against a 12.50 s prediction; its timing-phase and pointing differences must be
-accounted for when establishing the error reserve. The two-second recovery
-planning lead also requires a whole-search board measurement, not only a fast
-individual planning step. Keep recording and RF measurements in the external
-receiver system.
+Position endpoints must be measured before extending permitted travel. Keep
+recording and RF measurements in the external receiver system.
 
 | Measurement | CW | CCW | Up | Down |
 |---|---|---|---|---|
@@ -279,11 +272,11 @@ intervals, starting from the implemented 500 ms on / 2 s off behavior.
 The proposed shorter off/reversal intervals are commissioning candidates;
 observe useful movement, stopping and supervision before applying them.
 
-The offline [planner](PASS_PREDICTION.md#current-planning-milestone) now tests
-fixed and alternating one-code offsets, 0–150 ms read latency and up to
-150 ms between the two channel captures. These are explicit test scenarios,
-not measured noise limits. In the recorded fixture, an alternating-noise case
-trips the current speed supervision during preparation. Record actual noise
+The [planner](TRACKING.md#planning) evaluates fixed and alternating one-code
+offsets, 0–150 ms read latency and up to 150 ms between the two channel
+captures. These are explicit test scenarios, not measured noise limits. In
+the recorded fixture, an alternating-noise case trips the current speed
+supervision during preparation. Record actual noise
 and acquisition timing together before adjusting either the planner assumptions
 or supervision thresholds; increasing noise tolerance also requires enough
 progress resolution to distinguish movement from noise. Replay with the same
@@ -315,26 +308,143 @@ and commissioning; firmware keeps its existing 2 s off-time until verified.
 Select `DutyConfig::CONFIRMED_AC` (300 s) only after identifying the original
 AC hardware. The default is 180 s; both require 900 s continuously idle per axis.
 
-Measure normal startup delay, movement at the slowest expected load, feedback
-noise, and reversal settling. Verify healthy movement clears the progress
-threshold within its budget and normal noise cannot simulate progress. Idle
-time pauses the budget; short jogs and reversals do not reset it. Observed
-coast movement can establish progress, including the first fresh observation
-within 500 ms after the assumed coast ends. Wrong-direction and speed checks
-also apply to that observation; movement first observed after a long idle
-cannot clear the stalled-motor budget. Confirm that
-frozen midrange feedback, wrong-direction feedback across pulses, and abrupt
-implausible movement produce the named dashboard motion fault. Each fault
-latches both outputs off until the board is reset after investigation; a new
-command, feedback recovery, or network reconnection cannot clear it.
+Idle time pauses the no-progress budget; short jogs and reversals do not reset
+it. Observed coast movement can establish progress, including the first fresh
+observation within 500 ms after the assumed coast ends, and the wrong-direction
+and speed checks apply to that observation too; movement first observed after a
+long idle cannot clear the stalled-motor budget. Same-direction pulse trains
+keep their direction evidence, including expected coast, and speed checks keep
+consecutive and one-second baselines across output changes. An opposite
+direction establishes its baseline after the required reversal hold. Each
+motion fault latches both outputs off until the board is reset after
+investigation; a new command, feedback recovery or network reconnection cannot
+clear it.
 
-There is no per-activation direction/speed blind window. Same-direction pulse
-trains retain their direction evidence, including expected coast, and speed
-checks retain consecutive and one-second baselines across output changes.
-An opposite direction establishes its baseline after the required reversal
-hold. Test repeated short pulses with wrong-direction and implausible feedback,
-alongside healthy startup, backlash, coasting and delayed ADC samples.
-Verify that cancellation and stale feedback clear pending pulses, that duty
-exhaustion stops only the affected axis, and that neither a new owner nor
-reboot grants a fresh allowance. The dashboard must show required rest and
-require a new press after recovery.
+## Bench verification
+
+Host tests and cross-compilation cannot verify GPIO reset behaviour, relay
+release, motor coasting, board timing or RF pointing. Work through this list in
+order, after any change to the safety path and before routine powered tracking,
+and keep the evidence (logic-analyzer captures, timing logs, the worksheet)
+with the hardware and motion-profile identity.
+
+With motor power disconnected and a logic analyzer on the four direction
+outputs:
+
+1. Build the release image and inspect its RAM and stack frames:
+
+   ```bash
+   cargo size -p ezal-firmware --release -- -A
+   cargo objdump -p ezal-firmware --release -- -d --demangle
+   ```
+
+   Include `.data`, `.bss` and `.uninit`; the Embassy task pools include all
+   eight web acceptors and the planner. The linker reserves at least 192 KiB of
+   free stack. Inspect the tracking poll and plan-publication frames after
+   compiler or structure changes, then measure high-water use on the board;
+   the assembly check alone does not bound nested calls plus interrupt use.
+2. Flash a CI UF2 by BOOTSEL. It boots into normal operation, and the boot
+   ROM's own watchdog reboot is not reported as a firmware watchdog fault.
+3. Let the boot duty countdown finish: unknown prior usage requires 15 minutes
+   continuously idle. Both axis countdowns are visible, and a command attempted
+   during rest does not run when rest ends.
+4. Hold the CPU at a breakpoint while a direction output is active. The
+   watchdog resets the board and removes the output within the 500 ms interval
+   (allow for oscillator tolerance), and the next boot stays inhibited until an
+   explicit reset and fresh operator input. Capture the pin *through* the
+   reset, not only after the reboot: an RP2350 pad isolation latch can hold the
+   last output state until boot claims the pin, which is how long the base
+   pull-downs take to win.
+5. Stop refreshing a held command: the output is removed at the 750 ms lease
+   deadline. When the 2 s off interval delays an activation, a lease with less
+   than 500 ms left leaves the relay alone with no brief click, and a refreshed
+   lease then starts the output normally.
+6. Make feedback invalid, missing and stalled: each inhibits movement, and
+   movement returns only with valid feedback and a fresh operator press. A
+   cancelled read is not retried until reset. A read slower than 150 ms reports
+   `feedback-stale` without latching.
+
+With [calibration](#3-replace-the-placeholders) installed and verified, the
+direction leads connected and motor power restored:
+
+7. Measure the [motion profile](#motion-profile-worksheet) in each direction:
+   loaded slew rate down to the slowest expected load, startup, useful pulse
+   duration, stopping travel, reversal take-up and settling, and feedback
+   noise at rest. Verify the installed relay and load before reading
+   component endurance figures as a system switching budget.
+8. At each measured endpoint an outward jog is inhibited and an inward jog is
+   permitted. Approaching an endpoint under power, the output is cut before
+   reaching it rather than at the next sample. Check intermediate positions at
+   the 2 mV ADC resolution and measure coast and brake distance.
+9. Healthy movement, including short pulse trains, continuous motion, startup,
+   backlash, coast, reversal and delayed ADC samples, clears the progress
+   threshold within its budget, and normal noise cannot simulate progress.
+   Frozen midrange feedback, wrong-direction feedback across pulses and abrupt
+   implausible movement each produce the named dashboard motion fault, latched
+   as above.
+10. Duty is charged only while each physical output is active, survives
+    ownership transfer and short pulse gaps, and replenishes only after
+    continuous rest. Exhausting one axis stops only that axis and clears its
+    pending request; neither a new owner nor a power cycle grants a fresh
+    allowance. The dashboard shows the required rest and needs a new press
+    after recovery. Cancellation and stale feedback clear pending pulses.
+
+[Tracking](TRACKING.md), first with the direction leads disconnected and
+simulated feedback, then in supervised powered passes:
+
+11. Select one predicted pass, inspect its feasibility and reception windows,
+    then Enter Tracking. Selection alone does not move, scheduled preparation
+    starts at the displayed time, and Prepare now evaluates its own schedule
+    before moving. Test full and partial support. With eight viewers open,
+    exercise forecast computation and a TLE download while preparing and
+    following; close and reopen the controller and pause a slow viewer. The
+    pass continues, only the current leased controller can cancel it, manual
+    input cannot interrupt Tracking mode, and no viewer read or failed takeover
+    extends ownership.
+12. Record the once-per-minute `tracking timing maxima` log for full-window and
+    late or partial passes. Active control fits the plan's 20 ms maximum
+    interval with headroom. Recovery finishes before its 2 s launch lead and a
+    late admission before its 5 s entry lead; longer jobs hold or fail visibly.
+    Include a full recorded pass with a long remaining suffix and measure
+    whole-search time under concurrent load against the launch lead; the
+    [work figures](#known-model-limits) show why a single fast step proves
+    nothing.
+13. Suspend background planning alone: GPIO and watchdog service continue,
+    holding during an unresolved intercept. Delay a normal control step beyond
+    20 ms and check inhibition with `ExecutionDeadline`, including a relay
+    waiting to activate. Delay a recovery launch or control step and check the
+    bounded hold and retry. Drop link or address permission and confirm there is
+    no automatic restart on recovery.
+14. Repeat the watchdog check (4) with tracking active. Only the GPIO task
+    feeds the watchdog; measure the actual pad release and the watchdog-fault
+    boot inhibition. A planned 20 ms service interval does not guarantee 20 ms
+    output release during a whole-executor stall.
+15. In supervised powered passes, log predicted and actual preparation and
+    recovery times and measured deviation through the whole pass, and compare
+    them with the [known model limits](#known-model-limits) before accepting
+    the pointing reserve.
+
+## Known model limits
+
+The host acceptance tests print these figures; reproduce them with the command
+in [TRACKING.md](TRACKING.md#verification). They come from the shared motor
+model at a virtual execution cadence, not from the board.
+
+- **Predictions are conditional on the simulated schedule.** Planning samples
+  every 20 ms and execution runs every 10 ms, and the changed ADC and pulse
+  phase can exceed the reported modeled peak, even for a stationary target. In
+  the recorded METOP-B window the planner predicts a 12.50 s gap and a 2.218°
+  bounded peak; the 10 ms replay recovers 22.46 s after its planned entry and
+  peaks at 2.345°. It stays within the original 30 s episode and the 3°
+  operational threshold, but this does not establish the 1° reserve or the
+  predicted reception windows as achievable RF coverage. Measure scheduling,
+  plant and pointing errors before accepting the reserve, and broaden
+  timing-phase qualification if those measurements require it.
+- **Full-pass recovery is expensive to compute.** The successful recorded
+  search takes 398,964 work units. The test supplies up to 2,048 units per
+  virtual 10 ms turn, an explicit test throughput rather than a Pico figure; at
+  128 units per turn the same run misses every launch opportunity and stops at
+  its original deadline. If the board cannot finish whole searches within the
+  2 s launch lead under real load, recovery needs optimization or a revised,
+  prevalidated schedule before partial-pass operation is commissioned; an
+  active episode deadline is never extended.

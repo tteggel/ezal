@@ -4,7 +4,7 @@ Manual movement is an expiring request. The output boundary decides what may
 be energised using current feedback, operating permission and applied-motion
 history. Forecast rows alone never authorize movement. Explicitly armed tracking
 uses the same output boundary and exclusive operator lease; see
-[the tracking contract](PASS_PREDICTION.md#planned-tracking).
+[the tracking contract](TRACKING.md).
 
 ## Ownership and recovery
 
@@ -70,18 +70,24 @@ revision disarms it until reboot, which stops a run with
 
 ## Verification
 
-Exercise the production coordination and actuator path with independent
-command, sensor and network stalls; an outage and recovery between service
-passes; queued expiry; simultaneous stop and activation; endpoint refusal;
-ownership transfer and old-owner disconnect; coalesced notifications; and
-fault latches surviving recovery; repeated short pulses; per-axis duty exhaustion;
-and unknown boot history. Invalid calibration must keep raw diagnostics
-available. Dashboard tests must preserve fresh-press recovery, pointer release,
-page suspension, and applied-output indicators.
+Host tests must exercise the production coordination and actuator path with:
 
-Host tests do not establish physical output-release or stopping time. The board
-checks in [DEVELOPMENT.md](DEVELOPMENT.md) cover GPIO release, relay timing,
-watchdog reset and mechanical coast.
+- independent command, sensor and network stalls, and an outage and recovery
+  between service passes;
+- queued expiry, coalesced notifications, and a stop arriving with an
+  activation at the same instant;
+- endpoint refusal, repeated short pulses, per-axis duty exhaustion and
+  unknown boot history;
+- ownership transfer and old-owner disconnect;
+- fault latches surviving recovery;
+- raw diagnostics remaining available under an invalid calibration.
+
+Dashboard tests must preserve fresh-press recovery, pointer release, page
+suspension and the applied-output indicators.
+
+Host tests do not establish physical output-release or stopping time; the
+[bench verification](CALIBRATION.md#bench-verification) covers GPIO release,
+relay timing, watchdog reset and mechanical coast.
 
 ## Tracking browser admission
 
@@ -99,4 +105,4 @@ hiding the browser cannot stop device-owned tracking. Viewers get the phase,
 feasibility, timestamp-matched deviation, feedback age, recovery deadline/ETA and
 retained final metrics without renewing any permission. A stale sample is never
 shown as a current error measurement. See the
-[tracking wire contract](PASS_PREDICTION.md#wire-contract) for message fields.
+[tracking wire contract](TRACKING.md#wire-contract) for message fields.

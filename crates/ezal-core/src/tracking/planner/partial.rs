@@ -1,7 +1,8 @@
 //! Second finite search: replay a supported prefix, inhibit/coast, then reuse
-//! T6's all-scenario intercept validation through the original LOS. Complete
-//! routes are exhausted first. One consolidated recovery interval is admitted;
-//! the first qualifying partial route wins, not a claim of global optimality.
+//! the recovery search's all-scenario intercept validation through the original
+//! LOS. Complete routes are exhausted first. One consolidated recovery interval
+//! is admitted; the first qualifying partial route wins, not a claim of global
+//! optimality.
 
 use super::*;
 use crate::tracking::deviation::MEASURED_RECOVERY_MS;

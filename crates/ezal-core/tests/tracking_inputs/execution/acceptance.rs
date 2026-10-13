@@ -13,7 +13,7 @@ const FULL_EVENT: PassEvent = PassEvent {
 const FULL_AOS: u64 = 602_000;
 const FULL_LOS: u64 = FULL_AOS + 751_000;
 // Explicit virtual throughput, not a measurement of the Pico. Each planning
-// unit still yields to execution; T7 must measure achievable work on the board.
+// unit still yields to execution; commissioning measures the board's throughput.
 const WORK_PER_TICK: usize = 2048;
 
 fn quantized(pose: Pointing, at: u64) -> FeedbackSample {

@@ -1,4 +1,4 @@
-//! T7 runs the production coordination/execution path with a separate motor.
+//! The production coordination/execution path, driven with a separate motor.
 use super::*;
 use ezal_core::coordination::CoordinationState;
 use ezal_core::feedback::{FeedbackHealth, FeedbackSnapshot};

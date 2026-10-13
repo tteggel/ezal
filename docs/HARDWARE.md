@@ -301,7 +301,7 @@ minimum useful motor pulse or an installed-system 1 Hz switching ceiling.
 Use the original AC G-5500 at 50 Hz as the planning assumption for Clevedon
 until the installation record identifies a different model. Apply the same
 initial values in both directions, replacing them separately when measured.
-This profile is for the [tracking design](PASS_PREDICTION.md#planned-tracking);
+This profile is for the [tracking planner](TRACKING.md#planning);
 the firmware's current output timing is documented below.
 
 | Planning parameter | Initial value | Basis |
@@ -392,8 +392,9 @@ control, and the board's 10 K base pull-downs then keep the switches off.
 That hand-off may not be instantaneous: RP2350 pads have isolation latches
 that can hold a pin's last output state through a reset until boot
 reinitialises the pad, so measure the pin *during* the reset window rather
-than only after the reboot (see [DEVELOPMENT.md](DEVELOPMENT.md)). Startup
-checks for a watchdog timeout this firmware armed and leaves outputs low
+than only after the reboot (see the
+[bench verification](CALIBRATION.md#bench-verification)). Startup checks for a
+watchdog timeout this firmware armed and leaves outputs low
 without accepting movement until an explicit reset; a UF2 or `picotool` reboot,
 which also restarts the chip through the watchdog, is not mistaken for one.
 A board reset, power
@@ -402,23 +403,9 @@ chip's clock and reset hardware; this board has no separate external
 motor-enable interlock. See the
 [RP2350 reset and watchdog registers](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf).
 
-### To verify on the bench
-
-- Record the model and supply frequency; measure loaded slew rate, startup,
-  useful pulse duration, stopping travel and reversal take-up in each direction.
-  Use the worksheet in [CALIBRATION.md](CALIBRATION.md#motion-profile-worksheet).
-- Verify the installed relay and load before interpreting component endurance
-  figures as a system switching budget.
-- Exercise short pulse trains as well as continuous motion. Direction and speed
-  checks now retain evidence across pulses, with no per-activation blind window.
-  Verify healthy delayed feedback, coast and reversal as well as frozen,
-  wrong-direction and implausibly fast readings.
-- Whether an energised direction pin stays high through a watchdog reset.
-  Capture the pin across the reset itself, not just after the reboot: the pad
-  isolation latch can hold the last output state until boot claims the pin.
-- Fault-injection checks: invalid feedback, interrupted command refresh,
-  executor stall, watchdog reset, and confirmation that movement stays inhibited
-  until an explicit reset and fresh operator input.
+The installed model, supply frequency, relay behaviour and loaded motion are
+measured with the [motion-profile worksheet](CALIBRATION.md#motion-profile-worksheet)
+and checked with the [bench verification](CALIBRATION.md#bench-verification).
 
 ## Debug probe
 

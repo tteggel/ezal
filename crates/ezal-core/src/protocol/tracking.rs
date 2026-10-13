@@ -3,6 +3,8 @@
 //! Reasons are written in their `Debug` form, so every reason type nests closed
 //! enums down to fieldless leaves (`Rejected(Lifecycle(StateRevision))`), which the
 //! dashboard explains by innermost variant.
+//!
+//! See `docs/TRACKING.md#wire-contract` for the message formats.
 
 use core::fmt;
 

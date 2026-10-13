@@ -5,7 +5,7 @@ use super::deviation::MEASURED_RECOVERY_MS;
 use super::{PlanningWindow, REACQUISITION_LIMIT_MS};
 
 /// Preview time reserved before a late acquisition's fixed execution start.
-/// Like T6's computation lead, this needs Pico timing validation in T7.
+/// Provisional until measured on the board, like [`super::INTERCEPT_PLANNING_LEAD_MS`].
 pub const PARTIAL_ADMISSION_LEAD_MS: u64 = 5_000;
 
 /// A predicted usable reception interval, relative to the original AOS.

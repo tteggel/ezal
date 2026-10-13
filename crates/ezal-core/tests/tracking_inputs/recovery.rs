@@ -1,4 +1,4 @@
-//! T6 uses the same frozen real-orbit fixture as the T5 input boundary tests.
+//! Recovery uses the same frozen real-orbit fixture as the input boundary tests.
 
 use super::*;
 use std::collections::VecDeque;

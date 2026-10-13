@@ -192,9 +192,9 @@ successful check. Manual control requires the dashboard but not internet access.
   the debug probe, expected wiring.
 - **[CALIBRATION.md](docs/CALIBRATION.md)** — safe endpoint measurement,
   full-travel and sky-pointing checks, replacement, and motion measurements.
-- **[PASS_PREDICTION.md](docs/PASS_PREDICTION.md)** — current advisory forecasts
-  and the [planned single-pass tracking behavior](docs/PASS_PREDICTION.md#planned-tracking),
-  with [implementation tasks](docs/PASS_PREDICTION.md#tracking-implementation-tasks).
+- **[PASS_PREDICTION.md](docs/PASS_PREDICTION.md)** — advisory forecasts.
+- **[TRACKING.md](docs/TRACKING.md)** — single-pass tracking and its wire
+  contract.
 - **[DEVELOPMENT.md](docs/DEVELOPMENT.md)** — setting up a working
   development environment from scratch.
 
@@ -213,27 +213,27 @@ successful check. Manual control requires the dashboard but not internet access.
 | 9    | Single-pass tracking, over-the-top planning and reacquisition   | in progress |
 
 The firmware lists passes and now services a browser-independent tracking executor. The
-[tracking design](docs/PASS_PREDICTION.md#planned-tracking) specifies controller
+[tracking design](docs/TRACKING.md) specifies controller
 ownership, automatic updates before preparation, local execution, visible
-deviation and reacquisition. The [planning milestone](docs/PASS_PREDICTION.md#current-planning-milestone)
+deviation and reacquisition. The [planning milestone](docs/TRACKING.md#planning)
 evaluates preparation and conventional/over-the-top routes through the production
 actuator across provisional motor and feedback scenarios. The
-[lifecycle core](docs/PASS_PREDICTION.md#current-lifecycle-milestone) adds exclusive
+[lifecycle core](docs/TRACKING.md#selection-and-ownership) adds exclusive
 operator leases, one selected pass, plan freezing and browser-independent execution
-state. The [execution-input boundary](docs/PASS_PREDICTION.md#current-execution-input-milestone)
+state. The [execution-input boundary](docs/TRACKING.md#execution-inputs)
 binds validated orbital snapshots and fractional UTC to each plan, checks timing
 uncertainty through LOS, and stops on device network loss. HTTP orbital downloads
 are an explicit installation decision. The
-[recovery core](docs/PASS_PREDICTION.md#current-reacquisition-milestone) adds
+[recovery core](docs/TRACKING.md#deviation-and-reacquisition) adds
 timestamp-matched deviation, bounded future intercepts and final pass summaries.
 Validated partial-pass admission and firmware execution are integrated. The
-[firmware milestone](docs/PASS_PREDICTION.md#independent-firmware-execution-t7)
+[firmware milestone](docs/TRACKING.md#firmware-execution)
 records host validation, Pico memory checks and remaining board measurements.
-The [tracking dashboard and API](docs/PASS_PREDICTION.md#tracking-api-and-dashboard-t8)
+The [tracking dashboard and API](docs/TRACKING.md#dashboard)
 provide selection, full/partial feasibility, scheduled preparation, Prepare now,
 Cancel and Return to Manual. Tracking continues without a browser; live deviation,
 recovery and final metrics remain visible to viewers.
-[T9 host acceptance](docs/PASS_PREDICTION.md#complete-pass-acceptance-t9) covers full
+[T9 host acceptance](docs/TRACKING.md#verification) covers full
 passes, rejection and interruption, and records prediction/actual recovery variance.
 T10 commissioning and T7 board timing/watchdog checks remain.
 

@@ -52,8 +52,8 @@ energized/rest accounting, and private timing helpers
 in `drive`. These helpers do not provide alternative firmware actuation paths.
 The per-axis relay state machine is shared by azimuth and elevation. The
 `network` gate is a timestamped permission with a recovery generation, not a
-cached connection boolean. Private ownership bookkeeping and a mailbox support
-coordination; the mailbox stores each command together with its source deadline.
+cached connection boolean. `TrackingLifecycle`'s private mailbox stores each
+command together with its source deadline.
 
 Other core modules remain independent: `ads1015` models registers and decoding;
 `wifi` validates credentials and selects retry delays; `ntp` validates packets
@@ -67,8 +67,8 @@ the selected run. `operator::OperatorLease` enforces exclusive, expiring grants;
 executor generations and pending output. Releasing a browser grant does not
 release an armed run. The planner and lifecycle both use the existing actuator
 policy, so simulation, preparation and later following share duty and relay
-constraints. See the [lifecycle milestone](PASS_PREDICTION.md#current-lifecycle-milestone)
-for the transition contract. `CoordinationState` owns one `TrackingRuntime`;
+constraints. See [TRACKING.md](TRACKING.md#lifecycle-events) for the transition
+contract. `CoordinationState` owns one `TrackingRuntime`;
 manual admission uses that runtime's exclusive lease and mailbox too.
 
 `tracking::TrackingRuntime` wraps that lifecycle with the execution-input gate.
@@ -87,9 +87,9 @@ borrows the frozen route/source and simulates the remaining pass from a copy of
 the serviced actuator, preserving duty and relay history. Recovery commands
 come only from the validated intercept and existing feedback follower; ordinary
 following commands are refused during recovery. Late work, stale feedback,
-faults and cancellation cannot revive an old intercept. See the
-[reacquisition milestone](PASS_PREDICTION.md#current-reacquisition-milestone)
-for the output cadence and integration contract.
+faults and cancellation cannot revive an old intercept. See
+[TRACKING.md](TRACKING.md#firmware-execution) for the output cadence and
+integration contract.
 
 `ezal-firmware` owns the asynchronous shell:
 
@@ -268,15 +268,17 @@ an ADC cancellation latch or physical motion fault.
 
 ## Verification
 
-Host tests exercise the production coordination-to-actuator path, source expiry,
-coalesced commands, permission loss/recovery, pending relay transitions, endpoint
-cuts, motion faults, conversion limits and bounded WebSocket reception. Internal
-relay tests retain focused timing coverage. Dashboard tests execute the served
-JavaScript and Rust-generated configuration with controlled clocks, sockets and
-pointer events. Forecast tests share the firmware's serialized report fixture.
+Integration tests in `crates/ezal-core/tests/` exercise the public API, one
+binary per file. A binary that needs child modules is a directory,
+`tests/<bin>/main.rs`, and those modules belong to that binary alone.
+`tests/common/` holds fixtures that two or more binaries share; the in-crate
+tests reach the same fixtures through the documented splice in `lib.rs`. A unit
+test lives in the crate, in `src/<module>/tests.rs` or a `tests` module at the
+foot of a small file, only when its subject is crate-private. The JSON fixtures pin the wire formats that the dashboard tests
+render, so a server change cannot silently break the client.
 
-CI checks formatting, host tests, browser behavior, Clippy and the release
-firmware/UF2 build. [DEVELOPMENT.md](DEVELOPMENT.md) contains commands and board
-acceptance checks. Host tests do not measure physical stopping time: relay release,
-mechanical coast and pad behavior during watchdog reset still require bench
-validation with the installed [hardware](HARDWARE.md).
+CI runs the scripts in [DEVELOPMENT.md](DEVELOPMENT.md). Host tests do not
+measure physical stopping time: relay release, mechanical coast and pad
+behaviour during watchdog reset need the
+[bench verification](CALIBRATION.md#bench-verification) on the installed
+[hardware](HARDWARE.md).
