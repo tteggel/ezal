@@ -324,9 +324,9 @@ Yaesu. Simulate the slower and faster cases with the same controller and
 actuator timing that will run on the device; if the shorter off-times of
 [`RelayConfig::TRACKING_CANDIDATE`](CONTROL_CONTRACT.md#ordering-and-time)
 cannot maintain useful movement and supervision on the bench, keep
-`RelayConfig::DEFAULT`. A maximum-rate-times-coast-time bound initially
-reserves 3.5° azimuth and 1.5° elevation for post-release travel, in addition
-to feedback age and quantization. It is deliberately conservative and should be
+`RelayConfig::DEFAULT`. A maximum-rate-times-coast-time bound reserves 3.5°
+azimuth and 1.5° elevation for post-release travel, in addition to feedback
+age and quantization. It is deliberately conservative and should be
 replaced with measured stopping travel. The endpoint gate includes that
 allowance.
 

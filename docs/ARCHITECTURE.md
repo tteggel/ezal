@@ -194,8 +194,9 @@ Acquisition and GPIO servicing remain separate tasks, so a stuck sensor read
 cannot suspend output supervision.
 
 Motion supervision retains accumulated energized time across short jogs, reversals
-and off-holds, and keeps direction/speed evidence across pulse trains. Speed and
-direction checks apply from a pulse's first sample through its coast. Fresh
+and off-holds, and keeps direction/speed evidence across pulse trains. Direction
+checks apply from a pulse's first sample through its coast; once an axis has
+been driven, its speed stays bounded through startup, coast and idle. Fresh
 communication or sensor recovery cannot erase a latched fault. `ActuatorConfig`
 supplies one validated set of relay, travel, motion and duty settings. Duty is per
 axis and survives source/owner changes; only full continuous rest restores it.
