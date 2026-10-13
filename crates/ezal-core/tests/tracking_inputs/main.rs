@@ -209,17 +209,37 @@ fn following() -> (TrackingRuntime, RunToken) {
 fn follow(runtime: &mut TrackingRuntime, prep: u64) -> RunToken {
     runtime.service(observation(prep)).unwrap();
     let run = runtime.snapshot().run.unwrap();
-    let plan = runtime.bound_plan().unwrap().plan();
-    let pose = plan.route.pointing_at(0).unwrap();
-    let mut actuator = Actuator::with_config(plan.actuator, DutyHistory::Known([0, 0]));
-    let step = plan.config.step_ms as usize;
+    let mut device = Device::new(runtime);
+    let step = runtime.bound_plan().unwrap().plan().config.step_ms as usize;
     assert!(prep <= AOS - 4000);
     for at in (AOS - 4000..=AOS).step_by(step) {
-        let sample = full_travel_sample(pose, at);
+        device.turn(runtime, at);
+    }
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
+    run
+}
+/// The device side of a frozen run: a rested actuator of the plan's
+/// configuration that reads fresh feedback at the route's first point.
+struct Device {
+    actuator: Actuator,
+    pose: Pointing,
+}
+impl Device {
+    fn new(runtime: &TrackingRuntime) -> Self {
+        let plan = runtime.bound_plan().unwrap().plan();
+        Self {
+            actuator: Actuator::with_config(plan.actuator, DutyHistory::Known([0, 0])),
+            pose: plan.route.pointing_at(0).unwrap(),
+        }
+    }
+    /// One control step at `at`: apply the actuator, drain the mailbox, then
+    /// run the execution turn, leaving its command queued.
+    fn turn(&mut self, runtime: &mut TrackingRuntime, at: u64) {
+        let sample = full_travel_sample(self.pose, at);
         let mut interlock = FeedbackInterlock::new(full_travel_installed());
         interlock.publish(Some(sample));
         let obs = observation(at);
-        actuator.step(
+        self.actuator.step(
             ActuatorInput {
                 interlock,
                 network: obs.network,
@@ -228,10 +248,8 @@ fn follow(runtime: &mut TrackingRuntime, prep: u64) -> RunToken {
             at,
         );
         runtime.take_command(obs);
-        runtime.execution_command(healthy(sample), &actuator, obs);
+        runtime.execution_command(healthy(sample), &self.actuator, obs);
     }
-    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
-    run
 }
 fn healthy(sample: FeedbackSample) -> FeedbackSnapshot {
     FeedbackSnapshot {
@@ -570,6 +588,7 @@ fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacemen
 fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
     for correction in [-1000i64, 1000] {
         let (mut runtime, _) = following();
+        let mut device = Device::new(&runtime);
         let now = AOS + 10;
         let mut obs = observation(now);
         obs.clock
@@ -583,6 +602,7 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
             runtime.snapshot().termination.unwrap().reason,
             TrackingStop::Inputs(InputError::Timing(TimingError::Correction))
         );
+        device.turn(&mut runtime, now + 1);
         assert_eq!(runtime.take_command(observation(now + 1)), None);
         assert_eq!(runtime.snapshot().mode, TrackingMode::Manual);
     }
@@ -592,6 +612,7 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
 fn device_outage_expired_network_observation_and_recovered_generation_stop_the_run() {
     for recovered in [false, true] {
         let (mut runtime, _) = following();
+        let mut device = Device::new(&runtime);
         let mut obs = observation(AOS + 1);
         obs.network.observe(AOS + 2, false);
         if recovered {
@@ -603,6 +624,7 @@ fn device_outage_expired_network_observation_and_recovered_generation_stop_the_r
             runtime.snapshot().termination.unwrap().reason,
             TrackingStop::NetworkUnavailable
         );
+        device.turn(&mut runtime, AOS + 4);
         assert_eq!(runtime.take_command(observation(AOS + 4)), None);
     }
     let (mut runtime, _) = following();
@@ -689,9 +711,8 @@ fn installation_changes_and_backwards_uptime_inhibit_frozen_work() {
         Some(CommandEnvelope::INHIBIT)
     );
     let (mut runtime, _) = following();
-    assert!(is_drive(runtime.take_command(observation(AOS + 10))));
     assert_eq!(
-        runtime.take_command(observation(AOS + 9)),
+        runtime.take_command(observation(AOS - 1)),
         Some(CommandEnvelope::INHIBIT)
     );
     assert_eq!(
