@@ -279,7 +279,11 @@ fn deviation_while_following_enters_recovery_within_the_same_run() {
     let (mut runtime, run) = following();
     let mut device = RestedDevice::new(&runtime);
     device.pose.elevation_deg += 10.0;
-    let mut at = AOS;
+    // The warning is immediate; entering recovery needs the error to persist.
+    let mut at = AOS + 20;
+    device.turn(&mut runtime, at);
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
+    assert!(runtime.deviation(at).warning);
     while runtime.snapshot().phase == TrackingPhase::Following && at < AOS + 3000 {
         at += 20;
         device.turn(&mut runtime, at);
@@ -402,16 +406,17 @@ fn cancellation_discards_pending_search_and_retains_final_deviation() {
     .unwrap();
     assert_eq!(rig.runtime.snapshot().phase, TrackingPhase::Cancelled);
     assert_eq!(rig.runtime.recovery(), None);
+    assert_eq!(
+        rig.runtime.take_command(observation(rig.now)),
+        Some(CommandEnvelope::INHIBIT)
+    );
     assert!(!rig
         .runtime
         .step_reacquisition(observation(rig.now))
         .unwrap());
     rig.runtime
         .execution_command(rig.feedback, &rig.actuator, observation(rig.now));
-    assert_eq!(
-        rig.runtime.take_command(observation(rig.now)),
-        Some(CommandEnvelope::INHIBIT)
-    );
+    assert_eq!(rig.runtime.take_command(observation(rig.now)), None);
     let final_status = rig.runtime.deviation(rig.now);
     assert!(final_status.maximum_deg.unwrap() > 9.0);
     assert_eq!(rig.runtime.deviation(rig.now + 10000), final_status);
