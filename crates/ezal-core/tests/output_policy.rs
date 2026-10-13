@@ -1,4 +1,4 @@
-//! Shared output policy for manual holds and future tracking/preparation pulses.
+//! Shared output policy for manual holds and tracking pulses.
 
 mod common;
 

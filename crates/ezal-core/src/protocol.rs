@@ -6,9 +6,12 @@
 //! HTTP server and socket transport that carry these live in `ezal-firmware`;
 //! the drive semantics they wrap live in [`crate::drive`].
 //!
-//! A domain type written by two or more messages has an inherent `write_json`
-//! here ([`ControlStatus`]: the acknowledgement and telemetry); a type written
-//! by one message is encoded inline in that message ([`CommandToken`]).
+//! Each wire type this module defines ([`TelemetryMessage`],
+//! [`TrackingTelemetry`], [`TrackingReply`]) encodes itself with `write_json`. A
+//! type from another module gets an inherent `write_json` here only when two or
+//! more messages write it ([`ControlStatus`]: the acknowledgement and
+//! telemetry); a type written by one message is encoded inline in that message
+//! ([`CommandToken`]).
 
 use crate::coordination::TelemetrySnapshot;
 use core::fmt;

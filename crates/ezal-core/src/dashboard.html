@@ -674,7 +674,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
   const restHint = (axis) => `${axis === "azimuth" ? "Azimuth" : "Elevation"} motor needs ${duration(state.duty[axis].cooldown)} of continuous rest.`;
 
   // Reasons are nested Rust variants ending in a fieldless leaf, e.g. "Unsupported(Some(PointingBudget))".
-  // The innermost variant selects the explanation; any other reason is shown as its full path.
+  // The innermost variant selects the explanation; a leaf without one falls back to the full path, split into words.
   const trackingReason = (reason) => {
     const explanations = {
       LossOfSignal: "Pass finished", Cancelled: "Cancelled by controller", ManualMode: "Returned to Manual",

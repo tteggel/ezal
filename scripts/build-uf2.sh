@@ -1,22 +1,11 @@
 #!/usr/bin/env bash
-# build-uf2.sh — build the ezal firmware and package it as a UF2 image
-# for drag-and-drop BOOTSEL flashing (no debug probe required).
+# build-uf2.sh — build the ezal firmware and package it as a UF2 image for
+# drag-and-drop BOOTSEL flashing without a debug probe. docs/DEVELOPMENT.md
+# describes the flashing steps.
 #
-# A UF2 is the file format the RP2350's built-in USB mass-storage
-# bootloader accepts. Hold the Pico 2's BOOTSEL button while plugging it
-# in; it mounts as a drive named "RP2350"; copy the .uf2 onto that drive
-# and the chip reboots straight into the new firmware. This path needs no
-# probe-rs, no debug probe, and nothing installed on the machine doing the
-# copy — handy for handing a build to someone else to flash.
-#
-# The trade-off versus `cargo run` (which flashes over a debug probe): you
-# lose the live defmt log stream. The firmware still emits logs over RTT,
-# there's just no probe attached to read them.
-#
-# Defaults to a *release* build — smaller, and what you'd actually deploy.
-# Pass `--debug` for a debug build instead. Any further arguments are
-# forwarded to `cargo build` (e.g. `--features ...` or `--target-dir ...`).
-# The build target comes from .cargo/config.toml.
+# Builds the release profile unless `--debug` is passed; further arguments go
+# to `cargo build` (e.g. `--features ...` or `--target-dir ...`). The build
+# target comes from .cargo/config.toml.
 #
 # Output: the ELF and UF2 paths on stdout, one per line; progress and
 # diagnostics go to stderr.

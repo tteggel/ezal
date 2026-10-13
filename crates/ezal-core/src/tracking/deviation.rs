@@ -5,7 +5,7 @@ use super::pointing_deviation_deg;
 use crate::feedback::{FeedbackSample, FEEDBACK_MAX_AGE_MS};
 use crate::position::Pointing;
 
-/// Initial operational recovery thresholds; these are not receiver-lock tests.
+/// Provisional operational recovery thresholds; these are not receiver-lock tests.
 pub const REACQUISITION_ENTER_MS: u64 = 1_000;
 /// Fresh observations must establish this much continuous recovery.
 pub const REACQUISITION_DWELL_MS: u64 = 2_000;
@@ -14,7 +14,8 @@ pub const REACQUISITION_DWELL_MS: u64 = 2_000;
 pub(super) const MEASURED_RECOVERY_MS: u64 = REACQUISITION_DWELL_MS + FEEDBACK_MAX_AGE_MS;
 /// Every recovery attempt shares this one episode budget, clipped to LOS.
 pub const REACQUISITION_LIMIT_MS: u64 = 30_000;
-/// Provisional recovery threshold, below the normal 3° warning threshold.
+/// Provisional recovery threshold, below the plan's warning tolerance,
+/// [`PlanningConfig::tolerance_deg`](super::PlanningConfig::tolerance_deg).
 pub const REACQUISITION_TOLERANCE_DEG: f32 = 2.0;
 
 /// Measured and desired boresights at the oldest ADC channel's timestamp.

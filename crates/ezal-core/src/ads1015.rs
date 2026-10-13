@@ -8,12 +8,6 @@
 //! a bus. The bus transactions live in the firmware crate's `ads1015`
 //! module, which delegates every bit of encoding/decoding here.
 //!
-//! Keeping this half hardware-free is what makes it testable with a plain
-//! `cargo test` on the host — and the bit-twiddling below (field positions,
-//! the self-clearing OS bit, sign-extending a left-justified 12-bit result)
-//! is exactly where an ADC bring-up tends to go wrong, so that is where the
-//! tests earn their keep.
-//!
 //! [ADS1015]: https://www.ti.com/product/ADS1015
 
 /// Feedback ADC range used by both the hardware driver and calibration checks.

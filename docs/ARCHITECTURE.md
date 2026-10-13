@@ -2,9 +2,9 @@
 
 ezal separates deterministic control policy from the RP2350 peripherals that
 observe and apply it. Firmware boots idle. Manual movement and explicitly armed
-tracking use one device owner and physical output boundary. The tracking executor
-and its selection/arming dashboard API are integrated. Board timing and
-installation commissioning remain separate validation.
+tracking use one device owner and physical output boundary. Host tests validate
+the policy; board timing and the installation are validated by the
+[bench verification](CALIBRATION.md#bench-verification).
 
 The [control contract](CONTROL_CONTRACT.md) defines the safeguard owner,
 effect, recovery condition and timing boundaries. It is the reference for
@@ -151,7 +151,7 @@ Admission and actuator polling apply time-dependent transitions.
 The first connected client receives unclaimed control while networking is ready.
 A viewer cannot displace its exclusive lease,
 [`OPERATOR_LEASE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery). Fresh
-single-use WebSocket Ping/Pong challenges renew the original grant; reading
+single-use WebSocket Ping/Pong heartbeats renew the original grant; reading
 telemetry and repeated claims do not. Disconnect or expiry inhibits manual
 movement while an armed pass retains device authority. A viewer must claim
 vacant control explicitly. Network loss revokes browser ownership and stops
@@ -194,13 +194,14 @@ Acquisition and GPIO servicing remain separate tasks, so a stuck sensor read
 cannot suspend output supervision.
 
 Motion supervision retains accumulated energized time across short jogs, reversals
-and off-holds, and keeps direction/speed evidence across pulse trains. There is no
-per-activation blind window. Fresh communication or sensor recovery cannot erase
-a latched fault. `ActuatorConfig` supplies one validated set of relay, travel,
-motion and duty settings. Duty is per axis and survives source/owner changes;
-only full continuous rest restores it. Firmware boot uses unknown history and
-requires a full rest. Simulations explicitly provide their known prior usage.
-The detailed timing and recovery rules live in [CONTROL_CONTRACT.md](CONTROL_CONTRACT.md).
+and off-holds, and keeps direction/speed evidence across pulse trains. Speed and
+direction checks apply from a pulse's first sample through its coast. Fresh
+communication or sensor recovery cannot erase a latched fault. `ActuatorConfig`
+supplies one validated set of relay, travel, motion and duty settings. Duty is per
+axis and survives source/owner changes; only full continuous rest restores it.
+Firmware boot uses unknown history and requires a full rest. Simulations
+explicitly provide their known prior usage. The detailed timing and recovery
+rules live in [CONTROL_CONTRACT.md](CONTROL_CONTRACT.md).
 
 ## Transport and dashboard
 
@@ -283,7 +284,9 @@ an ADC cancellation latch or physical motion fault.
 ## Verification
 
 Integration tests in `crates/ezal-core/tests/` exercise the public API, one
-binary per file. A binary that needs child modules is a directory,
+binary per file. The exception is `ws_receive.rs`, which compiles the firmware's
+private receive adapter through `#[path]` so it runs against the pinned
+picoserve parser. A binary that needs child modules is a directory,
 `tests/<bin>/main.rs`, and those modules belong to that binary alone.
 `tests/common/` holds fixtures that two or more binaries share; the in-crate
 tests reach the same fixtures through the documented splice in `lib.rs`. A unit
@@ -297,3 +300,13 @@ measure physical stopping time: relay release, mechanical coast and pad
 behaviour during watchdog reset need the
 [bench verification](CALIBRATION.md#bench-verification) on the installed
 [hardware](HARDWARE.md).
+
+## Conventions
+
+A comment states what the code does or why a value is what it is. It never
+names a milestone, a removed mechanism, a date-relative word such as "now" or
+"currently", or a future component; status words such as "provisional" state a
+fact and stay. A value that a constant owns is linked, not restated. A module
+doc states what the module owns and where its boundary is, links the datasheet
+or specification instead of teaching the technology, and never addresses the
+reader.

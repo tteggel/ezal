@@ -102,8 +102,8 @@ impl Wifi<'static> {
     /// Uploads the three on-chip firmware blobs (see
     /// [`cyw43-firmware/`](../cyw43-firmware/README.md)), spawns the
     /// [`cyw43_task`] driver task on `spawner`, loads the regulatory table,
-    /// and applies [`POWER_MODE`]. Returns once the radio is idle in STA mode,
-    /// ready for [`Wifi::associate_once`].
+    /// and applies [`POWER_MODE`]. Returns once the radio is idle as a station (a
+    /// WiFi client), ready for [`Wifi::associate_once`].
     ///
     /// Hardware/firmware-upload failure can keep this initialization pending.
     /// The network permit remains offline, so motion stays inhibited. Such a
@@ -111,20 +111,10 @@ impl Wifi<'static> {
     /// driver task, its static state and owned peripherals cannot be recreated
     /// safely by the association/DHCP retry loop.
     ///
-    /// The caller (`main`) owns the interrupt bindings, so it constructs the
-    /// two peripherals that consume them — the `pio` block and the `dma`
-    /// channel — and hands them here along with the four CYW43439 pins. Those
-    /// pins are fixed by the Pico 2 W's board wiring:
-    ///
-    /// | role            | GPIO   |
-    /// |-----------------|--------|
-    /// | power-on (`pwr`)| GP23   |
-    /// | chip-select     | GP25   |
-    /// | data (`dio`)    | GP24   |
-    /// | clock (`clk`)   | GP29   |
-    ///
-    /// Their distinct peripheral types mean the compiler rejects a mis-wired
-    /// call, so the positional arguments are safe.
+    /// The caller owns the interrupt bindings, so it passes the `pio` block and
+    /// `dma` channel that use them, plus the four radio pins that
+    /// `docs/HARDWARE.md` lists. Each pin parameter has its own type, so the
+    /// compiler rejects pins passed in the wrong order.
     pub async fn init(
         spawner: Spawner,
         mut pio: Pio<'static, PIO0>,

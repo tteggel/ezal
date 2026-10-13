@@ -42,7 +42,7 @@ You need:
 
 ### The board is the Pico 2 W
 
-The firmware now brings up the Pico 2 W's onboard **CYW43439** radio at boot
+The firmware brings up the Pico 2 W's onboard **CYW43439** radio at boot
 and joins WiFi in station mode (see
 [`wifi.rs`](../crates/ezal-firmware/src/wifi.rs) and
 [WiFi credentials](#wifi-credentials) below), so the target is specifically
@@ -90,15 +90,11 @@ manual operation.
 
 ### WiFi credentials
 
-The radio joins your access point in **station mode**. The Pico has no
-filesystem to read credentials from at runtime, so they are baked into the
-firmware image at *build* time: copy [`.env.example`](../.env.example) to
-`.env` at the repo root and set `EZAL_WIFI_SSID` / `EZAL_WIFI_PASSWORD`.
-`crates/ezal-firmware/build.rs` reads that file and network supervision joins the
-network at boot (an empty password selects an open network; protected joins
-use WPA3/SAE). Credential validation runs after radio initialization and before
-association. `.env` is git-ignored, but the credentials do end up in the flashed `.elf`/`.uf2`
-in the clear — there's no secure element on the board.
+The radio joins your access point as a station (a WiFi client). The Pico has
+no filesystem, so the credentials are baked into the firmware image at build
+time and sit in the flashed `.elf`/`.uf2` in the clear; there is no secure
+element on the board. [DEVELOPMENT.md](DEVELOPMENT.md#4-wifi-credentials)
+describes provisioning.
 
 The CYW43439 also needs three firmware blobs uploaded at every boot
 (MAC firmware, regulatory table, board NVRAM). These are vendored in-tree
@@ -126,6 +122,10 @@ feedback** voltages for position.
 | 6   | output    | Azimuth feedback: 2.0–4.5 VDC corresponds to 0°–450°         |
 | 7   | output    | Auxiliary supply, unused by ezal; consult your model manual |
 | 8   | —         | Common ground                                                |
+
+Direction is from the G-5500's perspective: an *input* is a line the controller
+box drives internally and expects ezal to short to ground; an *output* is a
+line the box drives and ezal reads.
 
 In ezal terms, the data flow is:
 
@@ -198,7 +198,7 @@ The interface circuit (canonical version in
 
   The wider ADC range leaves room around the measured 2033 mV endpoint
   for the **25 mV endpoint margin** and observable overrange readings.
-  The old ±2.048 V range saturated at 2047 mV, inside that accepted margin.
+  The ±2.048 V range would saturate at 2047 mV, inside that accepted margin.
   The installed calibration model validates that its entire band sits above zero
   and below **3200 mV**, the lower of the ±4.096 V saturation code (4094 mV)
   and the 3.3 V supply-rail ceiling. The ceiling matters because the ADS1015
@@ -221,8 +221,9 @@ The interface circuit (canonical version in
 
 There is no speed control on this interface: each direction is either energised
 or idle. Manual dashboard input requests a direction; the actuator checks
-feedback and timing before applying it. A future target-following controller
-will need to select directions and stop within a suitable angular tolerance.
+feedback and timing before applying it. During a pass, the tracking follower
+selects directions and stops within its deadband; see
+[TRACKING.md](TRACKING.md#planning).
 
 ## Calibration
 
@@ -265,9 +266,9 @@ ADC's unsaturated range and below the supply-rail ceiling; a calibration that
 overlaps either is rejected.
 
 The complete safety setup, channel worksheet, source location, edit example,
-and verification steps are in [CALIBRATION.md](CALIBRATION.md). Flash-backed
-calibration storage is not implemented yet; the checked-in constants are the
-source of truth for the firmware.
+and verification steps are in [CALIBRATION.md](CALIBRATION.md). Calibration is
+not stored in flash; the checked-in constants are the source of truth for the
+firmware.
 
 ## Motor switching budget
 
@@ -289,9 +290,10 @@ specifies five minutes of operation followed by at least fifteen minutes of
 rest. The [G-5500DC manual, printed pages 1 and 5](https://www.yaesu.com/Files/4CB6273C-1018-01AF-FA4D504B591F641A/G-5500DC_IM_ENG_EBB70X101_1906V-BS.pdf)
 supplies the DC times and a three-minute operating limit with fifteen minutes
 of rest. These are source specifications, not loaded measurements of this dish.
-The actuator applies them conservatively as `DutyConfig`; the
-[control contract](CONTROL_CONTRACT.md#ownership-and-recovery) states the
-allowance, the rest that replenishes it and the boot rule.
+The actuator applies them conservatively as `DutyConfig`, an engineering
+interpretation of the operating and rest specifications rather than a thermal
+model; the [control contract](CONTROL_CONTRACT.md#ownership-and-recovery)
+states the allowance, the rest that replenishes it and the boot rule.
 
 The installed relay type, motor transient response and snubber thermal limits
 have not been verified. The [FCL FTR-B4 datasheet](https://www.fcl-components.com/downloads/MICRO/fcai/relays/ftr-b4.pdf)
@@ -311,7 +313,7 @@ the firmware's output timing is in the [control contract](CONTROL_CONTRACT.md).
 |---|---:|---|
 | Nominal energized azimuth / elevation rates | 5.14 / 2.25°/s | Brochure times |
 | Slower rates for preparation and intercept estimates | 4.0 / 1.8°/s | Engineering allowance of approximately 20% for load and supply variation |
-| Upper rates for simulated travel and stopping margins | 7.0 / 3.0°/s | Existing AC firmware assumptions, to be measured |
+| Upper rates for simulated travel and stopping margins | 7.0 / 3.0°/s | Published 60 Hz rates plus margin; unmeasured |
 | Backlash at a direction reversal | 1° per axis | Brochure value; model take-up before useful travel |
 | Startup allowance | 300 ms | Unmeasured engineering assumption |
 | Release/coasting allowance | 500 ms | Unmeasured engineering assumption |
@@ -325,7 +327,7 @@ cannot maintain useful movement and supervision on the bench, keep
 `RelayConfig::DEFAULT`. A maximum-rate-times-coast-time bound initially
 reserves 3.5° azimuth and 1.5° elevation for post-release travel, in addition
 to feedback age and quantization. It is deliberately conservative and should be
-replaced with measured stopping travel. The endpoint gate now includes that
+replaced with measured stopping travel. The endpoint gate includes that
 allowance.
 
 The DC time tolerance implies possible rates up to 7.5°/s azimuth and about

@@ -2,7 +2,7 @@
 //! Transport supplies a nonzero connection identity and authenticates its use.
 //! A lease is ownership/freshness policy, not an authentication credential.
 
-/// Browser ownership lifetime, renewed by fresh device-issued Ping/Pong challenges.
+/// Browser ownership lifetime, renewed by fresh device-issued Ping/Pong heartbeats.
 pub const OPERATOR_LEASE_MS: u64 = 5_000;
 
 /// A grant bound to both its connection and a never-reused generation.

@@ -179,7 +179,7 @@ This is the *one command you'll run most*. It:
 Illustrative logs (timings and the ADC config's conversion-ready bit vary):
 
 ```
-0.000123 INFO  ezal adc-bringup: POSTing ADS1015 at 0x48
+0.000123 INFO  ezal: POSTing ADS1015 at 0x48
 0.002456 INFO  ADS1015 POST OK: config=0xc383, A0=1280 mV, A1=114 mV
 0.003234 INFO  ezal: manual control; outputs idle until operator input
 2.310456 INFO  WiFi associated (secured); waiting for DHCP
@@ -281,8 +281,7 @@ for where a new test goes. The JSON fixtures in `crates/ezal-core/tests/fixtures
 pin the wire formats that the dashboard tests render; set
 `EZAL_UPDATE_FIXTURES=1` when running the host tests to regenerate them after
 an intended change. The core's only runtime dependencies are `sgp4`, `libm` and
-`heapless`; picoserve is test-only, sharing the workspace's version pin with the
-firmware so both exercise one WebSocket parser.
+`heapless`; picoserve is test-only (see `crates/ezal-core/Cargo.toml`).
 
 ### Format and lint
 

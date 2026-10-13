@@ -38,7 +38,7 @@ direnv allow                        # one-time: load the dev shell
 ./scripts/test-host.sh
 ./scripts/test-dashboard.sh
 
-# One-time: set your WiFi credentials and station location.
+# One-time: set your WiFi credentials and station settings.
 cp .env.example .env && $EDITOR .env
 
 # Build/flash firmware and stream defmt logs.
@@ -62,7 +62,8 @@ the details.
 ## Documentation
 
 - **[ARCHITECTURE.md](docs/ARCHITECTURE.md)**: the core/firmware boundary,
-  which owner holds each resource, the output loop and where tests live.
+  which owner holds each resource, the output loop, where tests live and the
+  comment conventions.
 - **[CONTROL_CONTRACT.md](docs/CONTROL_CONTRACT.md)**: every safeguard, its
   owner, effect, recovery and timing; the reference for control-path changes.
 - **[TRACKING.md](docs/TRACKING.md)**: single-pass planning, execution,
@@ -76,7 +77,7 @@ the details.
 - **[DEVELOPMENT.md](docs/DEVELOPMENT.md)**: toolchain setup, building,
   flashing, testing and debugging.
 - **[`crates/ezal-core/src/lib.rs`](crates/ezal-core/src/lib.rs)**: the crate
-  doc lists every core module and its owner.
+  doc lists every core module and its role.
 
 ## License
 

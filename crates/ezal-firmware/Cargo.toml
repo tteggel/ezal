@@ -2,31 +2,18 @@
 # ezal-firmware — the embedded application
 # ────────────────────────────────────────────────────────────────────────────
 #
-# This crate produces the binary that actually runs on the Raspberry Pi
-# Pico 2 W (RP2350). It is `no_std`, `no_main`, and depends on:
-#
-#   * `embassy-rp`        — the chip-specific HAL and async runtime glue
-#   * `embassy-executor`  — the cooperative async executor
-#   * `embassy-time`      — async-aware timers (used by `Timer::after`)
-#   * `defmt` + `defmt-rtt` — log framework + transport over the debug probe
-#   * `panic-probe`       — panic handler that funnels to defmt
-#   * `cortex-m-rt`       — startup code, ISR vectors, stack limit
-#   * `ezal-core`         — *our* pure logic crate
-#
-# Anything that is "real-time-ish" or talks to peripherals belongs here.
-# Anything pure belongs in ezal-core.
+# The `no_std`, `no_main` binary for the Raspberry Pi Pico 2 W (RP2350): the
+# Embassy tasks that own the peripherals and run ezal-core's policy.
 
 [package]
 name        = "ezal-firmware"
-description = "Embedded firmware for the ezal antenna-tracker (Raspberry Pi Pico 2 / RP2350)."
+description = "Embedded firmware for the ezal antenna-tracker (Raspberry Pi Pico 2 W / RP2350)."
 version     = "0.1.0"
 
 edition.workspace      = true
 license.workspace      = true
 authors.workspace      = true
 repository.workspace   = true
-
-# Cargo discovers the single `ezal-firmware` binary from `src/main.rs`.
 
 [dependencies]
 ezal-core = { path = "../ezal-core" }

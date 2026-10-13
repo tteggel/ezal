@@ -164,7 +164,7 @@ impl MotorProfile {
         ..Self::AC_50HZ
     };
 
-    /// Existing AC upper-rate assumptions, not suitable G-5500DC bounds.
+    /// AC upper-rate assumptions; they do not bound a G-5500DC.
     pub const AC_FAST: Self = Self {
         azimuth: AxisProfile {
             rate_deg_per_s: 7.0,

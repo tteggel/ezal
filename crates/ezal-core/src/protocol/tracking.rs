@@ -1,8 +1,9 @@
 //! Bounded tracking wire projections. No route/source clones, propagation, I/O,
 //! lease renewal or lifecycle transitions occur while reading telemetry.
-//! Reasons are written in their `Debug` form, so every reason type nests closed
-//! enums down to fieldless leaves (`Rejected(Lifecycle(StateRevision))`), which the
-//! dashboard explains by innermost variant.
+//! Reasons are written in their `Debug` form, so every reason type must nest
+//! closed enums down to fieldless leaves (`Rejected(Lifecycle(StateRevision))`):
+//! that text needs no JSON escaping, and the dashboard explains it by its
+//! innermost variant.
 //!
 //! See `docs/TRACKING.md#wire-contract` for the message formats.
 
@@ -68,7 +69,7 @@ impl CoordinationState {
 /// Identifiers are decimal strings on the wire to preserve all 64 bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrackingIntent {
-    /// Recent server telemetry challenge; never a browser timestamp.
+    /// Recent telemetry freshness token; never a browser timestamp.
     pub proof: u64,
     /// Generation of the grant observed by this connection.
     pub lease: u64,

@@ -71,9 +71,9 @@ the tracking execution interval is not a physical release guarantee.
 
 All relay/command timing uses monotonic uptime; an armed pass freezes its
 validated UTC-to-uptime mapping before execution.
-Every SNTP attempt publishes the clock; reversed uptime or an exhausted
-revision disarms it until reboot, which stops a run with
-`Inputs(Timing(Unavailable))` and blocks preview.
+Every received SNTP sample publishes the clock, whether or not it is accepted;
+reversed uptime or an exhausted revision disarms it until reboot, which stops a
+run with `Inputs(Timing(Unavailable))` and blocks preview.
 
 `RelayConfig::TRACKING_CANDIDATE`, a shorter relay policy, is for offline
 simulation and commissioning only; the firmware runs `RelayConfig::DEFAULT`.

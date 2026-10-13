@@ -212,7 +212,7 @@ impl AxisMonitor {
             if expected_motion || coast_observation {
                 // Absolute displacement is intentional: reversal must not
                 // erase accumulated stalled-motor time. Wrong-direction
-                // displacement is checked independently above, without a per-pulse blind window.
+                // displacement is checked independently above.
                 if sample.timestamp_ms >= self.run_started_ms {
                     if let Some(progress) = &mut self.progress {
                         let moved_deg = (sample.position_deg - progress.anchor_deg).abs();

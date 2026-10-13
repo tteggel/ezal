@@ -107,8 +107,8 @@ pub struct RestingStart {
 /// Each `step` services at most one acquisition and one actuator decision.
 /// The caller supplies the route position at `now_ms`, and can yield between
 /// steps. The harness honors actuator deadlines as well as its sampling cadence.
-/// Network permission is renewed locally in the model; outage/task-stall tests
-/// belong to the lifecycle/firmware integration tasks.
+/// Network permission is renewed locally in the model, so a simulation never
+/// sees a network outage or a stalled task.
 ///
 /// A target of `None` immediately inhibits output. Continue stepping with
 /// `None` until `is_settled()` to include final coast after cancellation or LOS.

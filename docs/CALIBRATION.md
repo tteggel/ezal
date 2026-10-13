@@ -225,9 +225,8 @@ maintenance log.
 
 Recalibrate after replacing the controller, ADC/interface board, divider
 resistors, rotator position potentiometers, or after any persistent position
-offset. Flash persistence and an authenticated calibration UI are intentionally
-future work; until those exist, the checked-in constant and installation log
-are the authoritative record.
+offset. Calibration has no flash persistence and no authenticated UI, so the
+checked-in constant and installation log are the authoritative record.
 
 ## 5. Verify sky pointing
 
@@ -252,11 +251,11 @@ dish's radio beam to agree with the predicted sky direction:
 
 ## Motion-profile worksheet
 
-Measurements can follow initial tracking development; use the documented
-provisional profile for simulation meanwhile. Record actual loaded behavior
-when commissioning hardware, keeping each value separate from its assumption.
-Position endpoints must be measured before extending permitted travel. Keep
-recording and RF measurements in the external receiver system.
+Until these measurements exist, simulation uses the
+[provisional profile](HARDWARE.md#provisional-tracking-profile). Record actual
+loaded behavior when commissioning hardware, keeping each value separate from
+its assumption. Position endpoints must be measured before extending permitted
+travel. Keep recording and RF measurements in the external receiver system.
 
 | Measurement | CW | CCW | Up | Down |
 |---|---|---|---|---|

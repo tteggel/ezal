@@ -2,18 +2,9 @@
 # Pinned Rust toolchain
 # ────────────────────────────────────────────────────────────────────────────
 #
-# rustup reads this file automatically whenever you run cargo / rustc inside
-# the workspace. Pinning a specific stable release (not the floating "stable"
-# channel) means everyone — humans and CI — builds with the same compiler,
-# library, and lint set.
-#
-# Bumping the toolchain is therefore a deliberate, reviewable change: open
-# a PR, let CI re-run with the new toolchain, observe any new lints, fix
-# them, merge.
-#
-# We use the *stable* channel. Embassy and the rp235x stack do not require
-# nightly. CI checks the locked dependency set with this compiler; updating
-# dependency versions still requires running those checks.
+# rustup and the flake's dev shells both read this file, so local builds and
+# CI use one compiler, standard library and lint set. The stable channel
+# suffices: Embassy and the rp235x stack need no nightly.
 
 [toolchain]
 # 1.99.0 is the project's tested toolchain. The workspace uses edition 2021;

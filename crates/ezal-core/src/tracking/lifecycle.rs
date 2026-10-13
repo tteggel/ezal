@@ -45,6 +45,8 @@ pub struct Selection {
 /// One planning job's immutable identity. Only the latest job can publish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanTicket {
+    /// Never reused. Only the derived equality reads it, so an older job's
+    /// ticket never matches its replacement.
     serial: u64,
     pass: PassEvent,
     revisions: PlanRevisions,
@@ -120,7 +122,8 @@ impl RecoveryToken {
     }
 }
 
-/// Mode controls command-source admission as well as eventual UI visibility.
+/// Mode controls command-source admission and whether the dashboard offers
+/// manual controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackingMode {
     /// Leased manual commands may be admitted; selection alone does not track.
