@@ -79,14 +79,14 @@ selected silently.
 
 The [planner](../crates/ezal-core/src/tracking/planner.rs) is an incremental,
 finite search in the pure core. It searches 24 route candidates: conventional,
-inverted, and over-the-top bridges entered at 80°, 85° or 88°, each at three
-azimuth turns. Azimuth is unwrapped continuously, geometry is refined near
-zenith and the azimuth wrap, and interpolation stays inside the installed
-mechanical range. Mechanical angles are kept separate from sky bearings: the
-direction `(A, E)` is also `(A + 180°, 180° - E)` where travel permits, but
-changing representation alone does not reduce the azimuth rate of a near miss
-of zenith. An over-the-top bridge may offset the sky direction on purpose, and
-every following-error check includes that offset.
+inverted, and over-the-top bridges entered at 80°, 85° or 88° from either
+orientation, each at three azimuth turns. Azimuth is unwrapped continuously,
+geometry is refined near zenith and the azimuth wrap, and interpolation stays
+inside the installed mechanical range. Mechanical angles are kept separate
+from sky bearings: the direction `(A, E)` is also `(A + 180°, 180° - E)` where
+travel permits, but changing representation alone does not reduce the azimuth
+rate of a near miss of zenith. An over-the-top bridge may offset the sky
+direction on purpose, and every following-error check includes that offset.
 
 The planner needs a serviced, settled copy of the output owner's actuator,
 network generation and fresh feedback acquired after coast. It copies relay
@@ -187,10 +187,11 @@ preview's starting state, so manual movement does too; fresh ADC timestamps
 alone do not. Noisy, changing starting positions can therefore keep a preview
 from completing.
 
-Each published plan carries an exclusive `freeze_before_ms` deadline from its
-inputs, the earlier of its clock's admission deadline and LOS. The plan stays
-armable only before that instant, while it is the current ticket and while its
-preparation time still fits.
+Each published plan carries an exclusive `freeze_before_ms` deadline, the
+earliest of its clock's admission deadline, LOS and the plan's own admission
+deadline: AOS, or one millisecond after a late-acquisition entry. The plan
+stays armable only before that instant, while it is the current ticket and
+while its preparation time still fits.
 
 Preparation atomically accepts the latest complete, valid plan and freezes its
 orbital elements, observer, clock mapping, motion profile and mechanical route.
@@ -409,11 +410,12 @@ at the same ADC sample time, spherical error and its uncertainty, peak error
 and time outside tolerance. Feedback expiry removes the current deviation
 rather than showing a stale value. Reacquisition shows the attempt count,
 search or hold reason, the episode's remaining time and a predicted intercept
-ETA, distinguished from measured recovery. The last finished run's summary
-survives later previews and runs. Disconnect, page hiding and telemetry loss
-never cancel tracking; reconnecting restores device state and never resends an
-earlier intent, and the dashboard never retries an action automatically. A
-rejected or unacknowledged action is visible.
+ETA, distinguished from measured recovery, in text rather than colour alone.
+The last finished run's summary survives later previews and runs. Disconnect,
+page hiding and telemetry loss never cancel tracking; reconnecting restores
+device state and never resends an earlier intent, and the dashboard never
+retries an action automatically. A rejected or unacknowledged action is
+visible.
 
 ## Wire contract
 
@@ -451,14 +453,32 @@ Reception windows and missed intervals are milliseconds relative to their own
 observation. Reasons are closed Rust enums written in their `Debug` form and
 explained by the browser; no browser-provided string reaches server JSON or
 HTML. The projection copies less than 1 KiB and no route or orbital snapshot,
-performs no propagation or transition and cannot renew a lease. It is captured with the
-feedback and output telemetry under one thread-mode borrow and encoded outside
-it into the bounded telemetry buffer; an encoding failure closes the session
-without touching the running pass.
+performs no propagation or transition and cannot renew a lease. It is captured
+with the feedback and output telemetry under one thread-mode borrow and encoded
+outside it into the bounded telemetry buffer; an encoding failure closes the
+session without touching the running pass.
 [`tracking-telemetry.json`](../crates/ezal-core/tests/fixtures/tracking-telemetry.json)
 pins the format and feeds the dashboard tests.
 
 ## Verification
+
+Host tests must exercise the production follower, actuator and tracking
+runtime with synthetic and recorded passes covering:
+
+- exact zenith passes and near misses, azimuth overlap and pre-positioning
+  from both mechanical extremes;
+- slower and faster motors, backlash, pulse supervision and stalls;
+- bounded reacquisition that succeeds and that fails;
+- automatic plan updates racing preparation or cancellation, and stale client
+  commands;
+- lease expiry and transfer with tracking continuing, clock steps, duty
+  exhaustion and LOS.
+
+Dashboard tests must preserve the deviation and recovery displays, stale
+deviation removal and Cancel staying available. Commissioning repeats the
+pass with downloads, forecasting and several viewers active, and compares
+simulated and measured trajectories, in the
+[bench verification](CALIBRATION.md#bench-verification).
 
 The host acceptance matrix in
 [`planner/acceptance.rs`](../crates/ezal-core/tests/planner/acceptance.rs) and

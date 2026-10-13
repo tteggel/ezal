@@ -234,7 +234,8 @@ provide selection, full/partial feasibility, scheduled preparation, Prepare now,
 Cancel and Return to Manual. Tracking continues without a browser; live deviation,
 recovery and final metrics remain visible to viewers.
 [T9 host acceptance](docs/TRACKING.md#verification) covers full
-passes, rejection and interruption, and records prediction/actual recovery variance.
+passes, rejection and interruption, and records
+[prediction/actual recovery variance](docs/CALIBRATION.md#known-model-limits).
 T10 commissioning and T7 board timing/watchdog checks remain.
 
 ## License

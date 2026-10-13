@@ -367,11 +367,12 @@ outputs:
 With [calibration](#3-replace-the-placeholders) installed and verified, the
 direction leads connected and motor power restored:
 
-7. Measure the [motion profile](#motion-profile-worksheet) in each direction:
-   loaded slew rate down to the slowest expected load, startup, useful pulse
-   duration, stopping travel, reversal take-up and settling, and feedback
-   noise at rest. Verify the installed relay and load before reading
-   component endurance figures as a system switching budget.
+7. Record the rotator model and supply frequency, then measure the
+   [motion profile](#motion-profile-worksheet) in each direction: loaded slew
+   rate down to the slowest expected load, startup, useful pulse duration,
+   stopping travel, reversal take-up and settling, and feedback noise at
+   rest. Verify the installed relay and load before reading component
+   endurance figures as a system switching budget.
 8. At each measured endpoint an outward jog is inhibited and an inward jog is
    permitted. Approaching an endpoint under power, the output is cut before
    reaching it rather than at the next sample. Check intermediate positions at

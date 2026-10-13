@@ -403,9 +403,9 @@ chip's clock and reset hardware; this board has no separate external
 motor-enable interlock. See the
 [RP2350 reset and watchdog registers](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf).
 
-The installed model, supply frequency, relay behaviour and loaded motion are
-measured with the [motion-profile worksheet](CALIBRATION.md#motion-profile-worksheet)
-and checked with the [bench verification](CALIBRATION.md#bench-verification).
+The [bench verification](CALIBRATION.md#bench-verification) records the
+installed model and supply frequency, and measures relay behaviour and loaded
+motion with the [motion-profile worksheet](CALIBRATION.md#motion-profile-worksheet).
 
 ## Debug probe
 

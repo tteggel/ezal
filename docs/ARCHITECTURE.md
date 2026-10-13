@@ -274,8 +274,9 @@ binary per file. A binary that needs child modules is a directory,
 `tests/common/` holds fixtures that two or more binaries share; the in-crate
 tests reach the same fixtures through the documented splice in `lib.rs`. A unit
 test lives in the crate, in `src/<module>/tests.rs` or a `tests` module at the
-foot of a small file, only when its subject is crate-private. The JSON fixtures pin the wire formats that the dashboard tests
-render, so a server change cannot silently break the client.
+foot of a small file, only when its subject is crate-private. The JSON fixtures
+pin the wire formats that the dashboard tests render, so a server change cannot
+silently break the client.
 
 CI runs the scripts in [DEVELOPMENT.md](DEVELOPMENT.md). Host tests do not
 measure physical stopping time: relay release, mechanical coast and pad
