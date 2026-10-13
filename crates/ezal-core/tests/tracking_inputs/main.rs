@@ -209,7 +209,7 @@ fn following() -> (TrackingRuntime, RunToken) {
 fn follow(runtime: &mut TrackingRuntime, prep: u64) -> RunToken {
     runtime.service(observation(prep)).unwrap();
     let run = runtime.snapshot().run.unwrap();
-    let mut device = Device::new(runtime);
+    let mut device = RestedDevice::new(runtime);
     let step = runtime.bound_plan().unwrap().plan().config.step_ms as usize;
     assert!(prep <= AOS - 4000);
     for at in (AOS - 4000..=AOS).step_by(step) {
@@ -220,11 +220,11 @@ fn follow(runtime: &mut TrackingRuntime, prep: u64) -> RunToken {
 }
 /// The device side of a frozen run: a rested actuator of the plan's
 /// configuration that reads fresh feedback at the route's first point.
-struct Device {
+struct RestedDevice {
     actuator: Actuator,
     pose: Pointing,
 }
-impl Device {
+impl RestedDevice {
     fn new(runtime: &TrackingRuntime) -> Self {
         let plan = runtime.bound_plan().unwrap().plan();
         Self {
@@ -588,7 +588,7 @@ fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacemen
 fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
     for correction in [-1000i64, 1000] {
         let (mut runtime, _) = following();
-        let mut device = Device::new(&runtime);
+        let mut device = RestedDevice::new(&runtime);
         let now = AOS + 10;
         let mut obs = observation(now);
         obs.clock
@@ -612,7 +612,7 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
 fn device_outage_expired_network_observation_and_recovered_generation_stop_the_run() {
     for recovered in [false, true] {
         let (mut runtime, _) = following();
-        let mut device = Device::new(&runtime);
+        let mut device = RestedDevice::new(&runtime);
         let mut obs = observation(AOS + 1);
         obs.network.observe(AOS + 2, false);
         if recovered {
@@ -711,6 +711,7 @@ fn installation_changes_and_backwards_uptime_inhibit_frozen_work() {
         Some(CommandEnvelope::INHIBIT)
     );
     let (mut runtime, _) = following();
+    let mut device = RestedDevice::new(&runtime);
     assert_eq!(
         runtime.take_command(observation(AOS - 1)),
         Some(CommandEnvelope::INHIBIT)
@@ -719,6 +720,7 @@ fn installation_changes_and_backwards_uptime_inhibit_frozen_work() {
         runtime.snapshot().termination.unwrap().reason,
         TrackingStop::ClockOrCounter
     );
+    device.turn(&mut runtime, AOS + 20);
     assert_eq!(
         runtime.take_command(observation(AOS + 20)),
         Some(CommandEnvelope::INHIBIT)

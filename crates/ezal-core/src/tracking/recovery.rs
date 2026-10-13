@@ -205,11 +205,11 @@ impl Recovery {
         Ok(self.search.is_some())
     }
 
-    /// Generate only the validated recovery target through the normal follower.
-    /// While settling/searching, inhibit; `step` advances the search separately
-    /// between output deadlines and never blocks the physical output task. At a
-    /// scheduled launch `start` must be serviced at that exact millisecond. A
-    /// missed launch is discarded, never applied late.
+    /// Generate only the validated recovery target through the recovery
+    /// follower. While settling/searching, inhibit; `step` advances the search
+    /// separately between output deadlines and never blocks the physical output
+    /// task. At a scheduled launch `start` must be serviced at that exact
+    /// millisecond. A missed launch is discarded, never applied late.
     pub fn command(
         &mut self,
         plan: &TrackingPlan,
