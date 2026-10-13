@@ -230,7 +230,7 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
 fn recoverable_lag_executes_a_future_intercept_and_preserves_duty() {
     let mut rig = Rig::new(10.0, [9000, 21000]);
     let episode = rig.entered().episode;
-    // Reacquiring never drives the normal follower; the dish holds until launch.
+    // Reacquiring never drives the normal follower, so nothing moves at entry.
     assert!(!rig.actuator.target().is_active());
     let plan = rig.plan();
     assert!(plan.intercept_at_ms.is_some(), "{plan:?}");
@@ -272,6 +272,24 @@ fn unfinished_frozen_preparation_acquires_a_future_point_without_chasing_aos() {
     }
     assert_eq!(rig.runtime.snapshot().phase, TrackingPhase::Following);
     assert!(rig.runtime.deviation(rig.now).outside_tolerance_ms > 1000);
+}
+
+#[test]
+fn deviation_while_following_enters_recovery_within_the_same_run() {
+    let (mut runtime, run) = following();
+    let mut device = RestedDevice::new(&runtime);
+    device.pose.elevation_deg += 10.0;
+    let mut at = AOS;
+    while runtime.snapshot().phase == TrackingPhase::Following && at < AOS + 3000 {
+        at += 20;
+        device.turn(&mut runtime, at);
+    }
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Reacquiring);
+    assert_eq!(
+        runtime.recovery().unwrap().episode.cause(),
+        RecoveryCause::Deviation
+    );
+    assert_eq!(runtime.snapshot().run, Some(run));
 }
 
 #[test]

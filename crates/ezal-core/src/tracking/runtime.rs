@@ -477,6 +477,8 @@ impl TrackingRuntime {
     /// One device execution turn, called after servicing/applying the actuator
     /// at `observation.now_ms`. Planning runs separately. The output owner must
     /// drain again with its actual current time, preserving this command's age.
+    /// A recovery launch runs only from the turn at its exact millisecond
+    /// (`execution_deadline_ms`); a missed launch is discarded, never applied late.
     pub fn execution_command(
         &mut self,
         feedback: FeedbackSnapshot,
