@@ -45,8 +45,8 @@ pub struct Selection {
 /// One planning job's immutable identity. Only the latest job can publish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanTicket {
-    /// Never reused. Only the derived equality reads it, so an older job's
-    /// ticket never matches its replacement.
+    /// Never reused. Only the derived `PartialEq` compares it, so an older
+    /// job's ticket never matches its replacement.
     serial: u64,
     pass: PassEvent,
     revisions: PlanRevisions,

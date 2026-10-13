@@ -125,9 +125,9 @@ impl AxisProfile {
 /// They do not identify the installed hardware or replace commissioning.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotorProfile {
-    /// Azimuth response, initially symmetric in both directions.
+    /// Azimuth response, the same in both directions.
     pub azimuth: AxisProfile,
-    /// Elevation response, initially symmetric in both directions.
+    /// Elevation response, the same in both directions.
     pub elevation: AxisProfile,
     /// Per-axis energized allowance and the full rest that replenishes it.
     pub duty: DutyConfig,

@@ -305,9 +305,9 @@ behaviour during watchdog reset need the
 ## Conventions
 
 A comment states what the code does or why a value is what it is. It never
-names a milestone, a removed mechanism, a date-relative word such as "now" or
-"currently", or a future component; status words such as "provisional" state a
-fact and stay. A value that a constant owns is linked, not restated. A module
-doc states what the module owns and where its boundary is, links the datasheet
-or specification instead of teaching the technology, and never addresses the
-reader.
+names a milestone, a removed mechanism, a word that dates the text, such as
+"now" or "currently" describing the project, or a future component; status
+words such as "provisional" state a fact and stay. A value that a constant owns
+is linked, not restated. A module doc states what the module owns and where its
+boundary is, links the datasheet or specification instead of teaching the
+technology, and never addresses the reader.
