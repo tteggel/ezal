@@ -93,7 +93,7 @@ integration contract.
 
 `ezal-firmware` owns the asynchronous shell:
 
-| Module | Resources and effects |
+| Firmware module | Owned resources and effects |
 |---|---|
 | `main` | Peripheral wiring, startup checks and task spawning |
 | `feedback` | ADC reader, cancellation latch and acquisition cadence |

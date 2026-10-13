@@ -2,9 +2,9 @@
 # ezal-core — pure, no_std logic
 # ────────────────────────────────────────────────────────────────────────────
 #
-# This crate is deliberately hardware-independent. It holds calibration,
-# pointing units, advisory pass prediction, feedback validation, actuator policy, wire
-# protocol, ADC register logic, and the embedded dashboard asset.
+# This crate is deliberately hardware-independent. It holds the control,
+# prediction and tracking policy, the wire protocol and the dashboard asset;
+# the crate doc in src/lib.rs lists its modules.
 #
 # Because it has no hardware dependencies, it can be:
 #   * compiled for the embedded target (no_std, no allocator),

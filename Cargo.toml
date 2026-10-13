@@ -5,10 +5,10 @@
 # The project is organised as a Cargo *workspace* with two member crates:
 #
 #   crates/ezal-core
-#     Pure, no_std Rust: calibration, tracking simulation, controller,
-#     G5500 drive safety, protocol, and command parsers. This crate
-#     has no hardware dependencies, so it can be unit-tested on the host with
-#     `./scripts/test-host.sh` (the workspace defaults to the embedded target).
+#     Pure, no_std control, prediction and tracking policy; the crate doc in
+#     src/lib.rs lists its modules. This crate has no hardware dependencies,
+#     so it can be unit-tested on the host with `./scripts/test-host.sh` (the
+#     workspace defaults to the embedded target).
 #
 #   crates/ezal-firmware
 #     The embedded application that actually runs on the Raspberry Pi Pico 2
