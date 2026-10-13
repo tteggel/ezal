@@ -7,9 +7,10 @@ use super::deviation::MEASURED_RECOVERY_MS;
 use super::planner::{intersample_bound, DEVIATION_SLACK_DEG};
 use super::{
     pointing_deviation_deg, FollowingController, RecoveryToken, RestingStart, Simulation,
-    SimulationSettings, TrackingPlan, TrackingTarget, MAX_PLANNING_STEPS,
+    SimulationSettings, TrackingPlan, TrackingTarget, MAX_PLANNING_STEPS, REACQUISITION_DWELL_MS,
     REACQUISITION_TOLERANCE_DEG,
 };
+use crate::drive::{Command, CommandEnvelope, DriveCommand, MOVEMENT_LEASE_MS};
 use crate::feedback::FEEDBACK_MAX_AGE_MS;
 use crate::passes::Ephemeris;
 use crate::position::{Pointing, PositionCalibration};
@@ -92,28 +93,29 @@ pub struct RecoveryStatus {
     pub work_steps: u64,
 }
 
+/// One recovery episode: an incremental intercept search, then the validated
+/// intercept executed by its own follower. A hold discards the search, the
+/// intercept and the follower, and retries after [`INTERCEPT_RETRY_MS`].
 pub(super) struct Recovery {
-    pub status: RecoveryStatus,
-    pub search: Option<InterceptSearch>,
-    pub intercept: Option<Intercept>,
-    pub follower: Option<FollowingController>,
-    pub retry_at_ms: u64,
-    pub last_command_at_ms: Option<u64>,
-    pub launch_pending: bool,
+    episode: RecoveryToken,
+    attempts: u32,
+    work_steps: u64,
+    hold: Option<RecoveryHold>,
+    search: Option<InterceptSearch>,
+    intercept: Option<Intercept>,
+    follower: Option<FollowingController>,
+    retry_at_ms: u64,
+    last_command_at_ms: Option<u64>,
+    launch_pending: bool,
 }
 
 impl Recovery {
     pub fn new(episode: RecoveryToken) -> Self {
         Self {
-            status: RecoveryStatus {
-                episode,
-                attempts: 0,
-                planning: false,
-                launch_at_ms: None,
-                intercept_at_ms: None,
-                hold: Some(RecoveryHold::Settling),
-                work_steps: 0,
-            },
+            episode,
+            attempts: 0,
+            work_steps: 0,
+            hold: Some(RecoveryHold::Settling),
             search: None,
             intercept: None,
             follower: None,
@@ -123,17 +125,168 @@ impl Recovery {
         }
     }
 
-    pub fn hold(&mut self, reason: RecoveryHold, now: u64) {
+    pub const fn episode(&self) -> RecoveryToken {
+        self.episode
+    }
+
+    pub fn status(&self) -> RecoveryStatus {
+        RecoveryStatus {
+            episode: self.episode,
+            attempts: self.attempts,
+            planning: self.search.is_some(),
+            launch_at_ms: self.intercept.map(|i| i.launch_at_ms),
+            intercept_at_ms: self.intercept.map(|i| i.join_at_ms),
+            hold: self.hold,
+            work_steps: self.work_steps,
+        }
+    }
+
+    fn hold(&mut self, reason: RecoveryHold, now: u64) {
         self.search = None;
         self.intercept = None;
         self.follower = None;
         self.last_command_at_ms = None;
         self.launch_pending = false;
-        self.status.planning = false;
-        self.status.launch_at_ms = None;
-        self.status.intercept_at_ms = None;
-        self.status.hold = Some(reason);
+        self.hold = Some(reason);
         self.retry_at_ms = now.saturating_add(INTERCEPT_RETRY_MS);
+    }
+
+    /// Hold when the search or the first execution step missed its launch, or
+    /// when recovery control missed the frozen cadence. Returns whether it held,
+    /// so the caller inhibits any command already queued.
+    pub fn service(&mut self, now: u64, step_ms: u64) -> bool {
+        let reason = if self
+            .search
+            .as_ref()
+            .is_some_and(|s| now >= s.launch_at_ms())
+            || self.intercept.is_some_and(|i| {
+                now > i.launch_at_ms && (self.follower.is_none() || self.launch_pending)
+            }) {
+            Some(RecoveryHold::MissedLaunch)
+        } else if self
+            .last_command_at_ms
+            .is_some_and(|last| now.saturating_sub(last) > step_ms)
+        {
+            Some(RecoveryHold::MissedControlDeadline)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            self.hold(reason, now);
+        }
+        reason.is_some()
+    }
+
+    /// One bounded search unit; `Ok(true)` while the search continues. `Err(())`
+    /// denotes a frozen-source failure, which stops the run rather than retrying.
+    pub fn step<E: Ephemeris>(
+        &mut self,
+        plan: &TrackingPlan,
+        source: &E,
+        now: u64,
+    ) -> Result<bool, ()> {
+        let Some(search) = self.search.as_mut() else {
+            return Ok(false);
+        };
+        if now >= search.launch_at_ms() {
+            self.hold(RecoveryHold::MissedLaunch, now);
+            return Ok(false);
+        }
+        search.step(plan, source)?;
+        self.work_steps = search.work_steps;
+        if let Some(search) = self.search.take_if(|search| search.finished) {
+            if let Some(intercept) = search.result {
+                self.hold = None;
+                self.intercept = Some(intercept);
+            } else {
+                self.hold(search.hold, now);
+            }
+        }
+        Ok(self.search.is_some())
+    }
+
+    /// Generate only the validated recovery target through the normal follower.
+    /// While settling/searching, inhibit; `step` advances the search separately
+    /// between output deadlines and never blocks the physical output task. At a
+    /// scheduled launch `start` must be serviced at that exact millisecond. A
+    /// missed launch is discarded, never applied late.
+    pub fn command(
+        &mut self,
+        plan: &TrackingPlan,
+        start: RestingStart,
+        now: u64,
+    ) -> CommandEnvelope {
+        if self.intercept.is_none() && self.search.is_none() && now >= self.retry_at_ms {
+            if let Some(search) = InterceptSearch::new(plan, start, self.episode.deadline_ms()) {
+                self.attempts = self.attempts.saturating_add(1);
+                self.work_steps = 0;
+                self.hold = None;
+                self.search = Some(search);
+            }
+        }
+        let mut command = Command::Inhibit;
+        if let Some(intercept) = self.intercept {
+            if self.follower.is_none() && now >= intercept.launch_at_ms {
+                if now != intercept.launch_at_ms {
+                    self.hold(RecoveryHold::MissedLaunch, now);
+                } else if !intercept.start_unchanged(start) {
+                    self.hold(RecoveryHold::ChangedStart, now);
+                } else {
+                    self.follower = FollowingController::new(
+                        plan.config.reference,
+                        plan.config.deadband_deg,
+                        plan.actuator.relays,
+                    )
+                    .ok();
+                    self.launch_pending = true;
+                }
+            }
+            if now >= intercept.join_at_ms + MEASURED_RECOVERY_MS {
+                self.hold(RecoveryHold::MissedIntercept, now);
+            }
+            if let Some(follower) = self.follower.as_mut() {
+                if let Some(target) = intercept.target(plan, now) {
+                    command = follower.command(
+                        target,
+                        Some(start.feedback),
+                        start.actuator.actual(),
+                        now,
+                    );
+                    self.last_command_at_ms = Some(now);
+                }
+            }
+        }
+        CommandEnvelope {
+            command,
+            valid_until_ms: now
+                .saturating_add(MOVEMENT_LEASE_MS)
+                .min(self.episode.deadline_ms()),
+        }
+    }
+
+    /// The output owner drained the launch command.
+    pub fn command_taken(&mut self) {
+        self.launch_pending = false;
+    }
+
+    pub fn observe_output(&mut self, applied: DriveCommand, now: u64) {
+        if let Some(follower) = self.follower.as_mut() {
+            follower.observe_output(applied, now);
+        }
+    }
+
+    /// Fresh feedback has dwelt on the launched intercept's route join.
+    pub fn rejoined(&self, sampled_at_ms: u64) -> bool {
+        self.follower.is_some()
+            && self
+                .intercept
+                .is_some_and(|i| sampled_at_ms >= i.join_at_ms + REACQUISITION_DWELL_MS)
+    }
+
+    /// The recovery follower continues as the normal follower, keeping its
+    /// physical pulse/coast history.
+    pub fn take_follower(&mut self) -> Option<FollowingController> {
+        self.follower.take()
     }
 }
 

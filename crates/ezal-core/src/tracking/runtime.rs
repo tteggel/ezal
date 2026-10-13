@@ -1,18 +1,18 @@
 //! Input supervision around the pure lifecycle. Firmware serializes source
 //! publications through this owner before draining commands to the actuator.
 
-use super::deviation::{DeviationMonitor, MEASURED_RECOVERY_MS};
-use super::recovery::{InterceptSearch, Recovery};
+use super::deviation::DeviationMonitor;
+use super::recovery::Recovery;
 use super::{
     BoundTrackingPlan, DeviationStatus, ExecutionInputs, FollowingController, InputError,
     LifecycleError, PassEvent, PlanRevisions, PlanTicket, PlanningError, PlanningReport,
-    PlanningWindow, ReceptionCoverage, RecoveryHold, RecoveryStatus, RestingStart, RunToken,
-    TimingError, TrackingAction, TrackingLifecycle, TrackingMode, TrackingPhase, TrackingRequest,
+    PlanningWindow, ReceptionCoverage, RecoveryStatus, RestingStart, RunToken, TimingError,
+    TrackingAction, TrackingLifecycle, TrackingMode, TrackingPhase, TrackingPlan, TrackingRequest,
     TrackingSnapshot, TrackingStop, TrackingTermination, REACQUISITION_DWELL_MS,
 };
 use crate::actuator::Actuator;
 use crate::ads1015::FEEDBACK_FULL_SCALE;
-use crate::drive::{Command, CommandEnvelope, DriveCommand, MOVEMENT_LEASE_MS};
+use crate::drive::{CommandEnvelope, DriveCommand, MOVEMENT_LEASE_MS};
 use crate::feedback::{
     FeedbackHealth, FeedbackSample, FeedbackSnapshot, FEEDBACK_MAX_AGE_MS, FEEDBACK_MAX_LATENCY_MS,
 };
@@ -77,15 +77,8 @@ pub struct TrackingRuntime {
     latest_clock: Option<UtcAnchor>,
     observed_ms: Option<u64>,
     last_summary: Option<TrackingSummary>,
-    deviation_run: Option<RunToken>,
-    run_prediction: Option<(PlanningWindow, ReceptionCoverage)>,
-    deviation: Option<DeviationMonitor>,
-    feedback: Option<FeedbackSample>,
-    recovery: Option<Recovery>,
-    follower: Option<FollowingController>,
-    last_control_at_ms: Option<u64>,
-    ready_since_ms: Option<u64>,
-    ready_sample_ms: Option<u64>,
+    /// Some exactly while the lifecycle has a run, once `sync_execution` has run.
+    execution: Option<Execution>,
 }
 
 impl Default for TrackingRuntime {
@@ -103,15 +96,7 @@ impl TrackingRuntime {
             latest_clock: None,
             observed_ms: None,
             last_summary: None,
-            deviation_run: None,
-            run_prediction: None,
-            deviation: None,
-            feedback: None,
-            recovery: None,
-            follower: None,
-            last_control_at_ms: None,
-            ready_since_ms: None,
-            ready_sample_ms: None,
+            execution: None,
         }
     }
     /// Read-only lifecycle status; does not renew any lease.
@@ -120,12 +105,10 @@ impl TrackingRuntime {
     }
     /// Fresh timestamp-matched pointing, or unavailable, plus retained metrics.
     pub fn deviation(&self, now_ms: u64) -> DeviationStatus {
-        let mut status = self
-            .deviation
-            .as_ref()
-            .map_or(DeviationStatus::default(), |d| d.status(now_ms));
-        status.run = self.deviation_run;
-        status
+        match &self.execution {
+            Some(execution) => execution.deviation(now_ms),
+            None => self.last_summary.map(|s| s.deviation).unwrap_or_default(),
+        }
     }
     /// Most recent finished run, retained even while another pass is executing.
     pub const fn last_summary(&self) -> Option<TrackingSummary> {
@@ -133,7 +116,11 @@ impl TrackingRuntime {
     }
     /// Active episode and intercept ETA, without renewing its deadline.
     pub fn recovery(&self) -> Option<RecoveryStatus> {
-        self.recovery.as_ref().map(|r| r.status)
+        self.execution
+            .as_ref()?
+            .recovery
+            .as_ref()
+            .map(Recovery::status)
     }
     /// Immutable accepted plan and exact execution inputs.
     pub const fn bound_plan(&self) -> Option<&BoundTrackingPlan<ExecutionInputs>> {
@@ -275,34 +262,23 @@ impl TrackingRuntime {
     /// Service input validity before the lifecycle can freeze or follow. Failed
     /// internet refreshes are not outages: still-valid caches remain usable.
     pub fn service(&mut self, observation: RuntimeObservation) -> Result<(), LifecycleError> {
+        let now = observation.now_ms;
         self.check_inputs(observation)?;
-        self.lifecycle.tick(observation.now_ms)?;
-        self.sync_execution(observation.now_ms);
-        if self.lifecycle.snapshot().run.is_some()
-            && self.lifecycle.snapshot().phase != TrackingPhase::Reacquiring
-            && self.last_control_at_ms.is_some_and(|last| {
-                observation.now_ms.saturating_sub(last)
-                    > self.lifecycle.bound_plan().unwrap().plan().config.step_ms
+        self.lifecycle.tick(now)?;
+        self.sync_execution(now);
+        let phase = self.lifecycle.snapshot().phase;
+        if let Some(reason) = self
+            .execution
+            .as_ref()
+            .zip(self.lifecycle.bound_plan())
+            .and_then(|(execution, bound)| {
+                execution.missed_deadline(phase, bound.plan().config.step_ms, now)
             })
         {
-            self.lifecycle
-                .interrupt(TrackingStop::ExecutionDeadline, observation.now_ms)?;
+            self.lifecycle.interrupt(reason, now)?;
         }
-        if self.lifecycle.snapshot().run.is_some()
-            && self.feedback.is_some_and(|sample| {
-                observation
-                    .now_ms
-                    .checked_sub(sample.sampled_at_ms())
-                    .is_none_or(|age| age >= FEEDBACK_MAX_AGE_MS)
-            })
-        {
-            self.lifecycle.interrupt(
-                TrackingStop::Feedback(FeedbackHealth::Stale),
-                observation.now_ms,
-            )?;
-        }
-        self.sync_execution(observation.now_ms);
-        self.check_recovery_schedule(observation.now_ms);
+        self.sync_execution(now);
+        self.check_recovery_schedule(now);
         if self.lifecycle.snapshot().mode == TrackingMode::Manual {
             self.network_generation = None;
         }
@@ -310,86 +286,59 @@ impl TrackingRuntime {
     }
 
     fn check_recovery_schedule(&mut self, now: u64) {
-        let Some(recovery) = self.recovery.as_mut() else {
+        let step_ms = self.lifecycle.bound_plan().map(|b| b.plan().config.step_ms);
+        let Some((recovery, step_ms)) = self
+            .execution
+            .as_mut()
+            .and_then(|e| e.recovery.as_mut())
+            .zip(step_ms)
+        else {
             return;
         };
-        let step_ms = self.lifecycle.bound_plan().unwrap().plan().config.step_ms;
-        let reason = if recovery
-            .search
-            .as_ref()
-            .is_some_and(|s| now >= s.launch_at_ms())
-            || recovery.intercept.is_some_and(|i| {
-                now > i.launch_at_ms && (recovery.follower.is_none() || recovery.launch_pending)
-            }) {
-            Some(RecoveryHold::MissedLaunch)
-        } else if recovery
-            .last_command_at_ms
-            .is_some_and(|last| now.saturating_sub(last) > step_ms)
-        {
-            Some(RecoveryHold::MissedControlDeadline)
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            recovery.hold(reason, now);
+        if recovery.service(now, step_ms) {
             self.lifecycle
-                .recovery_command(recovery.status.episode, CommandEnvelope::INHIBIT, now);
+                .recovery_command(recovery.episode(), CommandEnvelope::INHIBIT, now);
         }
     }
 
+    /// Begin or finish the run's execution to match the lifecycle, and the
+    /// recovery episode to match its token.
     fn sync_execution(&mut self, now: u64) {
         let state = self.lifecycle.snapshot();
-        if state.run.is_some() && state.run != self.deviation_run {
-            self.deviation_run = state.run;
-            self.run_prediction = self
-                .lifecycle
-                .bound_plan()
-                .map(|b| (b.plan().window, b.plan().reception()));
-            self.feedback = None;
-            self.deviation = self
-                .lifecycle
-                .bound_plan()
-                .map(|b| DeviationMonitor::new(b.plan().config.tolerance_deg));
-            self.follower = None;
-            self.last_control_at_ms = None;
-            self.ready_since_ms = None;
-            self.ready_sample_ms = None;
-        }
-        if state.run.is_none() {
-            self.follower = None;
-            self.last_control_at_ms = None;
-            if let Some(monitor) = self.deviation.as_mut() {
-                monitor.finish(now);
+        if self.execution.as_ref().map(|e| e.run) != state.run {
+            if let Some(execution) = self.execution.take() {
+                if let Some(termination) =
+                    state.termination.filter(|t| t.run == Some(execution.run))
+                {
+                    self.last_summary = Some(execution.finish(termination, now));
+                }
             }
-            self.feedback = None;
-            if let Some(termination) = state
-                .termination
-                .filter(|t| t.run.is_some() && t.run == self.deviation_run)
-            {
-                let (window, reception) = self.run_prediction.expect("frozen run prediction");
-                self.last_summary = Some(TrackingSummary {
-                    window,
-                    reception,
-                    termination,
-                    deviation: self.deviation(now),
-                });
-            }
+            self.execution = state
+                .run
+                .zip(self.lifecycle.bound_plan())
+                .map(|(run, bound)| Execution::new(run, bound.plan()));
         }
-        if self
+        let Some(execution) = self.execution.as_mut() else {
+            return;
+        };
+        if execution
             .recovery
             .as_ref()
-            .is_some_and(|r| Some(r.status.episode) != state.recovery)
+            .is_some_and(|r| Some(r.episode()) != state.recovery)
         {
             if state.phase == TrackingPhase::Following {
                 // Preserve the physical pulse/coast history when the recovery
                 // follower joins the original route. Starting a new follower
                 // here could reuse feedback acquired before the last release.
-                self.follower = self.recovery.as_mut().and_then(|r| r.follower.take());
+                execution.follower = execution
+                    .recovery
+                    .as_mut()
+                    .and_then(Recovery::take_follower);
             }
-            self.recovery = None;
+            execution.recovery = None;
         }
-        if let Some(episode) = state.recovery.filter(|_| self.recovery.is_none()) {
-            self.recovery = Some(Recovery::new(episode));
+        if let Some(episode) = state.recovery.filter(|_| execution.recovery.is_none()) {
+            execution.recovery = Some(Recovery::new(episode));
         }
     }
 
@@ -412,7 +361,10 @@ impl TrackingRuntime {
             return Ok(());
         }
         self.check_recovery_schedule(now);
-        let bound = self.lifecycle.bound_plan().unwrap();
+        let (Some(bound), Some(execution)) = (self.lifecycle.bound_plan(), self.execution.as_mut())
+        else {
+            return Ok(());
+        };
         let reason = if let Some(fault) = actuator.fault() {
             Some(TrackingStop::Motion(fault))
         } else if actuator.configuration() != bound.plan().actuator {
@@ -427,7 +379,7 @@ impl TrackingRuntime {
                 None => Some(TrackingStop::Feedback(FeedbackHealth::Unavailable)),
                 Some(sample)
                     if sample.sampled_at_ms() > now
-                        || self.feedback.is_some_and(|old| {
+                        || execution.feedback.is_some_and(|old| {
                             sample.sampled_at_ms() < old.sampled_at_ms()
                                 || (sample.sampled_at_ms() == old.sampled_at_ms() && sample != old)
                         }) =>
@@ -449,17 +401,15 @@ impl TrackingRuntime {
             return Ok(());
         }
         let sample = feedback.last_valid.unwrap();
-        let repeated_sample = self.feedback == Some(sample);
-        self.feedback = Some(sample);
-        if let Some(follower) = self.recovery.as_mut().and_then(|r| r.follower.as_mut()) {
-            follower.observe_output(actuator.actual(), now);
+        let repeated_sample = execution.feedback == Some(sample);
+        execution.feedback = Some(sample);
+        if let Some(recovery) = execution.recovery.as_mut() {
+            recovery.observe_output(actuator.actual(), now);
         }
+        let phase = self.lifecycle.snapshot().phase;
         if repeated_sample
-            || !matches!(
-                self.lifecycle.snapshot().phase,
-                TrackingPhase::Following | TrackingPhase::Reacquiring
-            )
-            || sample.sampled_at_ms() < bound.plan().window.aos_at_ms
+            || !matches!(phase, TrackingPhase::Following | TrackingPhase::Reacquiring)
+            || sample.sampled_at_ms() < execution.window.aos_at_ms
         {
             return Ok(());
         }
@@ -481,7 +431,7 @@ impl TrackingRuntime {
             + bound.plan().actuator.travel.azimuth.max_speed_deg_per_s
                 * FEEDBACK_MAX_LATENCY_MS as f32
                 / 1000.0;
-        let monitor = self.deviation.as_mut().unwrap();
+        let monitor = &mut execution.monitor;
         if monitor
             .observe(
                 sample,
@@ -494,21 +444,16 @@ impl TrackingRuntime {
                 TrackingStop::Feedback(FeedbackHealth::TimestampInvalid),
                 now,
             )?;
-        } else if self.lifecycle.snapshot().phase == TrackingPhase::Following
-            && monitor.needs_recovery()
-        {
-            if let Some(episode) = self.lifecycle.begin_reacquisition(run, now)? {
-                self.recovery = Some(Recovery::new(episode));
-            }
+        } else if phase == TrackingPhase::Following && monitor.needs_recovery() {
+            self.lifecycle.begin_reacquisition(run, now)?;
         } else if monitor.recovered() {
-            if let Some(recovery) = self.recovery.as_ref().filter(|r| {
-                r.follower.is_some()
-                    && r.intercept.is_some_and(|i| {
-                        sample.sampled_at_ms() >= i.join_at_ms + REACQUISITION_DWELL_MS
-                    })
-            }) {
+            if let Some(recovery) = execution
+                .recovery
+                .as_ref()
+                .filter(|r| r.rejoined(sample.sampled_at_ms()))
+            {
                 self.lifecycle
-                    .finish_reacquisition(recovery.status.episode, now)?;
+                    .finish_reacquisition(recovery.episode(), now)?;
             }
         }
         self.sync_execution(now);
@@ -518,11 +463,14 @@ impl TrackingRuntime {
     /// Record every physical transition, including the first service before
     /// generating a command. Never report an output which was not applied.
     pub fn observe_output(&mut self, applied: DriveCommand, now_ms: u64) {
-        if let Some(follower) = self.follower.as_mut() {
+        let Some(execution) = self.execution.as_mut() else {
+            return;
+        };
+        if let Some(follower) = execution.follower.as_mut() {
             follower.observe_output(applied, now_ms);
         }
-        if let Some(follower) = self.recovery.as_mut().and_then(|r| r.follower.as_mut()) {
-            follower.observe_output(applied, now_ms);
+        if let Some(recovery) = execution.recovery.as_mut() {
+            recovery.observe_output(applied, now_ms);
         }
     }
 
@@ -535,6 +483,8 @@ impl TrackingRuntime {
         actuator: &Actuator,
         observation: RuntimeObservation,
     ) {
+        // Observe before servicing so new feedback wins a simultaneous freshness
+        // deadline, and again after, since the run may begin inside the service.
         if let Some(run) = self.snapshot().run {
             let _ = self.observe_tracking(run, feedback, actuator, observation);
         }
@@ -545,17 +495,35 @@ impl TrackingRuntime {
             let _ = self.observe_tracking(run, feedback, actuator, observation);
         }
         let state = self.snapshot();
-        let Some(run) = state.run else { return };
+        let (Some(run), Some(bound), Some(execution)) = (
+            state.run,
+            self.lifecycle.bound_plan(),
+            self.execution.as_mut(),
+        ) else {
+            return;
+        };
+        let plan = bound.plan();
         let now = observation.now_ms;
         if state.phase == TrackingPhase::Reacquiring {
             // A subsequent normal follower must not reuse pre-gap velocity.
-            self.follower = None;
-            self.last_control_at_ms = Some(now);
-            self.reacquisition_command(actuator, observation);
+            execution.follower = None;
+            execution.last_control_at_ms = Some(now);
+            let (Some(recovery), Some(feedback)) =
+                (execution.recovery.as_mut(), execution.feedback)
+            else {
+                return;
+            };
+            let start = RestingStart {
+                at_ms: now,
+                feedback,
+                actuator: *actuator,
+                network: observation.network,
+            };
+            let command = recovery.command(plan, start, now);
+            self.lifecycle
+                .recovery_command(recovery.episode(), command, now);
             return;
         }
-        let bound = self.lifecycle.bound_plan().unwrap();
-        let plan = bound.plan();
         let preparing = matches!(state.phase, TrackingPhase::Preparing | TrackingPhase::Ready);
         let offset = if preparing {
             0
@@ -569,7 +537,7 @@ impl TrackingRuntime {
             let _ = self.interrupt(TrackingStop::SourceInvalid, observation);
             return;
         };
-        let follower = self.follower.get_or_insert_with(|| {
+        let follower = execution.follower.get_or_insert_with(|| {
             FollowingController::new(
                 plan.config.reference,
                 plan.config.deadband_deg,
@@ -578,7 +546,7 @@ impl TrackingRuntime {
             .expect("accepted follower configuration")
         });
         let command = follower.command(target, feedback.last_valid, actuator.actual(), now);
-        self.last_control_at_ms = Some(now);
+        execution.last_control_at_ms = Some(now);
         if preparing {
             let sample = feedback.last_valid.expect("observed healthy feedback");
             let age = now.saturating_sub(sample.sampled_at_ms());
@@ -589,22 +557,12 @@ impl TrackingRuntime {
                 <= plan.config.preparation_tolerance_deg
                 && (sample.position().elevation_deg - target.elevation_deg).abs()
                     <= plan.config.preparation_tolerance_deg;
-            if !acquired {
-                self.ready_since_ms = None;
-            } else if self.ready_sample_ms != Some(sample.sampled_at_ms()) {
-                let stamp = sample.sampled_at_ms();
-                if self
-                    .ready_sample_ms
-                    .is_none_or(|last| stamp.saturating_sub(last) >= FEEDBACK_MAX_AGE_MS)
-                {
-                    self.ready_since_ms = None;
-                }
-                let since = *self.ready_since_ms.get_or_insert(stamp);
-                if stamp.saturating_sub(since) >= REACQUISITION_DWELL_MS {
-                    let _ = self.lifecycle.preparation_ready(run, now);
-                }
+            if execution
+                .readiness
+                .observe(acquired, sample.sampled_at_ms())
+            {
+                let _ = self.lifecycle.preparation_ready(run, now);
             }
-            self.ready_sample_ms = Some(sample.sampled_at_ms());
         }
         self.lifecycle.tracking_command(
             run,
@@ -632,18 +590,19 @@ impl TrackingRuntime {
                         plan.window.aos_at_ms + u64::from(plan.window.duration_ms),
                     ))
             }
-            TrackingPhase::Reacquiring => self.recovery.as_ref().map(|r| {
-                r.status
-                    .launch_at_ms
+            TrackingPhase::Reacquiring => self.recovery().map(|r| {
+                r.launch_at_ms
                     .filter(|at| self.observed_ms.is_none_or(|now| *at > now))
-                    .unwrap_or(r.status.episode.deadline_ms())
+                    .unwrap_or(r.episode.deadline_ms())
             }),
             _ => None,
         };
         phase_deadline
             .into_iter()
             .chain(
-                self.last_control_at_ms
+                self.execution
+                    .as_ref()
+                    .and_then(|e| e.last_control_at_ms)
                     .map(|at| at.saturating_add(plan.config.step_ms)),
             )
             .min()
@@ -657,105 +616,21 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<bool, LifecycleError> {
         self.service(observation)?;
-        let Some(recovery) = self.recovery.as_mut() else {
-            return Ok(false);
-        };
-        let Some(search) = recovery.search.as_mut() else {
-            return Ok(false);
-        };
         let now = observation.now_ms;
-        if now >= search.launch_at_ms() {
-            recovery.hold(RecoveryHold::MissedLaunch, now);
+        let (Some(bound), Some(recovery)) = (
+            self.lifecycle.bound_plan(),
+            self.execution.as_mut().and_then(|e| e.recovery.as_mut()),
+        ) else {
             return Ok(false);
-        }
-        let bound = self.lifecycle.bound_plan().unwrap();
-        if search.step(bound.plan(), bound.inputs()).is_err() {
-            self.lifecycle.interrupt(TrackingStop::SourceInvalid, now)?;
-            self.sync_execution(now);
-            return Ok(false);
-        }
-        recovery.status.work_steps = search.work_steps;
-        if search.finished {
-            let search = recovery.search.take().unwrap();
-            if let Some(intercept) = search.result {
-                recovery.status.planning = false;
-                recovery.status.launch_at_ms = Some(intercept.launch_at_ms);
-                recovery.status.intercept_at_ms = Some(intercept.join_at_ms);
-                recovery.status.hold = None;
-                recovery.intercept = Some(intercept);
-            } else {
-                recovery.hold(search.hold, now);
-            }
-        }
-        Ok(recovery.search.is_some())
-    }
-
-    /// Generate only the validated recovery target through the normal follower.
-    /// While settling/searching, inhibit. Call `step_reacquisition` separately
-    /// between output deadlines; never block the physical output task on it.
-    /// At a scheduled launch the actuator snapshot must be serviced at that
-    /// exact millisecond. A missed launch is discarded, never applied late.
-    fn reacquisition_command(&mut self, actuator: &Actuator, observation: RuntimeObservation) {
-        let Some(recovery) = self.recovery.as_mut() else {
-            return;
         };
-        let now = observation.now_ms;
-        let bound = self.lifecycle.bound_plan().unwrap();
-        let start = RestingStart {
-            at_ms: now,
-            feedback: self.feedback.unwrap(),
-            actuator: *actuator,
-            network: observation.network,
-        };
-        if recovery.intercept.is_none() && recovery.search.is_none() && now >= recovery.retry_at_ms
-        {
-            if let Some(search) =
-                InterceptSearch::new(bound.plan(), start, recovery.status.episode.deadline_ms())
-            {
-                recovery.status.attempts = recovery.status.attempts.saturating_add(1);
-                recovery.status.planning = true;
-                recovery.status.work_steps = 0;
-                recovery.status.hold = None;
-                recovery.search = Some(search);
+        match recovery.step(bound.plan(), bound.inputs(), now) {
+            Ok(searching) => Ok(searching),
+            Err(()) => {
+                self.lifecycle.interrupt(TrackingStop::SourceInvalid, now)?;
+                self.sync_execution(now);
+                Ok(false)
             }
         }
-        let mut command = Command::Inhibit;
-        if let Some(intercept) = recovery.intercept {
-            if recovery.follower.is_none() && now >= intercept.launch_at_ms {
-                if now != intercept.launch_at_ms {
-                    recovery.hold(RecoveryHold::MissedLaunch, now);
-                } else if !intercept.start_unchanged(start) {
-                    recovery.hold(RecoveryHold::ChangedStart, now);
-                } else {
-                    recovery.follower = FollowingController::new(
-                        bound.plan().config.reference,
-                        bound.plan().config.deadband_deg,
-                        bound.plan().actuator.relays,
-                    )
-                    .ok();
-                    recovery.launch_pending = true;
-                }
-            }
-            if now >= intercept.join_at_ms + MEASURED_RECOVERY_MS {
-                recovery.hold(RecoveryHold::MissedIntercept, now);
-            }
-            if let Some(follower) = recovery.follower.as_mut() {
-                if let Some(target) = intercept.target(bound.plan(), now) {
-                    command = follower.command(target, self.feedback, actuator.actual(), now);
-                    recovery.last_command_at_ms = Some(now);
-                }
-            }
-        }
-        self.lifecycle.recovery_command(
-            recovery.status.episode,
-            CommandEnvelope {
-                command,
-                valid_until_ms: now
-                    .saturating_add(MOVEMENT_LEASE_MS)
-                    .min(recovery.status.episode.deadline_ms()),
-            },
-            now,
-        );
     }
     fn check_inputs(&mut self, observation: RuntimeObservation) -> Result<(), LifecycleError> {
         let now = observation.now_ms;
@@ -847,8 +722,8 @@ impl TrackingRuntime {
     pub fn take_command(&mut self, observation: RuntimeObservation) -> Option<CommandEnvelope> {
         let _ = self.service(observation);
         let command = self.lifecycle.take_command(observation.now_ms);
-        if let Some(recovery) = self.recovery.as_mut() {
-            recovery.launch_pending = false;
+        if let Some(recovery) = self.execution.as_mut().and_then(|e| e.recovery.as_mut()) {
+            recovery.command_taken();
         }
         command
     }
@@ -863,5 +738,102 @@ impl TrackingRuntime {
         self.lifecycle.interrupt(reason, observation.now_ms)?;
         self.sync_execution(observation.now_ms);
         Ok(())
+    }
+}
+
+/// Executor state owned by one run. It begins with the run and is finished
+/// into a [`TrackingSummary`] the instant the run ends.
+struct Execution {
+    run: RunToken,
+    window: PlanningWindow,
+    reception: ReceptionCoverage,
+    monitor: DeviationMonitor,
+    feedback: Option<FeedbackSample>,
+    follower: Option<FollowingController>,
+    last_control_at_ms: Option<u64>,
+    readiness: Readiness,
+    recovery: Option<Recovery>,
+}
+
+impl Execution {
+    fn new(run: RunToken, plan: &TrackingPlan) -> Self {
+        Self {
+            run,
+            window: plan.window,
+            reception: plan.reception(),
+            monitor: DeviationMonitor::new(plan.config.tolerance_deg),
+            feedback: None,
+            follower: None,
+            last_control_at_ms: None,
+            readiness: Readiness::default(),
+            recovery: None,
+        }
+    }
+
+    fn deviation(&self, now_ms: u64) -> DeviationStatus {
+        DeviationStatus {
+            run: Some(self.run),
+            ..self.monitor.status(now_ms)
+        }
+    }
+
+    /// A missed control step outside recovery, or stale feedback, stops the run.
+    fn missed_deadline(
+        &self,
+        phase: TrackingPhase,
+        step_ms: u64,
+        now: u64,
+    ) -> Option<TrackingStop> {
+        if phase != TrackingPhase::Reacquiring
+            && self
+                .last_control_at_ms
+                .is_some_and(|last| now.saturating_sub(last) > step_ms)
+        {
+            Some(TrackingStop::ExecutionDeadline)
+        } else if self.feedback.is_some_and(|sample| {
+            now.checked_sub(sample.sampled_at_ms())
+                .is_none_or(|age| age >= FEEDBACK_MAX_AGE_MS)
+        }) {
+            Some(TrackingStop::Feedback(FeedbackHealth::Stale))
+        } else {
+            None
+        }
+    }
+
+    fn finish(mut self, termination: TrackingTermination, now_ms: u64) -> TrackingSummary {
+        self.monitor.finish(now_ms);
+        TrackingSummary {
+            window: self.window,
+            reception: self.reception,
+            termination,
+            deviation: self.deviation(now_ms),
+        }
+    }
+}
+
+/// The measured readiness dwell during preparation. Repeated reads of one sample
+/// add nothing; a lost acquisition or a feedback gap restarts the dwell.
+#[derive(Default)]
+struct Readiness {
+    since_ms: Option<u64>,
+    sample_ms: Option<u64>,
+}
+
+impl Readiness {
+    /// Whether this sample completes the readiness dwell.
+    fn observe(&mut self, acquired: bool, sampled_at_ms: u64) -> bool {
+        let previous = self.sample_ms.replace(sampled_at_ms);
+        if !acquired {
+            self.since_ms = None;
+            return false;
+        }
+        if previous == Some(sampled_at_ms) {
+            return false;
+        }
+        if previous.is_none_or(|last| sampled_at_ms.saturating_sub(last) >= FEEDBACK_MAX_AGE_MS) {
+            self.since_ms = None;
+        }
+        let since = *self.since_ms.get_or_insert(sampled_at_ms);
+        sampled_at_ms.saturating_sub(since) >= REACQUISITION_DWELL_MS
     }
 }
