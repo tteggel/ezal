@@ -1,16 +1,7 @@
 //! T6 uses the same frozen real-orbit fixture as the T5 input boundary tests.
 
 use super::*;
-use ezal_core::feedback::{FeedbackHealth, FeedbackSnapshot};
 use std::collections::VecDeque;
-
-fn healthy(sample: FeedbackSample) -> FeedbackSnapshot {
-    FeedbackSnapshot {
-        raw: None,
-        last_valid: Some(sample),
-        health: FeedbackHealth::Healthy,
-    }
-}
 
 /// Live-style feedback/actuator/runtime loop with a separate physical model.
 /// Orbit propagation and the recovery search use the production frozen inputs.
@@ -25,8 +16,12 @@ struct Rig {
 }
 
 impl Rig {
+    /// Freeze the run without establishing readiness, `offset` degrees above
+    /// the route's first point, so it enters recovery at AOS as a late preparation.
     fn new(offset: f32, used: [u64; 2]) -> Self {
-        let (runtime, run) = following();
+        let (mut runtime, _, prep) = armed();
+        runtime.service(observation(prep)).unwrap();
+        let run = runtime.snapshot().run.unwrap();
         let plan = runtime.bound_plan().unwrap().plan();
         let mut pose = plan.route.pointing_at(0).unwrap();
         pose.elevation_deg += offset;
@@ -44,7 +39,7 @@ impl Rig {
                 at,
             );
         }
-        Self {
+        let mut rig = Self {
             runtime,
             run,
             actuator,
@@ -53,7 +48,9 @@ impl Rig {
             feedback,
             pending: VecDeque::new(),
             now: AOS,
-        }
+        };
+        rig.tick(AOS);
+        rig
     }
 
     fn tick(&mut self, at: u64) {
@@ -82,7 +79,7 @@ impl Rig {
             at,
         );
         self.runtime
-            .reacquisition_command(self.run, self.feedback, &self.actuator, obs);
+            .execution_command(self.feedback, &self.actuator, obs);
         let command = self.runtime.take_command(obs);
         self.actuator.step(
             ActuatorInput {
@@ -102,8 +99,7 @@ impl Rig {
         }
     }
 
-    fn entered(&mut self) -> RecoveryStatus {
-        self.until(AOS + 1200);
+    fn entered(&self) -> RecoveryStatus {
         assert_eq!(self.runtime.snapshot().phase, TrackingPhase::Reacquiring);
         self.runtime.recovery().unwrap()
     }
@@ -233,14 +229,9 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
 #[test]
 fn recoverable_lag_executes_a_future_intercept_and_preserves_duty() {
     let mut rig = Rig::new(10.0, [9000, 21000]);
-    rig.until(AOS + 200);
-    let early = rig.runtime.deviation(rig.now);
-    assert!(early.warning);
-    assert_eq!(rig.runtime.snapshot().phase, TrackingPhase::Following);
     let episode = rig.entered().episode;
-    assert!(!rig
-        .runtime
-        .tracking_command(rig.run, command(rig.now), observation(rig.now)));
+    // Reacquiring never drives the normal follower; the dish holds until launch.
+    assert!(!rig.actuator.target().is_active());
     let plan = rig.plan();
     assert!(plan.intercept_at_ms.is_some(), "{plan:?}");
     assert!(plan.intercept_at_ms.unwrap() > plan.launch_at_ms.unwrap());
@@ -271,13 +262,7 @@ fn recoverable_lag_executes_a_future_intercept_and_preserves_duty() {
 #[test]
 fn unfinished_frozen_preparation_acquires_a_future_point_without_chasing_aos() {
     let mut rig = Rig::new(10.0, [0, 0]);
-    let (mut runtime, _, prep) = armed();
-    runtime.service(observation(prep)).unwrap();
-    rig.run = runtime.snapshot().run.unwrap();
-    runtime.service(observation(AOS)).unwrap();
-    rig.runtime = runtime;
-    rig.tick(AOS);
-    let episode = rig.runtime.recovery().unwrap().episode;
+    let episode = rig.entered().episode;
     assert_eq!(episode.cause(), RecoveryCause::LatePreparation);
     assert_eq!(episode.started_at_ms(), AOS);
     let plan = rig.plan();
@@ -383,6 +368,8 @@ fn failed_and_stale_feedback_stop_recovery_instead_of_reusing_last_position() {
 fn cancellation_discards_pending_search_and_retains_final_deviation() {
     let mut rig = Rig::new(10.0, [0, 0]);
     rig.entered();
+    // Measure the offset after AOS while the search is still before its launch.
+    rig.until(AOS + 1000);
     rig.runtime
         .step_reacquisition(observation(rig.now))
         .unwrap();
@@ -401,12 +388,8 @@ fn cancellation_discards_pending_search_and_retains_final_deviation() {
         .runtime
         .step_reacquisition(observation(rig.now))
         .unwrap());
-    assert!(!rig.runtime.reacquisition_command(
-        rig.run,
-        rig.feedback,
-        &rig.actuator,
-        observation(rig.now)
-    ));
+    rig.runtime
+        .execution_command(rig.feedback, &rig.actuator, observation(rig.now));
     assert_eq!(
         rig.runtime.take_command(observation(rig.now)),
         Some(CommandEnvelope::INHIBIT)
@@ -452,9 +435,8 @@ fn physical_fault_and_network_loss_discard_validated_intercepts() {
             obs.network.observe(rig.now, false);
             TrackingStop::NetworkUnavailable
         };
-        assert!(!rig
-            .runtime
-            .reacquisition_command(rig.run, rig.feedback, &rig.actuator, obs));
+        rig.runtime
+            .execution_command(rig.feedback, &rig.actuator, obs);
         assert_eq!(rig.runtime.snapshot().termination.unwrap().reason, reason);
         assert_eq!(rig.runtime.recovery(), None);
         assert_eq!(
@@ -554,12 +536,10 @@ fn delayed_output_drain_and_missed_control_tick_hold_before_reusing_a_command() 
                 },
                 launch,
             );
-            assert!(rig.runtime.reacquisition_command(
-                rig.run,
-                rig.feedback,
-                &rig.actuator,
-                observation(launch)
-            ));
+            rig.runtime
+                .execution_command(rig.feedback, &rig.actuator, observation(launch));
+            // Launched on time: the drain below is what is late.
+            assert_eq!(rig.runtime.recovery().unwrap().hold, None);
         } else {
             rig.until(launch);
         }

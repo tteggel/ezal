@@ -551,7 +551,7 @@ impl TrackingRuntime {
             // A subsequent normal follower must not reuse pre-gap velocity.
             self.follower = None;
             self.last_control_at_ms = Some(now);
-            self.reacquisition_command(run, feedback, actuator, observation);
+            self.reacquisition_command(actuator, observation);
             return;
         }
         let bound = self.lifecycle.bound_plan().unwrap();
@@ -606,13 +606,13 @@ impl TrackingRuntime {
             }
             self.ready_sample_ms = Some(sample.sampled_at_ms());
         }
-        self.tracking_command(
+        self.lifecycle.tracking_command(
             run,
             CommandEnvelope {
                 command,
                 valid_until_ms: now.saturating_add(MOVEMENT_LEASE_MS),
             },
-            observation,
+            now,
         );
     }
 
@@ -695,23 +695,9 @@ impl TrackingRuntime {
     /// between output deadlines; never block the physical output task on it.
     /// At a scheduled launch the actuator snapshot must be serviced at that
     /// exact millisecond. A missed launch is discarded, never applied late.
-    pub fn reacquisition_command(
-        &mut self,
-        run: RunToken,
-        feedback: FeedbackSnapshot,
-        actuator: &Actuator,
-        observation: RuntimeObservation,
-    ) -> bool {
-        if self
-            .observe_tracking(run, feedback, actuator, observation)
-            .is_err()
-            || self.lifecycle.snapshot().run != Some(run)
-            || self.lifecycle.snapshot().phase != TrackingPhase::Reacquiring
-        {
-            return false;
-        }
+    fn reacquisition_command(&mut self, actuator: &Actuator, observation: RuntimeObservation) {
         let Some(recovery) = self.recovery.as_mut() else {
-            return false;
+            return;
         };
         let now = observation.now_ms;
         let bound = self.lifecycle.bound_plan().unwrap();
@@ -769,7 +755,7 @@ impl TrackingRuntime {
                     .min(recovery.status.episode.deadline_ms()),
             },
             now,
-        )
+        );
     }
     fn check_inputs(&mut self, observation: RuntimeObservation) -> Result<(), LifecycleError> {
         let now = observation.now_ms;
@@ -844,15 +830,6 @@ impl TrackingRuntime {
         }
         Ok(())
     }
-    /// Readiness is a measured executor result, never browser intent.
-    pub fn preparation_ready(
-        &mut self,
-        run: RunToken,
-        observation: RuntimeObservation,
-    ) -> Result<bool, LifecycleError> {
-        self.service(observation)?;
-        self.lifecycle.preparation_ready(run, observation.now_ms)
-    }
     /// Fresh manual intent still passes through the same lease and output gate.
     pub fn manual_command(
         &mut self,
@@ -865,18 +842,6 @@ impl TrackingRuntime {
             && self
                 .lifecycle
                 .manual_command(token, command, observation.now_ms)
-    }
-    /// Every executor refresh checks frozen source/clock/network validity.
-    pub fn tracking_command(
-        &mut self,
-        run: RunToken,
-        command: CommandEnvelope,
-        observation: RuntimeObservation,
-    ) -> bool {
-        self.service(observation).is_ok()
-            && self
-                .lifecycle
-                .tracking_command(run, command, observation.now_ms)
     }
     /// Recheck current observations before the sole output task drains a command.
     pub fn take_command(&mut self, observation: RuntimeObservation) -> Option<CommandEnvelope> {

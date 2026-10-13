@@ -1023,7 +1023,7 @@ explicitly partial reception before arming, as described below.
 
 Firmware integration must publish feedback/motion health before issuing or
 draining commands, including during preparation. `observe_tracking` supervises
-following; `reacquisition_command` generates recovery commands; the independently
+following; `execution_command` generates recovery commands; the independently
 yielding worker calls `step_reacquisition`. A validated launch must be generated
 and drained at its scheduled millisecond, and subsequent recovery control must
 meet the frozen cadence (currently at most 20 ms). Late work holds/retries;

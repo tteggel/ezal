@@ -9,9 +9,9 @@ use common::{
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
 use ezal_core::catalog::{Catalog, OrbitalDownload, SourceOrder};
-use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
+use ezal_core::drive::{Command, CommandEnvelope};
 use ezal_core::duty::{DutyConfig, DutyHistory};
-use ezal_core::feedback::{FeedbackSample, FeedbackSnapshot};
+use ezal_core::feedback::{FeedbackHealth, FeedbackSample, FeedbackSnapshot};
 use ezal_core::http;
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::network::NetworkGate;
@@ -199,23 +199,55 @@ fn armed() -> (TrackingRuntime, OperatorToken, u64) {
 }
 fn following() -> (TrackingRuntime, RunToken) {
     let (mut runtime, _, prep) = armed();
-    runtime.service(observation(prep)).unwrap();
-    let run = runtime.snapshot().run.unwrap();
-    assert!(runtime
-        .preparation_ready(run, observation(prep + 2000))
-        .unwrap());
-    runtime.service(observation(AOS)).unwrap();
-    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
+    let run = follow(&mut runtime, prep);
     (runtime, run)
 }
-fn command(at: u64) -> CommandEnvelope {
-    CommandEnvelope {
-        command: Command::Drive(DriveCommand {
-            azimuth: Some(AzimuthDirection::Clockwise),
-            elevation: None,
-        }),
-        valid_until_ms: at + 500,
+/// Freeze at `prep`, then run the device's execution turn every control step
+/// for the last four seconds before AOS, with a rested actuator and fresh
+/// feedback at the route's first point. Measured readiness hands over to
+/// Following at AOS; the command generated there stays queued.
+fn follow(runtime: &mut TrackingRuntime, prep: u64) -> RunToken {
+    runtime.service(observation(prep)).unwrap();
+    let run = runtime.snapshot().run.unwrap();
+    let plan = runtime.bound_plan().unwrap().plan();
+    let pose = plan.route.pointing_at(0).unwrap();
+    let mut actuator = Actuator::with_config(plan.actuator, DutyHistory::Known([0, 0]));
+    let step = plan.config.step_ms as usize;
+    assert!(prep <= AOS - 4000);
+    for at in (AOS - 4000..=AOS).step_by(step) {
+        let sample = full_travel_sample(pose, at);
+        let mut interlock = FeedbackInterlock::new(full_travel_installed());
+        interlock.publish(Some(sample));
+        let obs = observation(at);
+        actuator.step(
+            ActuatorInput {
+                interlock,
+                network: obs.network,
+                command: None,
+            },
+            at,
+        );
+        runtime.take_command(obs);
+        runtime.execution_command(healthy(sample), &actuator, obs);
     }
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
+    run
+}
+fn healthy(sample: FeedbackSample) -> FeedbackSnapshot {
+    FeedbackSnapshot {
+        raw: None,
+        last_valid: Some(sample),
+        health: FeedbackHealth::Healthy,
+    }
+}
+fn is_drive(command: Option<CommandEnvelope>) -> bool {
+    matches!(
+        command,
+        Some(CommandEnvelope {
+            command: Command::Drive(_),
+            ..
+        })
+    )
 }
 
 #[test]
@@ -417,21 +449,16 @@ fn early_selection_allows_refreshes_but_old_clock_cannot_freeze_hours_later() {
 fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unchanged() {
     let (mut runtime, token, prep) = armed();
     assert!(runtime.release(token, observation(2001)).unwrap());
-    runtime.service(observation(prep)).unwrap();
-    let run = runtime.snapshot().run.unwrap();
+    follow(&mut runtime, prep);
     let anchor = runtime.bound_plan().unwrap().inputs().clock().anchor();
-    runtime
-        .preparation_ready(run, observation(prep + 2000))
-        .unwrap();
-    runtime.service(observation(AOS)).unwrap();
     let pointing = runtime
         .bound_plan()
         .unwrap()
         .inputs()
-        .look_at_uptime(AOS + 100);
-    let mut obs = observation(AOS + 100);
+        .look_at_uptime(AOS + 10);
+    let mut obs = observation(AOS + 10);
     obs.clock
-        .synchronize(AOS + 100, sample(UTC + AOS + 100 - 2000 + 100))
+        .synchronize(AOS + 10, sample(UTC + AOS + 10 - 2000 + 100))
         .unwrap();
     runtime
         .refresh(
@@ -453,7 +480,7 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
             .bound_plan()
             .unwrap()
             .inputs()
-            .look_at_uptime(AOS + 100),
+            .look_at_uptime(AOS + 10),
         pointing
     );
     assert_eq!(
@@ -466,8 +493,8 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
             .orbit,
         1
     );
-    assert!(runtime.tracking_command(run, command(obs.now_ms), obs));
-    assert_eq!(runtime.take_command(obs), Some(command(obs.now_ms)));
+    assert!(is_drive(runtime.take_command(obs)));
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
     // The network supervisor continues its 100 ms observations while the
     // tracking test jumps to LOS; a gap in that supervision would be an outage.
     obs = RuntimeObservation {
@@ -542,9 +569,8 @@ fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacemen
 #[test]
 fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
     for correction in [-1000i64, 1000] {
-        let (mut runtime, run) = following();
-        let now = AOS + 100;
-        assert!(runtime.tracking_command(run, command(now), observation(now)));
+        let (mut runtime, _) = following();
+        let now = AOS + 10;
         let mut obs = observation(now);
         obs.clock
             .synchronize(
@@ -557,7 +583,7 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
             runtime.snapshot().termination.unwrap().reason,
             TrackingStop::Inputs(InputError::Timing(TimingError::Correction))
         );
-        assert!(!runtime.tracking_command(run, command(now + 1), observation(now + 1)));
+        assert_eq!(runtime.take_command(observation(now + 1)), None);
         assert_eq!(runtime.snapshot().mode, TrackingMode::Manual);
     }
 }
@@ -565,8 +591,7 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
 #[test]
 fn device_outage_expired_network_observation_and_recovered_generation_stop_the_run() {
     for recovered in [false, true] {
-        let (mut runtime, run) = following();
-        assert!(runtime.tracking_command(run, command(AOS + 1), observation(AOS + 1)));
+        let (mut runtime, _) = following();
         let mut obs = observation(AOS + 1);
         obs.network.observe(AOS + 2, false);
         if recovered {
@@ -578,7 +603,7 @@ fn device_outage_expired_network_observation_and_recovered_generation_stop_the_r
             runtime.snapshot().termination.unwrap().reason,
             TrackingStop::NetworkUnavailable
         );
-        assert!(!runtime.tracking_command(run, command(AOS + 4), observation(AOS + 4)));
+        assert_eq!(runtime.take_command(observation(AOS + 4)), None);
     }
     let (mut runtime, _) = following();
     let mut expired = observation(AOS);
@@ -663,17 +688,20 @@ fn installation_changes_and_backwards_uptime_inhibit_frozen_work() {
         runtime.take_command(observation(AOS + 1)),
         Some(CommandEnvelope::INHIBIT)
     );
-    let (mut runtime, run) = following();
-    assert!(runtime.tracking_command(run, command(AOS + 100), observation(AOS + 100)));
+    let (mut runtime, _) = following();
+    assert!(is_drive(runtime.take_command(observation(AOS + 10))));
     assert_eq!(
-        runtime.take_command(observation(AOS + 99)),
+        runtime.take_command(observation(AOS + 9)),
         Some(CommandEnvelope::INHIBIT)
     );
     assert_eq!(
         runtime.snapshot().termination.unwrap().reason,
         TrackingStop::ClockOrCounter
     );
-    assert!(!runtime.tracking_command(run, command(AOS + 200), observation(AOS + 200)));
+    assert_eq!(
+        runtime.take_command(observation(AOS + 20)),
+        Some(CommandEnvelope::INHIBIT)
+    );
 }
 
 #[test]
@@ -747,16 +775,16 @@ fn runtime_cancel_at_preparation_prevents_a_freeze_and_stale_clock_publications_
         runtime.take_command(observation(prep)),
         Some(CommandEnvelope::INHIBIT)
     );
-    let (mut runtime, run) = following();
-    let mut updated = observation(AOS + 100);
+    let (mut runtime, _) = following();
+    let mut updated = observation(AOS + 10);
     updated
         .clock
-        .synchronize(AOS + 100, sample(UTC + AOS + 100 - 2000))
+        .synchronize(AOS + 10, sample(UTC + AOS + 10 - 2000))
         .unwrap();
     runtime.service(updated).unwrap();
-    assert!(runtime.tracking_command(run, command(AOS + 100), updated));
+    assert!(is_drive(runtime.take_command(updated)));
     assert_eq!(
-        runtime.take_command(observation(AOS + 101)),
+        runtime.take_command(observation(AOS + 11)),
         Some(CommandEnvelope::INHIBIT)
     );
     assert_eq!(
