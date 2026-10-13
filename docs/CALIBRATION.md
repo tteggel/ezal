@@ -39,32 +39,34 @@ motor power. Never use software as the only protection against an unverified
 end stop. Start with the Pico disconnected from the four direction inputs and
 confirm that all direction GPIOs are low during reset.
 
-The firmware boots with all direction outputs idle and unknown prior motor duty.
-It requires 15 minutes of continuous rest before permitting jogging; the
-dashboard shows the remaining rest separately for each axis. Build and flash it for
-manual calibration:
+The firmware boots with all direction outputs idle and unknown prior motor
+duty. It requires a full
+[duty rest](CONTROL_CONTRACT.md#ownership-and-recovery) before permitting
+jogging; the dashboard shows the remaining rest separately for each axis. Build
+and flash it for manual calibration:
 
 ```bash
 cargo run -p ezal-firmware --release
 ```
 
-The dashboard's buttons are leased controls. A held
-button refreshes its command every 150 ms. Releasing or reversing a held
-button, lease expiry at 750 ms, an operator stop, and feedback faults bypass
-the relay minimum-on timer; the 2-second minimum-off interval still applies
-before reactivation. An output only starts when its lease covers the 500 ms
-minimum on-time, so a stalled network cannot produce a brief relay click.
-Electrical output removal does not stop mechanical coasting instantly.
-The endpoint gate reserves one ADC code, travel since the feedback read began,
-and an assumed 500 ms of release/coast at 7°/s azimuth and 3°/s elevation.
-It therefore stops short of the calibrated endpoint; use the front-panel
-procedure below to measure the full permitted range.
+The dashboard's buttons are leased controls under the
+[control contract](CONTROL_CONTRACT.md#ownership-and-recovery). A held button
+refreshes its command every 150 ms. Releasing or reversing a held button, lease
+expiry, an operator stop, and feedback faults bypass the relay minimum on-time;
+the minimum off-time still applies before reactivation. An output only starts
+when its lease covers the minimum on-time, so a stalled network cannot produce
+a brief relay click. Electrical output removal does not stop mechanical coasting
+instantly. The endpoint gate reserves one ADC code, travel since the feedback
+read began, and the assumed release/coast of `TravelProfile::DEFAULT`. It
+therefore stops short of the calibrated endpoint; use the front-panel procedure
+below to measure the full permitted range.
 
 Movement also requires a working station link and DHCP address. Network loss
-cuts motion; reconnecting requires ownership and fresh manual input.
-A browser hold also expires after one second without fresh
-application telemetry. Expiring server tokens prevent delayed commands from
-receiving a new unrestricted lease when they eventually arrive.
+cuts motion; reconnecting requires ownership and fresh manual input. A browser
+hold also expires after
+[`COMMAND_MAX_AGE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery) without
+fresh application telemetry. Expiring server tokens prevent delayed commands
+from receiving a new unrestricted lease when they eventually arrive.
 
 Dashboard jogging requires fresh feedback inside the installed calibration.
 The direction buttons stay disabled when the controller reports unusable
@@ -291,34 +293,38 @@ duty specification in [HARDWARE.md](HARDWARE.md#published-specifications).
 ## Motion-supervision commissioning
 
 `ActuatorConfig::DEFAULT` in `crates/ezal-core/src/actuator.rs` combines relay,
-travel, motion and duty settings. `MotionConfig::DEFAULT` starts with a
-five-second budget of accumulated energized time without resolvable progress,
-three calibrated ADC codes to prove movement, and two codes of measurement
-tolerance. `TravelProfile::DEFAULT` uses 7°/s azimuth and 3°/s elevation with
-500 ms release/coast on both axes. The same travel profile governs endpoint
-margins and implausible-speed checks.
+travel, motion and duty settings. `MotionConfig::DEFAULT` starts with the
+[contract's](CONTROL_CONTRACT.md#ownership-and-recovery) budget of accumulated
+energized time without resolvable progress, three calibrated ADC codes to prove
+movement, and two codes of measurement tolerance. `TravelProfile::DEFAULT`
+uses 7°/s azimuth and 3°/s elevation with the contract's release/coast on both
+axes. The same travel profile governs endpoint margins and implausible-speed
+checks.
 
 These are engineering starting points, not measured limits for every
 installation. To install measured settings, pass the complete `ActuatorConfig`
 to `Actuator::with_config` in the firmware output task, retaining
 `DutyHistory::Unknown` at boot. A reversal off-time shorter than coast plus
-the 500 ms maximum feedback age is rejected. `RelayConfig::TRACKING_CANDIDATE`
-offers 500 ms on / 500 ms same-direction off / 1 s reversal off for simulation
-and commissioning; firmware keeps its existing 2 s off-time until verified.
-Select `DutyConfig::CONFIRMED_AC` (300 s) only after identifying the original
-AC hardware. The default is 180 s; both require 900 s continuously idle per axis.
+the maximum feedback age is rejected. `RelayConfig::TRACKING_CANDIDATE` offers
+shorter same-direction and reversal off-times for simulation and
+commissioning; firmware keeps `RelayConfig::DEFAULT` until they are verified.
+Select `DutyConfig::CONFIRMED_AC`, the AC
+[operating specification](HARDWARE.md#published-specifications), only after
+identifying the original AC hardware; the
+[contract](CONTROL_CONTRACT.md#ownership-and-recovery) gives the default
+allowance and the continuous rest that both require.
 
 Idle time pauses the no-progress budget; short jogs and reversals do not reset
 it. Observed coast movement can establish progress, including the first fresh
-observation within 500 ms after the assumed coast ends, and the wrong-direction
-and speed checks apply to that observation too; movement first observed after a
-long idle cannot clear the stalled-motor budget. Same-direction pulse trains
-keep their direction evidence, including expected coast, and speed checks keep
-consecutive and one-second baselines across output changes. An opposite
-direction establishes its baseline after the required reversal hold. Each
-motion fault latches both outputs off until the board is reset after
-investigation; a new command, feedback recovery or network reconnection cannot
-clear it.
+observation within the maximum feedback age after the assumed coast ends, and
+the wrong-direction and speed checks apply to that observation too; movement
+first observed after a long idle cannot clear the stalled-motor budget.
+Same-direction pulse trains keep their direction evidence, including expected
+coast, and speed checks keep consecutive and one-second baselines across output
+changes. An opposite direction establishes its baseline after the required
+reversal hold. Each motion fault latches both outputs off until the board is
+reset after investigation; a new command, feedback recovery or network
+reconnection cannot clear it.
 
 ## Bench verification
 

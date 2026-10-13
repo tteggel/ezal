@@ -161,12 +161,10 @@ measurement procedure, before enabling motor commands.
 Faults, stale feedback, expired movement leases, and released dashboard
 controls inhibit the affected outputs immediately when the actuator task
 handles them — releasing one of two held buttons stops that axis at once.
-A separate 500 ms hardware watchdog resets a stalled or panicked system; after
-such a timeout, boot holds
-outputs low until an explicit reset or power cycle, while a flashing tool's
-reboot through the same watchdog is not mistaken for it. These safeguards still
-require on-board verification of output release and motor stopping behavior. The
-[control contract](docs/CONTROL_CONTRACT.md) describes the
+A separate hardware watchdog resets a stalled or panicked system; after such a
+timeout, boot holds outputs low until an explicit reset or power cycle. These
+safeguards still require on-board verification of output release and motor
+stopping behavior. The [control contract](docs/CONTROL_CONTRACT.md) describes the
 timing rules and their limits.
 
 The dashboard assumes a trusted local network. Controller ownership coordinates

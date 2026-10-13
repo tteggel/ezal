@@ -200,23 +200,24 @@ Movement requires fresh, valid calibrated feedback at the final GPIO boundary.
 Initial calibration uses the G-5500 front-panel controls with the Pico's
 direction leads disconnected; see [CALIBRATION.md](CALIBRATION.md).
 
-The output task arms a 500 ms hardware watchdog, serviced every 100 ms while
-idle and aiming for 10 ms while tracking, with earlier policy deadlines taking
-precedence. It continues counting during a
-debugger halt. A timeout resets the output hardware and boot then inhibits
-motion before ADC or network startup. Inspect the fault before clearing that
-state with a board reset, debugger reset, or power cycle. A UF2 or `picotool`
-reboot also goes through the watchdog; boot distinguishes it from a
-firmware-armed timeout. A freshly flashed board starts idle and waits for
-manual input or explicit tracking arming.
+The output task arms the hardware watchdog and services it on the periods the
+[control contract](CONTROL_CONTRACT.md#ordering-and-time) sets. It continues
+counting during a debugger halt. A timeout resets the output hardware and boot
+then inhibits motion before ADC or network startup; the contract's
+[executor-failure row](CONTROL_CONTRACT.md#ownership-and-recovery) says which
+reboots count as a timeout. Inspect the fault before clearing that state with a
+board reset, debugger reset, or power cycle. A freshly flashed board starts
+idle and waits for manual input or explicit tracking arming.
 
 Network supervision retries association and 30-second DHCP attempts with
 exponential backoff capped at 30 seconds. HTTP acceptors are started without
 waiting for the first address, so a late AP or DHCP recovery exposes the
 dashboard without resetting the board. Successful link/address observations
-renew a 300 ms motion permit every 100 ms; the output task expires that permit
-independently if supervision stalls. Manual control does not require Internet access; tracking needs valid cached
-orbital data and a quantified clock.
+renew a short motion permit,
+[`NETWORK_HEALTH_TIMEOUT_MS`](CONTROL_CONTRACT.md#ownership-and-recovery); the
+output task expires that permit independently if supervision stalls. Manual
+control does not require Internet access; tracking needs valid cached orbital
+data and a quantified clock.
 
 ### Build a UF2 for BOOTSEL flashing
 
@@ -354,10 +355,12 @@ probe-rs gdb --chip RP235x \
 and a debugger is overkill, but breakpoints can save you when you're
 hunting a startup-time issue.
 
-The watchdog remains active during breakpoints once the output task starts;
-the board resets after 500 ms without output service. Disconnect motor power
-for interactive debugging, and expect the next boot to inhibit motion after a
-watchdog timeout. A debugger reset clears that inhibition.
+The watchdog remains active during breakpoints once the output task starts; the
+board resets once
+[`WATCHDOG_TIMEOUT`](CONTROL_CONTRACT.md#ownership-and-recovery) passes without
+output service. Disconnect motor power for interactive debugging, and expect
+the next boot to inhibit motion after a watchdog timeout. A debugger reset
+clears that inhibition.
 
 ## Debugging tips
 

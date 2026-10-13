@@ -6,7 +6,7 @@ tracking use one device owner and physical output boundary. The tracking executo
 and its selection/arming dashboard API are integrated. Board timing and
 installation commissioning remain separate validation.
 
-The [manual control contract](CONTROL_CONTRACT.md) defines the safeguard owner,
+The [control contract](CONTROL_CONTRACT.md) defines the safeguard owner,
 effect, recovery condition and timing boundaries. It is the reference for
 changes to the control path.
 
@@ -109,17 +109,19 @@ integration contract.
 ## Feedback lifecycle
 
 The resource-owning reader timestamps before A0 elevation, then reads A1 azimuth
-under one 500 ms transaction deadline. Cancelling that transaction permanently
-disables reads on that owned bus until reset. An uncancelled I²C error may retry.
+under one transaction deadline,
+[`FEEDBACK_READ_TIMEOUT_MS`](CONTROL_CONTRACT.md#ownership-and-recovery). Cancelling that
+transaction permanently disables reads on that owned bus until reset. An uncancelled I²C error may retry.
 The monitor does not own or reset hardware-resource state.
 
 `InstalledCalibration` checks that the full accepted calibration band is
 observable at the ADC's configured range and supply ceiling. Every raw pair
 still receives rail and range checks. `FeedbackSample` can only be constructed
 through calibrated conversion and retains the original acquisition timestamp.
-A completed read taking more than 150 ms, or a future timestamp, cannot publish
-a usable sample. There is a 100 ms delay after each acquisition, rather than a
-fixed-frequency sampling promise.
+A completed read slower than
+[`FEEDBACK_MAX_LATENCY_MS`](CONTROL_CONTRACT.md#ownership-and-recovery), or a future
+timestamp, cannot publish a usable sample. `FEEDBACK_PERIOD_MS` separates
+acquisitions; there is no fixed-frequency sampling promise.
 
 One publication contains the domain feedback snapshot and the interlock built
 from the same installation. Raw readings and the last valid position remain
@@ -145,7 +147,8 @@ snapshot getters do not expire permission, revoke ownership or consume commands.
 Admission and actuator polling apply time-dependent transitions.
 
 The first connected client receives unclaimed control while networking is ready.
-A viewer cannot displace its five-second exclusive lease. Fresh single-use
+A viewer cannot displace its exclusive lease,
+[`OPERATOR_LEASE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery). Fresh single-use
 WebSocket Ping/Pong challenges renew the original grant; reading telemetry and
 repeated claims do not. Disconnect or expiry inhibits manual movement while an
 armed pass retains device authority. A viewer must claim vacant control explicitly.
@@ -169,7 +172,9 @@ a pending movement replaces its entire envelope, including the original expiry.
 
 Command lifetime and remaining duty must both cover an activation's minimum on-time.
 Feedback and network deadlines independently revoke movement; shortening the
-activation lease to the 300 ms network deadline would prevent every activation.
+activation lease to the network deadline,
+[`NETWORK_HEALTH_TIMEOUT_MS`](CONTROL_CONTRACT.md#ownership-and-recovery), would prevent
+every activation.
 Tracking `Drive` releases an axis it no longer requests after its minimum on-time;
 manual admission produces only operator-held `Jog` or immediate `Inhibit` requests.
 
@@ -177,10 +182,11 @@ Firmware applies and records the first service result before generating a
 tracking command from that coherent actuator snapshot. It then drains with the
 actual current time and applies/records the second result. Every intermediate
 transition reaches GPIOs and both follower histories. Only then does it feed the
-500 ms watchdog. Idle service is every 100 ms; tracking service aims for 10 ms,
-shortened by physical, preparation, intercept and LOS deadlines. The runtime
-inhibits at the next service if normal execution exceeds the plan's 20 ms maximum
-interval; recovery instead discards late work and holds/retries within its episode. Acquisition and GPIO servicing remain
+watchdog. The [contract](CONTROL_CONTRACT.md#ordering-and-time) sets the idle and tracking
+service periods; physical, preparation, intercept and LOS deadlines shorten them.
+The runtime inhibits at the next service if normal execution exceeds the plan's
+maximum interval, [`PlanningConfig::step_ms`](CONTROL_CONTRACT.md#ownership-and-recovery);
+recovery instead discards late work and holds/retries within its episode. Acquisition and GPIO servicing remain
 separate tasks, so a stuck sensor read cannot suspend output supervision.
 
 Motion supervision retains accumulated energized time across short jogs, reversals
@@ -200,7 +206,9 @@ tracking projection and a freshness proof. Tracking includes the selected event,
 revision, lease generation, preview, phase, matched deviation, recovery and final
 summary. It copies no route or orbital source and never propagates while reading.
 The proof is stamped before the state read and socket write, so a slow write
-consumes its one-second lifetime. Encoding uses a fixed 4096-byte buffer; an
+consumes its lifetime,
+[`COMMAND_MAX_AGE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery). Encoding uses a fixed
+4096-byte buffer; an
 encoding failure closes the session and releases ownership explicitly.
 Control acknowledgements carry no proof and never renew telemetry lifetime.
 
@@ -209,7 +217,7 @@ refreshes; combined axes use `cw+up`. Bare movement messages are rejected.
 Tokens are decimal strings to preserve all `u64` values in JavaScript. Admission
 binds proofs to the connection and network generation, checks increasing input
 sequence, and bounds expiry by the earlier of token expiry and receipt plus
-750 ms. Invalid movement abandons held intent and invalidates issued tokens.
+[`MOVEMENT_LEASE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery). Invalid movement abandons held intent and invalidates issued tokens.
 Manual stops need no freshness proof but still require ownership and Manual mode.
 Tracking actions carry a separate intent sequence, the observed lease generation
 and state revision. Select/Arm/Prepare also require the recent telemetry proof;
@@ -258,8 +266,9 @@ The WiFi supervisor owns all retries. A join follows bounded leave/settle cleanu
 the initial join gets 2.75 s, with two prompt timeout retries at 3.5 s. Other
 failures and exhausted prompt retries use 1, 2, 4, …, 30 s backoff. DHCP has a
 30 s deadline. Only a usable link and address reset the retry schedule. Readiness
-is local connectivity, not internet reachability. A 100 ms observation cadence
-renews permission that independently expires after 300 ms at the actuator.
+is local connectivity, not internet reachability. Each observation renews a
+permission that the actuator expires independently; the
+[contract](CONTROL_CONTRACT.md#ownership-and-recovery) gives both periods.
 
 HTTP acceptors are spawned once and survive networking outages. Radio firmware
 initialization precedes supervision; failures involving consumed hardware

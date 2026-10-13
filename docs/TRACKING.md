@@ -24,9 +24,10 @@ or building obstruction are outside this design.
   previews its plan; entering Tracking arms it. There is no queue, no automatic
   next pass and no automatic park move. Selecting a pass never moves the dish.
 - [`TrackingLifecycle`](../crates/ezal-core/src/tracking/lifecycle.rs) owns the
-  Manual/Tracking mode, the five-second exclusive
-  [`OperatorLease`](../crates/ezal-core/src/operator.rs) and the command
-  mailbox. Another connection cannot displace a valid lease. Expiry is
+  Manual/Tracking mode, the exclusive
+  [`OperatorLease`](../crates/ezal-core/src/operator.rs), which lasts
+  [`OPERATOR_LEASE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery), and the
+  command mailbox. Another connection cannot displace a valid lease. Expiry is
   exclusive, so a heartbeat at the deadline cannot resurrect it; reads,
   repeated claims and expired grants never renew it. Only a fresh, single-use
   WebSocket Ping/Pong renews the original grant.
@@ -54,7 +55,8 @@ or building obstruction are outside this design.
 
 Every mutation carries the connection-bound lease generation and a strictly
 increasing, nonzero request number. Select, Arm and Prepare now also carry the
-current state revision and a telemetry proof younger than one second, and
+current state revision and a telemetry proof younger than
+[`COMMAND_MAX_AGE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery), and
 Select must name a row the device currently offers. Cancel and Manual ignore
 the revision and the proof's age, so automatic replanning or a stale view
 cannot prevent a stop, but they still require the current lease and request
@@ -101,13 +103,15 @@ feedback before another correction. The scenarios share the
 [provisional motor profile](HARDWARE.md#provisional-tracking-profile); they do
 not cover every intermediate combination or prove hardware performance.
 
-Checks are at most 20 ms apart, with earlier output and acquisition deadlines
-and exact AOS/LOS boundaries. Between checks the error is bounded using the
-axis-rate vector and an assumed sky-rate bound of 2°/s, plus a 0.002°
-numerical allowance. An observed violation of the sky-rate bound rejects the
-job; an unobserved one remains outside the guarantee. Among supported routes
-the planner prefers the smaller bounded peak error, then fewer reversals, fewer
-output transitions and a shorter preparation.
+Checks are at most
+[`PlanningConfig::step_ms`](CONTROL_CONTRACT.md#ownership-and-recovery) apart,
+with earlier output and acquisition deadlines and exact AOS/LOS boundaries.
+Between checks the error is bounded using the axis-rate vector and an assumed
+sky-rate bound of 2°/s, plus a 0.002° numerical allowance. An observed
+violation of the sky-rate bound rejects the job; an unobserved one remains
+outside the guarantee. Among supported routes the planner prefers the smaller
+bounded peak error, then fewer reversals, fewer output transitions and a
+shorter preparation.
 
 Support requires every scenario to complete through final coast. Any interval
 not established within the pointing budget is a predicted gap; the report keeps
@@ -218,10 +222,11 @@ cancellation and faults end with an explicit terminal reason.
 At LOS, and after a cancellation, the dish stays where it stops, allowing for
 normal mechanical coast. The mailbox keeps inhibition ahead of refreshes.
 Execution commands are bound to the current run and keep their original source
-deadline of at most 750 ms; LOS and cancellation are checked again on drain.
-The production actuator remains responsible for feedback, network, motion,
-relay and duty constraints, so a change of command source never resets
-physical accounting.
+deadline of at most
+[`MOVEMENT_LEASE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery); LOS and
+cancellation are checked again on drain. The production actuator remains
+responsible for feedback, network, motion, relay and duty constraints, so a
+change of command source never resets physical accounting.
 
 ## Execution inputs
 
@@ -377,15 +382,17 @@ permissions, services and applies the actuator, generates a tracking command
 from that coherent snapshot (`execution_command` produces both following and
 recovery commands), then drains again with the actual current time. Every
 intermediate output transition reaches the GPIOs and the active follower's
-history, and only then is the watchdog fed. Idle service is every 100 ms;
-armed and live tracking aim for 10 ms, shortened by relay, feedback, network,
-preparation, recovery-launch and LOS deadlines. A recovery launch is generated
-and drained at its scheduled millisecond. If normal following misses the
-plan's 20 ms maximum interval the run stops with `ExecutionDeadline`, and a
-stale command cannot start a pending relay on drain; recovery instead discards
-late work and holds or retries within its episode. A stalled executor cannot
-cut output until it resumes or the 500 ms watchdog resets the board, so 20 ms
-is an execution requirement, not a physical release guarantee.
+history, and only then is the watchdog fed. The
+[contract](CONTROL_CONTRACT.md#ordering-and-time) sets the idle and tracking
+service periods; relay, feedback, network, preparation, recovery-launch and LOS
+deadlines shorten them. A recovery launch is generated and drained at its
+scheduled millisecond. If normal following misses the plan's maximum interval,
+[`PlanningConfig::step_ms`](CONTROL_CONTRACT.md#ownership-and-recovery), the
+run stops with `ExecutionDeadline`, and a stale command cannot start a pending
+relay on drain; recovery instead discards late work and holds or retries within
+its episode. A stalled executor cannot cut output until it resumes or the
+watchdog resets the board, so that interval is an execution requirement, not a
+physical release guarantee.
 
 The separate `tracking` task owns a statically bounded preview planner and
 steps preview and recovery work (`step_reacquisition`) cooperatively, yielding
