@@ -28,7 +28,7 @@ impl Default for TimingPolicy {
 /// Why orbital time cannot authorize a tracking run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimingError {
-    /// No quantified sample, or the live clock was invalidated.
+    /// No synchronized sample, or the live clock was disarmed.
     Unavailable,
     /// Sample age reaches the exclusive limit before the required end.
     Expired,
@@ -169,8 +169,7 @@ impl ExecutionClock {
     /// Exclusive deadline for admitting this preview's sample. Future
     /// execution still requires a complete-horizon check at preparation.
     pub fn admission_deadline_ms(self) -> Result<u64, TimingError> {
-        let sample = self.anchor.sample().ok_or(TimingError::Unavailable)?;
-        let remaining = self.allowance_ms - sample.uncertainty_ms() as f64;
+        let remaining = self.allowance_ms - self.anchor.sample().uncertainty_ms() as f64;
         if !remaining.is_finite() || remaining < 0.0 {
             return Err(TimingError::Uncertainty);
         }
@@ -201,7 +200,7 @@ impl ExecutionClock {
         if age >= self.policy.max_sample_age_ms {
             return Err(TimingError::Expired);
         }
-        let sample = anchor.sample().ok_or(TimingError::Unavailable)?;
+        let sample = anchor.sample();
         if sample.leap_pending() {
             return Err(TimingError::LeapPending);
         }

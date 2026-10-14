@@ -2,7 +2,7 @@
 //! Transport supplies a nonzero connection identity and authenticates its use.
 //! A lease is ownership/freshness policy, not an authentication credential.
 
-/// Provisional browser ownership lifetime; heartbeat transport is added with the UI.
+/// Browser ownership lifetime, renewed by fresh device-issued Ping/Pong challenges.
 pub const OPERATOR_LEASE_MS: u64 = 5_000;
 
 /// A grant bound to both its connection and a never-reused generation.

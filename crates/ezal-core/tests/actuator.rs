@@ -301,18 +301,22 @@ fn coordinated() -> (CoordinationState, Actuator, u32) {
     let mut state = CoordinationState::new();
     state.publish_network(true, 0);
     let owner = state.register_client(0);
+    assert_eq!(
+        state.take_actuator_input(0).command,
+        Some(CommandEnvelope::INHIBIT)
+    );
     let mut monitor = FeedbackMonitor::new(TEST_CALIBRATION, None);
     let voltages = TEST_CALIBRATION
         .position_to_feedback(Pointing::new(180.0, 45.0))
         .unwrap();
     let update = monitor.update(0, 0, Ok(voltages));
-    state.publish_feedback(update.snapshot, update.interlock);
+    state.publish_feedback(update.snapshot, update.interlock, 0);
     (state, common::rested_actuator(), owner)
 }
 
 fn consume(state: &mut CoordinationState, actuator: &mut Actuator, now_ms: u64) -> ActuatorUpdate {
     let update = actuator.step(state.take_actuator_input(now_ms), now_ms);
-    state.record_actuator(update.output, update.status);
+    state.record_actuator(actuator, now_ms);
     update
 }
 
@@ -322,6 +326,8 @@ fn ownership_and_network_changes_preserve_duty_and_publish_it_to_every_viewer() 
     assert!(state.accept_command(owner, command(MOVE, 0), 0));
     consume(&mut state, &mut actuator, 0);
     let viewer = state.register_client(100);
+    assert!(!state.take_control(viewer, 100));
+    assert!(state.release_client(owner, 100));
     assert!(state.take_control(viewer, 100));
     let stopped = consume(&mut state, &mut actuator, 100);
     assert_eq!(stopped.output, DriveCommand::IDLE);

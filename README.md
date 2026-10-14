@@ -3,18 +3,20 @@
 > A satellite-tracking antenna rotator controller, written in Rust for the
 > Raspberry Pi Pico 2 W.
 
-**Status: manual hardware control with advisory pass prediction.** The firmware
+**Status: manual control and device-owned single-pass tracking implemented;
+hardware tracking validation pending.** The firmware
 boots with all direction outputs idle, POSTs the real ADS1015, and waits for
-WiFi and DHCP. Movement requires explicit dashboard input, current calibrated
+WiFi and DHCP. Movement requires manual input or an explicitly armed pass, current calibrated
 feedback, and network permission. Movement leases, relay timing, endpoint
 checks, and motion supervision guard the physical GPIO outputs.
 
 The firmware also synchronizes UTC with NTP, downloads weather-satellite
 TLEs, and predicts the next six hours of L-band HRPT reception windows on the
 dashboard. The default station is **All Saints Church, Clevedon**. Prediction
-is advisory; selecting or automatically tracking a real orbital pass is not
-implemented yet. See [pass prediction](docs/PASS_PREDICTION.md) for station
-settings, satellite coverage, acquisition/loss thresholds, and limitations.
+alone is advisory. The dashboard can select one pass, preview feasibility and
+explicitly arm it for device-owned tracking. See
+[pass prediction](docs/PASS_PREDICTION.md) for station settings, satellite coverage,
+acquisition/loss thresholds, and limitations.
 
 ## What this project will be
 
@@ -23,7 +25,9 @@ az/el rotator to track a low-earth-orbit (LEO) satellite as it passes
 overhead. The pure core now computes satellite az/el and reception windows
 from TLEs using SGP4. Manual control drives the G-5500's direction inputs
 through transistor switches and reads calibrated position feedback via an
-Adafruit ADS1015 I²C ADC. Automatic target following remains future work.
+Adafruit ADS1015 I²C ADC. The device executor and dashboard arming are integrated;
+full-pass host acceptance is complete. Board timing checks and installation
+commissioning remain before routine automatic tracking.
 See [HARDWARE.md](docs/HARDWARE.md) and the [design/](design/) folder for the
 interface details and schematic.
 
@@ -66,7 +70,7 @@ embedded Rust.
 │   │       ├── dashboard.rs       # browser asset and shared timing configuration
 │   │       └── drive.rs           # vocabulary and private relay timing
 │   └── ezal-firmware/              # the on-chip application
-│       ├── build.rs                # stages memory.x; bakes .env creds + station in
+│       ├── build.rs                # memory.x link path; bakes .env creds + station in
 │       ├── memory.x                # linker memory layout
 │       ├── cyw43-firmware/         # vendored CYW43439 radio blobs
 │       └── src/
@@ -74,6 +78,7 @@ embedded Rust.
 │           ├── feedback.rs        # ADC resource ownership and sampling
 │           ├── state.rs           # synchronization and actuator wake hint
 │           ├── drive.rs           # guarded direction GPIOs, watchdog feeding
+│           ├── tracking.rs        # yielding planner/recovery worker + timing diagnostics
 │           ├── watchdog.rs        # independent hardware reset fallback
 │           ├── web.rs             # dashboard, ownership, telemetry, passes
 │           ├── time.rs            # NTP over DNS/UDP
@@ -102,7 +107,7 @@ embedded Rust.
 Prerequisites: [Nix with flakes](https://install.determinate.systems/),
 [direnv](https://direnv.net/), and
 [nix-direnv](https://github.com/nix-community/nix-direnv). The flake
-provides the pinned Rust toolchain, `probe-rs`, `flip-link`, `picotool`,
+provides the pinned Rust toolchain, `probe-rs`, `picotool`,
 and a Python+schemdraw environment so you don't have to install any of
 them yourself. See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for a rustup-
 only path if you'd rather not use Nix.
@@ -118,7 +123,7 @@ direnv allow                        # one-time: load the dev shell
 # One-time: set your WiFi credentials for the station-mode POST.
 cp .env.example .env && $EDITOR .env
 
-# Build/flash manual control firmware and stream defmt logs.
+# Build/flash firmware and stream defmt logs.
 # Complete calibration before commanding the connected rotator.
 cargo run -p ezal-firmware --release
 ```
@@ -141,7 +146,7 @@ inhibited until the station link and a usable DHCP address are available; an
 outage cuts motion and recovery requires ownership and fresh operator input.
 The dashboard shows calibrated position, raw A0/A1 millivolts, feedback health,
 applied drive state, and per-axis motor allowance/rest countdown alongside the
-advisory pass forecast. Unknown duty history on boot requires 15 minutes of
+pass forecast and tracking status. Unknown duty history on boot requires 15 minutes of
 continuous rest before jogging. The default allowance is 180 seconds per axis;
 short pulse gaps and ownership changes do not reset it.
 
@@ -206,10 +211,10 @@ successful check. Manual control requires the dashboard but not internet access.
 | 5    | Calibrated feedback and applied-output dashboard telemetry     | ✅ done  |
 | 6    | NTP time, TLE download, advisory HRPT pass prediction           | ✅ done  |
 | 7    | Persisted calibration + authenticated calibration UI           | planned  |
-| 8    | Validated orbital inputs and frozen execution time             | core done; integration pending |
+| 8    | Validated orbital inputs and frozen execution time             | integrated |
 | 9    | Single-pass tracking, over-the-top planning and reacquisition   | in progress |
 
-The firmware propagates current TLEs only to list upcoming passes. The
+The firmware lists passes and now services a browser-independent tracking executor. The
 [tracking design](docs/PASS_PREDICTION.md#planned-tracking) specifies controller
 ownership, automatic updates before preparation, local execution, visible
 deviation and reacquisition. The [planning milestone](docs/PASS_PREDICTION.md#current-planning-milestone)
@@ -223,8 +228,16 @@ uncertainty through LOS, and stops on device network loss. HTTP orbital download
 are an explicit installation decision. The
 [recovery core](docs/PASS_PREDICTION.md#current-reacquisition-milestone) adds
 timestamp-matched deviation, bounded future intercepts and final pass summaries.
-Partial-pass admission, firmware/UI integration and commissioning remain future work.
-Predictions never authorize movement in the current firmware.
+Validated partial-pass admission and firmware execution are integrated. The
+[firmware milestone](docs/PASS_PREDICTION.md#independent-firmware-execution-t7)
+records host validation, Pico memory checks and remaining board measurements.
+The [tracking dashboard and API](docs/PASS_PREDICTION.md#tracking-api-and-dashboard-t8)
+provide selection, full/partial feasibility, scheduled preparation, Prepare now,
+Cancel and Return to Manual. Tracking continues without a browser; live deviation,
+recovery and final metrics remain visible to viewers.
+[T9 host acceptance](docs/PASS_PREDICTION.md#complete-pass-acceptance-t9) covers full
+passes, rejection and interruption, and records prediction/actual recovery variance.
+T10 commissioning and T7 board timing/watchdog checks remain.
 
 ## License
 

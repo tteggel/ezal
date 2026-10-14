@@ -1,4 +1,4 @@
-//! Tracking planning, lifecycle and simulation; not connected to firmware movement.
+//! Device-owned tracking planning, execution, lifecycle and simulation.
 //!
 //! Continuous mechanical coordinates are distinct from sky bearings. A route
 //! planner must choose those coordinates before the following controller runs.
@@ -7,9 +7,11 @@
 //! are development diagnostics, not permission to track a pass on hardware.
 //! [`TrackingSession`] binds a single selected event, revisioned plans and
 //! executor generations to an exclusive operator lease. It owns frozen input
-//! snapshots independently of browser connections; firmware integration is separate.
+//! snapshots independently of browser connections.
 //! [`TrackingRuntime`] adds validated input publication and execution gating;
-//! firmware must use it to supervise the frozen timeline and device network.
+//! firmware uses it to supervise the frozen timeline and device network through
+//! the same coordination/actuator boundary as manual commands. The dashboard
+//! exposes leased selection/arming and a bounded read-only status projection.
 
 mod clock;
 mod controller;

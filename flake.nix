@@ -11,7 +11,6 @@
 #   * Rust toolchain (channel, components, targets all read straight from
 #     `rust-toolchain.toml` so there is one source of truth)
 #   * probe-rs       — flashes the Pico 2 and streams defmt logs
-#   * flip-link      — optional linker wrapper for stack-overflow trapping
 #   * picotool       — optional, for UF2 / BOOTSEL flashing
 #   * Node.js        — executes the dashboard behavior tests without npm
 #   * Python 3 + schemdraw + matplotlib — for re-rendering design/circuit.py
@@ -85,12 +84,6 @@
             # and `cargo-embed` if you want them.
             probe-rs-tools
 
-            # flip-link: inverts the stack-pointer to trap overflows
-            # with an MPU fault instead of corrupting BSS. Off by
-            # default in .cargo/config.toml; uncomment the `linker =`
-            # line there to enable it when you need it.
-            flip-link
-
             # picotool: drag-and-drop UF2 flashing path; only used
             # when you don't have a debug probe handy.
             picotool
@@ -141,7 +134,7 @@
         # packaging. mkShell pulls in a host C toolchain automatically,
         # which is all the host-side ezal-core tests need to link.
         #
-        # Deliberately omits probe-rs, flip-link, Node.js, and the
+        # Deliberately omits probe-rs, Node.js, and the
         # python/matplotlib stack from the default shell: CI's Rust jobs
         # never flash hardware, run the dashboard tests, or re-render the
         # schematic, and those closures would slow every run. `ci.yml`

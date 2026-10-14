@@ -7,8 +7,10 @@
 //! watchdog. Its wait is bounded by the next policy deadline and a fixed
 //! service period.
 
-use embassy_rp::gpio::Output;
+use embassy_rp::gpio::{Level, Output};
+use embassy_rp::peripherals::{PIN_10, PIN_11, PIN_20, PIN_21};
 use embassy_rp::watchdog::Watchdog;
+use embassy_rp::Peri;
 use embassy_time::{with_deadline, Duration, Instant};
 
 use ezal_core::actuator::Actuator;
@@ -20,6 +22,9 @@ use crate::state::SharedState;
 /// re-checks feedback and feeds the watchdog, so it must stay well inside
 /// [`crate::watchdog::WATCHDOG_TIMEOUT`].
 const SERVICE_PERIOD: Duration = Duration::from_millis(100);
+// Ten milliseconds leaves scheduling headroom inside the evaluated 20 ms
+// maximum interval. Fixed preparation/intercept/LOS deadlines shorten it.
+const TRACKING_PERIOD: Duration = Duration::from_millis(10);
 
 /// The four GPIO outputs that drive the G-5500 direction switch transistors.
 pub struct DirectionOutputs {
@@ -31,19 +36,29 @@ pub struct DirectionOutputs {
 }
 
 impl DirectionOutputs {
-    /// Wrap the four idle-low direction GPIOs, ordered CW, CCW, UP, DOWN to
-    /// match the schematic. Starts with no axis energised.
+    /// Claim the four direction GPIOs, driven low so no axis is energised.
+    /// The schematic fixes the wiring:
+    ///
+    /// | role        | GPIO | DIN   | LED |
+    /// |-------------|------|-------|-----|
+    /// | CW (right)  | GP10 | DIN 2 | D1  |
+    /// | CCW (left)  | GP11 | DIN 4 | D2  |
+    /// | UP          | GP20 | DIN 3 | D3  |
+    /// | DOWN        | GP21 | DIN 5 | D4  |
+    ///
+    /// Their distinct peripheral types mean the compiler rejects a mis-wired
+    /// call, so the positional arguments are safe.
     pub fn new(
-        cw: Output<'static>,
-        ccw: Output<'static>,
-        up: Output<'static>,
-        down: Output<'static>,
+        cw: Peri<'static, PIN_10>,
+        ccw: Peri<'static, PIN_11>,
+        up: Peri<'static, PIN_20>,
+        down: Peri<'static, PIN_21>,
     ) -> Self {
         Self {
-            cw,
-            ccw,
-            up,
-            down,
+            cw: Output::new(cw, Level::Low),
+            ccw: Output::new(ccw, Level::Low),
+            up: Output::new(up, Level::Low),
+            down: Output::new(down, Level::Low),
             applied: DriveCommand::IDLE,
         }
     }
@@ -100,16 +115,37 @@ pub async fn direction_task(
 ) -> ! {
     outputs.stop();
     let mut actuator = Actuator::new();
-    state.record_actuator(actuator.actual(), actuator.status());
+    state.record_actuator(&actuator, Instant::now().as_millis());
     crate::watchdog::start(&mut watchdog);
     let mut next_service = Instant::now();
+    let mut previous_service = next_service;
+    let mut previous_tracking = false;
 
     loop {
         let now = Instant::now();
         let input = state.take_actuator_input(now.as_millis());
         let update = actuator.step(input, now.as_millis());
         outputs.apply_drive(update.output);
-        state.record_actuator(update.output, update.status);
+        state.record_actuator(&actuator, now.as_millis());
+
+        // The first service applies cancellation, faults and pending relay
+        // transitions. Recovery needs this exact, serviced physical snapshot.
+        // Every intermediate transition really reaches the pins and follower.
+        state.execute_tracking(now.as_millis());
+        let drain = Instant::now();
+        let input = state.take_actuator_input(drain.as_millis());
+        let update = actuator.step(input, drain.as_millis());
+        outputs.apply_drive(update.output);
+        state.record_actuator(&actuator, drain.as_millis());
+
+        let tracking_deadline = state.execution_deadline_ms();
+        crate::tracking::record_control(
+            Instant::now().duration_since(now).as_micros(),
+            now.duration_since(previous_service).as_micros(),
+            previous_tracking,
+        );
+        previous_service = now;
+        previous_tracking = state.with(|s| s.tracking().snapshot().run.is_some());
 
         // Feeding from this loop proves the actuator task ran and serviced the
         // output boundary; a separate heartbeat task could hide a stall here.
@@ -117,11 +153,20 @@ pub async fn direction_task(
 
         // A fixed service schedule, rather than one re-armed from every wake,
         // keeps an idle board at a known small number of passes per second.
+        let period = if tracking_deadline.is_some() {
+            TRACKING_PERIOD
+        } else {
+            SERVICE_PERIOD
+        };
+        next_service = next_service.min(now + period);
         while next_service <= now {
-            next_service += SERVICE_PERIOD;
+            next_service += period;
         }
         let deadline = update
             .next_deadline_ms
+            .into_iter()
+            .chain(tracking_deadline)
+            .min()
             .map(Instant::from_millis)
             .map_or(next_service, |deadline| deadline.min(next_service));
 

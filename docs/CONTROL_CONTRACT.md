@@ -2,7 +2,9 @@
 
 Manual movement is an expiring request. The output boundary decides what may
 be energised using current feedback, operating permission and applied-motion
-history. Orbital forecasts are advisory and never authorize movement.
+history. Forecast rows alone never authorize movement. Explicitly armed tracking
+uses the same output boundary and exclusive operator lease; see
+[the tracking contract](PASS_PREDICTION.md#planned-tracking).
 
 ## Ownership and recovery
 
@@ -13,7 +15,7 @@ history. Orbital forecasts are advisory and never authorize movement.
 | Feedback lifetime, age at most 500 ms | Actuator | Clear forbidden active and pending movement | Fresh feedback and a new movement request |
 | Endpoint margin: quantization, sample-age travel and 500 ms coast | Actuator | Cut outward motion on the affected axis | Inward movement remains available |
 | Session token age, less than 1 s, and increasing input sequence | Manual session | Reject stale/replayed input and abandon held intent | New telemetry token and operator press |
-| Ownership transfer or owner disconnect | Coordination | Revoke previous movement | Explicit ownership and fresh input; old-owner disconnect has no effect |
+| Five-second exclusive operator lease; disconnect/expiry | Coordination through TrackingRuntime | Inhibit manual movement; device-owned tracking continues | Claim vacant control explicitly; fresh Ping/Pong renews only the original valid grant |
 | Network observation age, less than 300 ms | Coordination publishes permission; actuator enforces it | Revoke ownership and clear active and pending movement | New recovery generation and fresh input |
 | Command source deadline and unrefreshed lease, at most 750 ms | Admission stamps; actuator enforces | Clear active and pending movement | A new request, respecting relay off-time |
 | Motion progress, direction and speed | Actuator using applied output | Latch both axes off | Board reset |
@@ -55,10 +57,16 @@ telemetry freshness. Live relay timing remains 500 ms on / 2 s off; the shorter
 candidate policy is available for offline simulation and commissioning.
 
 The ADC task and output task remain separate. Output servicing wakes for state
-changes and the earliest applicable deadline, with a 100 ms periodic service
-limit. Only the output task feeds the 500 ms hardware watchdog, after applying
-the permitted GPIO state. All motion timing uses monotonic uptime; UTC is for
-advisory predictions only.
+changes and the earliest applicable deadline, with 100 ms idle service and
+10 ms tracking service. Tracking commands keep the 750 ms relay-compatible
+lease; a separate 20 ms execution cadence check inhibits stale targets before
+pending activation. A stalled whole executor can only cut output on resumption
+or hardware reset, so this is not a hard 20 ms physical release guarantee. Only the output task feeds the 500 ms hardware watchdog, after applying
+the permitted GPIO state. All relay/command timing uses monotonic uptime; an
+armed pass freezes its validated UTC-to-uptime mapping before execution.
+Every SNTP attempt publishes the clock; reversed uptime or an exhausted
+revision disarms it until reboot, which stops a run with
+`Inputs(Timing(Unavailable))` and blocks preview.
 
 ## Verification
 
@@ -74,3 +82,21 @@ page suspension, and applied-output indicators.
 Host tests do not establish physical output-release or stopping time. The board
 checks in [DEVELOPMENT.md](DEVELOPMENT.md) cover GPIO release, relay timing,
 watchdog reset and mechanical coast.
+
+## Tracking browser admission
+
+Only the current leased connection can select, arm, prepare early, cancel or
+return to Manual. Start/change actions carry a current device observation,
+lease generation, ordered intent number and expected state revision. Selection
+must match a currently offered forecast row. Cancellation tolerates stale
+observations and changing revisions while still enforcing the current lease
+and request order. Browser callbacks never supply trajectory points or motor
+outputs. Manual direction and stop messages are rejected in Tracking mode.
+
+The dashboard waits for acknowledged device state, hides manual controls while
+tracking, and never resends tracking intent after a reconnect. Closing or
+hiding the browser cannot stop device-owned tracking. Viewers get the phase,
+feasibility, timestamp-matched deviation, feedback age, recovery deadline/ETA and
+retained final metrics without renewing any permission. A stale sample is never
+shown as a current error measurement. See the
+[tracking wire contract](PASS_PREDICTION.md#wire-contract) for message fields.

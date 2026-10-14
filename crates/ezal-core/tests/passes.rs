@@ -577,6 +577,11 @@ fn reports_serve_the_whole_window_for_as_long_as_coverage_lasts() {
     );
     assert_eq!(report.status(), Status::Ready);
     assert!(report.passes().contains(&late));
+    assert!(report.offers(ezal_core::tracking::PassEvent::from_pass(late)));
+    assert!(!report.offers(ezal_core::tracking::PassEvent {
+        aos_unix_s: late.aos_unix_s + 1,
+        ..ezal_core::tracking::PassEvent::from_pass(late)
+    }));
     let expected: Vec<_> = forecast
         .passes
         .iter()
@@ -597,6 +602,7 @@ fn reports_serve_the_whole_window_for_as_long_as_coverage_lasts() {
         Some(0),
     );
     assert_eq!(report.status(), Status::Predicting);
+    assert!(!report.offers(ezal_core::tracking::PassEvent::from_pass(late)));
     assert!(report.passes().is_empty());
     assert!(report.to_string().contains("\"valid_until_unix_s\":null"));
 }

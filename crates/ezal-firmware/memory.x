@@ -24,6 +24,8 @@
  * `.start_block` into the first 4 KiB (right after the vector table) and
  * shifts `.text` to begin after it. This mirrors embassy-rp's own
  * `examples/rp235x/memory.x`; without it, a flashed image will not boot.
+ * It lives here, not in a separate script, because `link.x` includes this
+ * file, which lets `INSERT AFTER` anchor to `link.x`'s `.vector_table`.
  */
 
 MEMORY {
@@ -41,15 +43,6 @@ MEMORY {
     RAM   : ORIGIN = 0x20000000, LENGTH = 520K
 }
 
-/* ── RP2350 boot-image placement ───────────────────────────────────────
- *
- * Everything below pins the boot ROM's "block loop" sections into the
- * right places. It has to live here (rather than in a separate script)
- * because cortex-m-rt's `link.x` does an `INCLUDE memory.x`, which gives
- * these `INSERT AFTER` directives the `.vector_table` / `.text` / `.uninit`
- * sections to anchor against. Lifted verbatim (bar sizing) from embassy-rp.
- */
-
 SECTIONS {
     /* ### Boot ROM info
      *
@@ -58,42 +51,24 @@ SECTIONS {
      */
     .start_block : ALIGN(4)
     {
-        __start_block_addr = .;
         KEEP(*(.start_block));
-        KEEP(*(.boot_info));
     } > FLASH
 } INSERT AFTER .vector_table;
 
 /* Move .text to start *after* the boot info, so they don't overlap. */
 _stext = ADDR(.start_block) + SIZEOF(.start_block);
 
-SECTIONS {
-    /* ### Picotool 'Binary Info' entries
-     *
-     * picotool reads this block (the header points at it) for metadata.
-     * Empty today, but kept so `picotool info` works once we add entries.
-     */
-    .bi_entries : ALIGN(4)
-    {
-        __bi_entries_start = .;
-        KEEP(*(.bi_entries));
-        . = ALIGN(4);
-        __bi_entries_end = .;
-    } > FLASH
-} INSERT AFTER .text;
+/* The stack's lowest address, which Reset loads into MSPLIM. MSPLIM ignores
+ * the low three bits of a limit, so `_stack_end` is the first 8-byte boundary
+ * at or past the statics; a 4-byte-aligned limit would let the stack overwrite
+ * the last static word before it faults. This definition overrides
+ * cortex-m-rt's `PROVIDE(_stack_end = .)`.
+ */
+_stack_end = ALIGN(__euninit, 8);
 
-SECTIONS {
-    /* ### Boot ROM extra info
-     *
-     * Goes after everything else so it can hold a signature/hash for a
-     * signed image. Empty for our unsigned secure-exe build.
-     */
-    .end_block : ALIGN(4)
-    {
-        __end_block_addr = .;
-        KEEP(*(.end_block));
-    } > FLASH
-} INSERT AFTER .uninit;
-
-PROVIDE(start_to_end = __end_block_addr - __start_block_addr);
-PROVIDE(end_to_start = __start_block_addr - __end_block_addr);
+/* Reserve room for the shared thread/interrupt stack as the task pools grow.
+ * Planning uses static storage, but report publication still has sizeable
+ * bounded stack frames. This is a capacity check, not a stack high-water test.
+ */
+ASSERT(_stack_start - _stack_end >= 192K,
+       "ezal requires at least 192 KiB for the shared execution/interrupt stack");

@@ -234,7 +234,7 @@ fn candidate_timing_distinguishes_repeated_direction_from_reversal() {
     }
     // Release at an activation deadline always wins, without a brief pulse.
     for release in [
-        Command::Stop,
+        Command::Drive(DriveCommand::IDLE),
         Command::Inhibit,
         Command::Jog(DriveCommand::IDLE),
     ] {

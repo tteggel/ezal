@@ -3,13 +3,14 @@
 The firmware displays a rolling six-hour forecast at `/api/passes` and
 in the dashboard. NTP synchronization starts after DHCP. TLE download waits
 for valid UTC, then the firmware computes SGP4 reception windows independently
-of dashboard connections. These windows are advisory and never authorize
-movement. The firmware boots idle and moves only in response to manual
-dashboard input; real tracking is deferred.
+of dashboard connections. Forecast rows alone never authorize movement. The
+firmware boots idle. T7/T8 integrate device-owned execution and a dashboard for
+selecting, previewing and explicitly arming one pass. Board timing, complete-pass
+acceptance and installation commissioning remain pending.
 
 The [planned tracking behavior](#planned-tracking) below records the agreed
-workflow and provisional commissioning values. It is a design for future
-firmware, separate from the advisory behavior described in the other sections.
+workflow and provisional commissioning values. Milestone sections below
+distinguish implemented policy/integration from remaining acceptance and board validation.
 
 ## Station configuration
 
@@ -657,22 +658,24 @@ commissioning supplies that evidence.
   reception as complete-window support or arm an unsupported diagnostic route.
   Test late arming and planned keyhole gaps. Depends on T3–T6; required before
   completing the agreed partial-pass behavior in T7/T8.
-- [ ] **T7 — Independent firmware execution.** Wire tracking into its own
+- [ ] **T7 — Independent firmware execution.** Software implemented; board
+  validation pending. Wire tracking into its own
   serviced task and the existing output boundary with short internal command
   leases. Keep downloads and incremental planning out of the live control
   task. Check Pico memory, execution time and watchdog behavior with prediction,
   downloads and multiple viewers active. Depends on T2–T6a.
-- [ ] **T8 — Tracking API and dashboard.** Add selection, feasibility preview,
+- [x] **T8 — Tracking API and dashboard.** Add selection, feasibility preview,
   Manual/Tracking mode, scheduled preparation/Prepare now and Cancel. Hide
   manual controls while tracking and reject their commands on the device.
   Show phase, desired/measured pointing, timestamp-matched spherical deviation,
   stale feedback, recovery progress and the final summary. Test owner/viewer
   permissions and reconnects. Depends on T4, T6/T6a and T7.
-- [ ] **T9 — Complete-pass acceptance.** Run recorded and synthetic exact-
-  zenith/near-zenith passes, azimuth wraps, extreme preparation positions,
+- [x] **T9 — Complete-pass acceptance.** Host acceptance complete; see the
+  [results and prediction limits](#complete-pass-acceptance-t9). Ran recorded and
+  synthetic exact-zenith/near-zenith passes, azimuth wraps, extreme preparation positions,
   slow/fast motor profiles, cancellations, faults, duty exhaustion and LOS.
-  Confirm holding the final position, no automatic next pass, and external
-  recording only. Compare the planner's predictions with the execution path.
+  Confirmed holding the final position, no automatic next pass, and external
+  recording only. Compared the planner's predictions with the execution path.
   Depends on T3–T8.
 - [ ] **T10 — Installation commissioning.** Follow [CALIBRATION.md](CALIBRATION.md)
   to identify hardware, calibrate full travel/sky pointing and measure loaded
@@ -786,8 +789,8 @@ physics, noisy/skewed feedback, relay timing and pulse hysteresis.
 post-release coast can prove progress without forgiving stalls, reversed
 feedback or movement first observed after a long idle.
 
-The planner and follower remain offline. The lifecycle below uses their plan
-contract; the dashboard does not yet expose pass selection or execution.
+This milestone established the offline planner/follower contract used by the
+lifecycle below. T7/T8 subsequently integrated execution and the dashboard.
 
 ### Current lifecycle milestone
 
@@ -868,13 +871,10 @@ plan-update/freeze/cancel races, early preparation, manual admission and LOS.
 A test feeds cancellation through the real actuator at a queued activation's
 deadline and verifies that no pulse starts and consumed duty is retained.
 
-This is core policy, not a second live output path. The current firmware still
-uses its manual `CoordinationState` and WebSocket ownership behavior. T7/T8 must
-replace that authority/mailbox path with `TrackingRuntime`, serialize input
-updates and preparation transitions, service deadlines, and bind browser and
-executor requests to their respective generations. In particular, socket
-cleanup must use lease release instead of unconditionally stopping tracking.
-Only the device output task applies GPIOs and feeds the watchdog.
+T7 now embeds this runtime in `CoordinationState`, replacing the separate
+manual authority/mailbox. Socket cleanup releases the operator lease and leaves
+a device-owned run intact. Only the device output task applies GPIOs and feeds
+the watchdog. T8 exposes selection and arming through the browser.
 
 ### Current execution-input milestone
 
@@ -906,8 +906,7 @@ server precision and a rounding allowance. The packet fields follow
 [RFC 5905](https://www.rfc-editor.org/rfc/rfc5905.html#section-7.3).
 It assumes honest time service and bounded local clock drift; SNTP provides no
 cryptographic time authentication. Samples announcing a leap remain usable
-for the advisory display but cannot authorize tracking. The old unquantified
-clock setter also cannot authorize execution.
+for the advisory display but cannot authorize tracking.
 
 [`ExecutionClock`](../crates/ezal-core/src/tracking/clock.rs) reserves an explicit
 share of the planner's existing uncertainty allocation:
@@ -962,7 +961,7 @@ browser-independent execution, network interruption, queued-output inhibition
 and boot disarming.
 
 Firmware now uses the framed catalog publication path and quantified NTP
-samples. Live following/output ownership and UI wiring remain T7/T8 work.
+samples. Following/output ownership is integrated in T7 and UI wiring in T8.
 That integration must publish complete source revisions **before** servicing a
 simultaneous preparation deadline, use `TrackingRuntime` rather than bypassing
 it with the generic lifecycle, and provide current clock/network observations
@@ -973,8 +972,8 @@ same `ExecutionInputs` snapshot that accompanies its completed result.
 
 T6 adds [timestamp-matched deviation](../crates/ezal-core/src/tracking/deviation.rs)
 and a [bounded intercept search](../crates/ezal-core/src/tracking/recovery.rs) to
-the existing `TrackingRuntime`. It remains core policy; firmware still exposes
-only manual movement and advisory predictions.
+the existing `TrackingRuntime`. T7/T8 subsequently connect this core policy to
+firmware execution and the dashboard.
 
 Fresh paired feedback is compared with the frozen ephemeris at the oldest
 channel's acquisition timestamp. The spherical estimate handles azimuth
@@ -1115,7 +1114,265 @@ scenarios: 13.65 s missed and 76.35 s usable in the original 90 s window, with
 a fixed 30 s recovery episode. These are model results, not RF measurements.
 
 Validation: 284 Rust tests (including the doctest), 50 dashboard tests, host and
-Pico Clippy, formatting and the Pico release build. Firmware remains manual
-only until the integration work; no firmware was flashed for this milestone.
+Pico Clippy, formatting and the Pico release build. Firmware was manual-only
+at this milestone; no firmware was flashed.
 
-Next task: **T7 — Independent firmware execution**.
+The following milestone integrates this policy into firmware.
+
+## Independent firmware execution (T7)
+
+The firmware now has one device owner: `CoordinationState` contains
+`TrackingRuntime`, and both manual requests and tracking use its exclusive
+operator lease and sticky command mailbox. The old transferable manual authority
+has been removed. A viewer cannot take an unexpired five-second lease. A
+single-use, one-second WebSocket Ping/Pong challenge renews only the original
+grant; reads, repeated claims, replayed pongs and expired grants cannot renew it.
+Closing the browser releases its lease without stopping an armed pass.
+
+The existing GPIO task services preparation, measured readiness, normal
+following and bounded recovery independently of browsers. It first drains current
+inhibition/permissions, services and physically applies the actuator, then generates
+a tracking command from that coherent snapshot. A second drain uses the actual
+current time. Every intermediate output transition reaches GPIO and follower
+history. Preparation requires two seconds of distinct fresh, settled observations;
+recovery hands its physical pulse/coast history to normal following on success.
+Completion/cancellation hold the final position without parking or another pass.
+
+Idle service remains 100 ms. Armed/live tracking aims for 10 ms, shortened by
+relay, feedback, network, preparation, recovery-launch and LOS deadlines. The
+750 ms internal lease still covers the required 500 ms relay activation. A
+separate cadence gate stops normal tracking if service exceeds the plan's 20 ms
+maximum; stale commands cannot start a pending relay on drain. Recovery discards
+late work and retries within the original episode. A stopped whole executor
+cannot apply a cut until it resumes or the 500 ms hardware watchdog resets it;
+20 ms is an execution requirement, not a demonstrated physical release time.
+Only the GPIO task feeds that watchdog, after both output services.
+
+The new `tracking` task owns a statically bounded preview planner and steps both
+preview and recovery work cooperatively. Each bounded unit yields without an
+artificial millisecond sleep. Downloads yield after every bounded parsing chunk;
+forecasting retains its own cooperative task. Complete forecasts and their exact
+orbital snapshots publish atomically. Clock corrections and changed starting
+pose/duty/history invalidate preview work before it can freeze; fresh ADC
+*timestamps alone* do not restart planning. Installed calibration/motion settings
+remain compile-time revisions. Noisy changing starting positions can prevent a
+stable preview from completing; commissioning must check this with real feedback.
+All shared tracking/forecast users run on the single core-0 thread executor.
+Thread-mode borrows keep interrupts enabled and never span an await or I/O.
+
+The production coordination/execution host tests run real-orbit preparation,
+following and LOS with delayed feedback, eight viewers, incremental forecasts
+and streamed download parsing. They also cover owner-only cancellation, browser
+loss, changed-start/preparation races, stale control/drain inhibition, late
+admission, and recovery-to-following handoff. These establish ordering and
+bounded-work behavior, not Pico execution speed or RF reception.
+
+The Pico release image uses approximately 262 KiB of static RAM, including an
+approximately 82 KiB tracking worker pool and eight web sessions. Removing a
+whole-planner move reduced the worker poll's local stack allocation from about
+200 KiB to 62 KiB. Report publication has another roughly 53 KiB frame;
+`memory.x` now requires at least 192 KiB of free shared stack capacity at link
+time. This is a capacity/assembly check, not a measured stack high-water mark.
+
+A once-per-minute diagnostic reports maximum output service duration, active
+service gap, preview/recovery step times, whole worker poll time, and work count.
+**No firmware was flashed and no board timing or watchdog-release measurement
+was taken for this implementation.** The [board procedure](DEVELOPMENT.md#tracking-execution-load-check)
+must still verify the 20 ms maximum interval, two-second recovery computation
+lead, five-second late-admission lead, stack headroom and physical watchdog
+release under concurrent network/viewer load. T7 remains open for those checks.
+T8 below supplies the tracking API/dashboard and T9 records host acceptance;
+routine hardware tracking still requires T10 commissioning and these board checks.
+
+Software validation: 292 Rust tests (including the doctest), 50 dashboard tests,
+host/Pico Clippy, formatting, build-tool checks and the Pico release build pass.
+The final release has 40,792 bytes of `.data`, 226,756 bytes of `.bss` and
+1,024 bytes of `.uninit`: 268,572 bytes of static RAM and 263,908 bytes remaining
+for the shared stack. The 192 KiB linker reserve passes.
+
+## Tracking API and dashboard (T8)
+
+The dashboard selects exactly one device-offered pass by NORAD and its complete
+AOS/LOS window. Selection stops any held manual input and previews feasibility;
+it does not arm or reposition the dish. **Enter Tracking** explicitly arms the
+supported full or partial plan. The preview identifies the route, modeled error
+bound, provisional pointing allowance, predicted reception/missed intervals and
+UTC preparation time. Partial reception is also named on the arming button.
+
+While Armed, forecasts and input changes automatically replace the preview.
+**Prepare now** requests a separately evaluated earlier schedule. Preparation
+freezes the accepted route and source as before; the UI follows the device phase
+and hides manual controls throughout Tracking mode. The device independently
+rejects manual commands, including the old manual `stop` message. **Cancel
+tracking** or **Return to Manual** uses the current controller's lease to inhibit
+tracking; completion and cancellation hold the final position. A selection is
+retained for inspection, and never automatically rearmed.
+
+All viewers receive the same selection, preview, phase, measured/desired
+pointing at the same ADC sample time, spherical error, uncertainty allowance,
+peak error and observed time outside tolerance. Feedback/sample expiry removes
+the current numeric deviation. Reacquisition shows attempt count, search/hold
+reason, the original episode's remaining time and a predicted intercept ETA;
+a predicted join is explicitly distinguished from measured recovery. The last
+finished run's summary survives subsequent previews and runs. Reception windows
+remain model predictions; receiver lock and recording are external.
+
+Only the currently leased connection can mutate tracking. Disconnect, page
+hiding and telemetry loss never generate an automatic tracking cancellation;
+reconnect restores the device's state and never resends an earlier intent.
+Selection remains visible even if its forecast row disappears or HTTP polling
+fails. A rejected or unacknowledged action is visible, and the operator can
+cancel across changing plan revisions, stale observations or a pending action.
+
+### Wire contract
+
+The existing `/ws` connection carries manual and tracking traffic. `/api/passes`
+now includes each row's `norad_id` as a decimal string. New intent is bounded to
+256 bytes including full-width identities:
+
+```text
+track:<proof>:<lease>:<sequence>:<revision>:select:<norad>:<aos_unix_s>:<los_unix_s>
+track:<proof>:<lease>:<sequence>:<revision>:arm
+track:<proof>:<lease>:<sequence>:<revision>:prepare
+track:<proof>:<lease>:<sequence>:<revision>:cancel
+track:<proof>:<lease>:<sequence>:<revision>:manual
+```
+
+`proof` comes from `telemetry.freshness.token`; `lease` and `revision` come from
+`telemetry.tracking.operator` and `.revision`. All identities remain decimal
+strings in JavaScript; intent sequences use `BigInt`. The server derives the
+connection identity from the socket and checks the live lease generation.
+Select, Arm and Prepare require a still-valid one-second observation and the
+current revision. Select also checks the current device forecast before replacing
+anything. Cancel/Manual ignore observation age and revision but still enforce
+lease ownership and ordered, nonzero sequence numbers. Exact retries within the
+valid admission boundary are idempotent; the dashboard never retries actions
+automatically. Network recovery invalidates prior observation proofs.
+
+A `tracking_result` acknowledgement contains `sequence`, `ok`, `revision` and
+`error`. It carries no freshness proof. The subsequent coherent telemetry frame
+is authoritative for mode, selection and execution state; the browser waits for
+it before admitting further movement. The `tracking` projection includes:
+
+- `revision`, `operator`, `mode`, `phase`, `run` and at most one `selection`;
+- `plan.status`, an explicit blocked `reason`, and a small supported `preview`;
+- `feedback_stale`, `feedback_age_ms`, `deviation`, `recovery`, `termination`
+  and the retained `summary`.
+
+Reception windows and missed intervals are milliseconds relative to their own
+`aos_unix_s`. Recovery times are remaining milliseconds at the device observation.
+Diagnostic reasons are closed Rust enum representations, rendered as text in the
+browser. No browser-provided string is inserted into server JSON or HTML.
+
+The projection copies less than 1 KiB, performs no propagation or transitions,
+and cannot renew a lease. It is captured with feedback/output telemetry under one
+thread-mode borrow, then encoded outside the borrow in a bounded 4096-byte buffer.
+No route or orbital snapshot is copied per web client. Failed encoding closes the
+session; it cannot revoke an independently running tracking execution.
+
+Validation covers wire bounds and fragmentation, full-width identities, owner/
+viewer and expired-generation rejection, stale proof/revision refusal, cancellation,
+forecast-row validation, read-only observations, and reconnect behavior. The
+production execution tests now select and arm through the browser mutation
+boundary. A shared JSON fixture carries actual Armed, Preparing, Following and
+Complete observations into dashboard tests, alongside partial, recovery, stale
+feedback, failure and no-replay cases. No firmware was flashed for T8.
+
+T9 host acceptance is recorded below. T7's board timing, watchdog and stack
+measurements and **T10 — Installation commissioning** remain open; the current
+installed calibration still limits travel to 360°/90°. Follow
+[CALIBRATION.md](CALIBRATION.md) before powered movement or enabling measured
+over-the-top travel.
+
+T8 software validation: **298 Rust tests (including the doctest), 61 dashboard
+tests, host/Pico Clippy, formatting, build-tool checks and the Pico release
+build pass**. The release uses 40,792 bytes of `.data`, 262,788 bytes of `.bss`
+and 1,024 bytes of `.uninit`: 304,604 bytes of static RAM, leaving 227,876 bytes
+for the shared stack. The 192 KiB linker reserve passes. Assembly inspection
+still shows roughly 62 KiB for the tracking worker poll and 53 KiB for plan
+publication; the web task poll has a small local frame with its buffers in the
+task pool. These are capacity checks, not measured board high-water or timing.
+
+### Complete-pass acceptance (T9)
+
+The host acceptance matrix is in
+[`tracking_plan_acceptance.rs`](../crates/ezal-core/tests/common/tracking_plan_acceptance.rs)
+and
+[`tracking_execution_acceptance.rs`](../crates/ezal-core/tests/common/tracking_execution_acceptance.rs).
+It runs automatically with the existing host suite. To print the comparisons:
+
+```bash
+nix develop .#ci --command cargo test --locked -p ezal-core \
+  --target x86_64-unknown-linux-gnu --test planner --test tracking_inputs \
+  acceptance -- --nocapture
+```
+
+Synthetic routes use a separate 10 ms driver around the production follower and
+actuator, with quantized ADC pairs, latency/skew, startup, coast, backlash and
+duty accounting. This driver does not call the planner's `Simulation`. It checks
+the complete route and post-LOS coast against the 20 ms planning results. The
+motor model is shared, so these are independent integration checks under shared
+physical assumptions, not independent evidence for those assumptions.
+
+The recorded run uses the full production coordination/runtime and leased API,
+including actual measured preparation readiness and incremental recovery. It
+checks the fixture's AOS/LOS against the pass search. Its complete 751-second
+window is METOP-B/NORAD 38771 over Clevedon, Unix seconds 1791402086–1791402837,
+using the recorded `weather-2026-10-07.tle` catalog and the normal 5° mask.
+The browser disconnects after arming. ADC pairs arrive with 100 ms latency at
+the firmware's 200 ms pair cadence; output runs every 10 ms.
+
+| Case | Planning result | Independent execution result |
+|---|---|---|
+| Exact zenith, 600 s, nine qualification scenarios | Complete OTT; 1.533° bounded modeled peak | Nominal/slow/fast replay peaks 0.852° / 0.852° / 1.261°; no modeled-budget excursions |
+| Near zenith, 88° peak, 600 s, nine scenarios | Unsupported; pointing-budget excursions and noisy speed supervision | No executable route issued |
+| Azimuth 350°→370°, 120 s, nominal scenario | Complete continuous route; 1.784° bounded peak | 1.705° peak; no wrap reversal |
+| Preparation from 1°/1° and 449°/179°, then 120 s static target, nominal scenario | Complete; 0.248° / 0.119° bounded peaks | 0.137° / 0.222° peaks; within the 2° modeled allocation; include slew and final coast |
+| Full recorded METOP-B window, nominal scenario | Partial; 12.50 s predicted gap; 2.218° bounded peak | Completes at original LOS; one 22.46 s recovery; 2.345° true model peak / 2.370° peak reported from ADC; zero measured time above 3° |
+| Same recorded window, all nine scenarios | Unsupported; includes noisy azimuth speed fault | Arm rejected, zero relay transitions through LOS |
+| Same recorded window, duty already exhausted | Unsupported, no recovery route | Arm rejected; later rest does not arm it |
+| Leased cancellation while Armed, Preparing, Following or Reacquiring | Operator interruption | Immediate output inhibition; duty retained; stays stopped through original LOS |
+| Stalled motor / lost feedback | Unexpected execution failure | Motion / feedback termination; returning samples never restart the run |
+| Recorded recovery with insufficient planning throughput | Repeated missed launches | 13 bounded attempts, final timeout exactly at original 30 s deadline; peak/outside-tolerance metrics retained for the dashboard |
+
+All tests use explicitly synthetic 450°/180° travel and confirmed-AC duty for
+the modeled plant. The nominal-only fixtures deliberately isolate integration;
+they do not qualify a real pass under the firmware's nine scenarios. Installed
+travel, motion limits, relay timing, tolerance and scenario settings are unchanged.
+The existing conventional-only zenith, FENGYUN 3C full-window rejection, duty
+deadline, source/network failure and partial-admission tests also remain in the
+host suite. Successful and interrupted runs hold their final post-coast position,
+with no park or automatic next pass. There is no receiver/recording integration;
+recording remains external.
+
+Two differences matter for commissioning:
+
+- **Predictions are conditional on the simulated schedule.** Changing ADC/pulse
+  phase between 20 ms planning and 10 ms execution can exceed the reported
+  modeled peak, even for a stationary target. The separate synthetic runs still
+  fit the 2° modeled allocation. The recorded nominal replay's gap lasts 9.96 s
+  longer than predicted and its true peak is 0.127° higher. It stays within the
+  original recovery deadline and the provisional 3° operational threshold, but
+  this does not establish the 1° reserve or RF reception windows. The dashboard
+  correctly retains the original windows as predictions and reports live
+  recovery/deviation separately. Measure scheduling, plant and pointing errors
+  before accepting the reserve or treating modeled reception as achievable RF
+  coverage; broaden timing-phase qualification if those measurements require it.
+- **Full-pass recovery has a substantial computation cost.** A successful
+  recorded search uses 398,964 incremental work units. The host harness supplies
+  up to 2,048 units per virtual 10 ms turn; this is an explicit test throughput,
+  not a Pico benchmark. At 128 units per turn the same run misses its launch
+  opportunities and stops safely, with 3.393° peak measured error and 2.44 s
+  above tolerance. T7 must measure complete searches with long suffixes and the
+  real concurrent load against the fixed two-second launch lead. If the board
+  cannot meet it, optimize/rebudget recovery and revalidate admission before
+  claiming usable partial-pass tracking; do not extend an active episode deadline.
+
+T9 closes the host acceptance work. It does not close T7's board timing/watchdog/
+stack checks or T10's loaded motor, full-travel and RF commissioning. No firmware
+was flashed and no physical pointing or RF tracking was tested for this task.
+
+T9 software validation: **306 Rust tests (including the doctest), 61 dashboard
+tests, host/Pico Clippy, formatting, build-tool checks and the Pico release build
+pass**. This task adds tests and documentation; production behavior and its
+T8 memory layout are unchanged.

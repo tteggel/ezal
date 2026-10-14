@@ -5,7 +5,7 @@ on a fresh machine, and explains the day-to-day workflow.
 
 ## One-time setup
 
-ezal pins the regular build and test tools — Rust, probe-rs, flip-link, picotool, Node.js,
+ezal pins the regular build and test tools — Rust, probe-rs, picotool, Node.js,
 the Python + schemdraw stack used to re-render the schematic — into a
 single `flake.nix` so every contributor gets the same toolchain on every
 platform. The flake is loaded automatically by [direnv](https://direnv.net)
@@ -44,9 +44,6 @@ When the shell is loaded you have:
 - `cargo`, `rustc`, `rustfmt`, `clippy` pinned to the version in
   `rust-toolchain.toml`,
 - `probe-rs` — used by `cargo run` to flash and stream defmt logs,
-- `flip-link` — optional linker wrapper for stack-overflow trapping
-  (off by default in `.cargo/config.toml`; uncomment the `linker =`
-  line to enable it),
 - `picotool` — optional, for UF2 / BOOTSEL flashing without a probe,
 - `jq` — reads Cargo's executable artifact path during UF2 packaging,
 - `node` — runs dashboard behavior tests with its built-in test runner,
@@ -124,7 +121,6 @@ for the dashboard tests, and picotool and jq separately for UF2 packaging.
 ```bash
 rustup show                                # installs the pinned toolchain
 cargo install --locked probe-rs-tools
-cargo install --locked flip-link           # optional
 node --version                            # Node.js 18+ for dashboard tests
 # picotool: https://github.com/raspberrypi/picotool
 # Only needed if you're re-rendering the schematic:
@@ -192,26 +188,31 @@ the four direction outputs and invalidates pending commands. Recovery requires
 control ownership and fresh input. Existing ADC and motion fault latches
 survive network recovery.
 
-The dashboard exposes leased manual direction controls. Movement requires
-fresh, valid calibrated feedback at the final GPIO boundary.
+The dashboard exposes leased manual direction controls and single-pass tracking.
+Select a forecast row to preview, then Enter Tracking to arm; Prepare now
+re-evaluates an earlier start. Cancel or Return to Manual interrupts the run.
+Manual controls are hidden while tracking, and browser closure does not cancel it.
+Movement requires fresh, valid calibrated feedback at the final GPIO boundary.
 Initial calibration uses the G-5500 front-panel controls with the Pico's
 direction leads disconnected; see [CALIBRATION.md](CALIBRATION.md).
 
-The output task arms a 500 ms hardware watchdog, serviced on a fixed 100 ms
-schedule while the executor runs normally. It continues counting during a
+The output task arms a 500 ms hardware watchdog, serviced every 100 ms while
+idle and aiming for 10 ms while tracking, with earlier policy deadlines taking
+precedence. It continues counting during a
 debugger halt. A timeout resets the output hardware and boot then inhibits
 motion before ADC or network startup. Inspect the fault before clearing that
 state with a board reset, debugger reset, or power cycle. A UF2 or `picotool`
 reboot also goes through the watchdog; boot distinguishes it from a
 firmware-armed timeout. A freshly flashed board starts idle and waits for
-manual input.
+manual input or explicit tracking arming.
 
 Network supervision retries association and 30-second DHCP attempts with
 exponential backoff capped at 30 seconds. HTTP acceptors are started without
 waiting for the first address, so a late AP or DHCP recovery exposes the
 dashboard without resetting the board. Successful link/address observations
 renew a 300 ms motion permit every 100 ms; the output task expires that permit
-independently if supervision stalls. Internet access is not required.
+independently if supervision stalls. Manual control does not require Internet access; tracking needs valid cached
+orbital data and a quantified clock.
 
 ### Build a UF2 for BOOTSEL flashing
 
@@ -312,9 +313,15 @@ Use `cargo fmt --all` to apply formatting. Firmware has no embedded `libtest`,
 so do not select its test targets with `--workspace --all-targets`.
 
 CI runs these checks, the test scripts, and one firmware job that builds,
-lints and packages the manual firmware, uploading its ELF and UF2 under
-`dist/`. The optional `cyw43-firmware-logs` feature enables radio diagnostics
-independently; it does not select a control mode.
+lints and packages the firmware, uploading its ELF and UF2 under
+`dist/`.
+
+To dump the CYW43 radio's own console log, enable the driver's
+diagnostic feature with a debug defmt filter:
+
+```bash
+DEFMT_LOG=debug cargo run -p ezal-firmware --release --features cyw43/firmware-logs
+```
 
 ### Watching for file changes
 
@@ -393,8 +400,16 @@ watchdog timeout. A debugger reset clears that inhibition.
 
   The address should be just past `.vector_table` (≈ `0x10000114`), not
   several KiB in.
-- **Stack overflow** → inspect stack usage and large local buffers; enable
-  `flip-link` so an overflow traps before corrupting static state.
+- **Stack overflow** → inspect stack usage and large local buffers. Reset
+  loads MSPLIM with `_stack_end` (cortex-m-rt's `set-msplim` feature), so a
+  stack pointer below the reserved stack faults instead of overwriting static
+  state; `memory.x` puts `_stack_end` on an 8-byte boundary because MSPLIM
+  ignores the low three bits. Once `direction_task` has armed the watchdog,
+  the fault stops the feeding and the board reboots with motion inhibited;
+  before that, the core halts (in HardFault, or locked up when the handler's
+  first push crosses the limit again) until a manual reset, with the
+  direction outputs low or still in their reset state, so every switch stays
+  off.
 
 ### Hardware verification after safety changes
 
@@ -451,3 +466,67 @@ to `thumbv8m.main-none-eabihf` in `.vscode/settings.json`:
 ```
 
 (Not committed to keep editor preferences out of the repo.)
+
+### Tracking execution load check
+
+T7/T8 software integration and T9 host acceptance do not establish board timing. The
+dashboard now supplies selection and arming. Perform this check with the direction
+leads disconnected and suitable feedback simulation first; use the existing
+commissioning procedure before powered movement. The installed calibration
+still limits azimuth/elevation to 360°/90° until measured replacements are made.
+
+1. Build the release image and inspect RAM with the pinned tools; no extra
+   `cargo-binutils` installation is needed:
+
+   ```bash
+   EZAL_TOOLS="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
+   "$EZAL_TOOLS/llvm-size" -A target/thumbv8m.main-none-eabihf/release/ezal-firmware
+   "$EZAL_TOOLS/llvm-objdump" -d --demangle target/thumbv8m.main-none-eabihf/release/ezal-firmware
+   ```
+
+   Include `.data`, `.bss` and `.uninit`; Embassy task pools include all eight
+   web acceptors and the planner. The linker reserves at least 192 KiB of free
+   stack capacity. Inspect the tracking poll and plan-publication stack frames
+   after compiler/structure changes, then measure high-water use on the board.
+   The assembly check alone does not bound nested calls plus interrupt use.
+
+2. Select one predicted pass in the dashboard, inspect its feasibility and
+   reception windows, then use Enter Tracking. Confirm selection alone does not
+   move, scheduled preparation starts at the displayed time, and Prepare now
+   evaluates its own schedule before moving. Test full and partial support.
+   Open eight viewers and exercise forecast computation and a TLE download while
+   preparing/following an armed pass. Close/reopen the controller and pause a
+   slow viewer. Confirm the pass continues and only a currently leased controller
+   can cancel it. Confirm manual input cannot interrupt Tracking mode. No viewer
+   read or failed takeover should extend ownership.
+
+3. Record the once-per-minute `tracking timing maxima` diagnostic. It reports
+   output service time, active service gap, planner/recovery step time, complete
+   worker poll time and number of planner steps. Active control must fit the
+   frozen plan's 20 ms maximum interval with headroom; the task aims for 10 ms.
+   Test both full-window and late/partial passes. Measure total planning time:
+   recovery must finish before its fixed two-second launch lead, and a late
+   admission must finish before its five-second entry lead. Longer jobs must
+   hold/fail visibly rather than run an unchecked late trajectory.
+
+   Include a full recorded pass with a long remaining suffix, not only a short
+   acquisition segment. [T9 acceptance](PASS_PREDICTION.md#complete-pass-acceptance-t9)
+   observed 398,964 work units in a successful nominal METOP-B recovery search;
+   a low-throughput worker missed all usable launches. Measure whole-search
+   elapsed time under concurrent load against the two-second lead. If it does
+   not fit, recovery needs optimization or a revised prevalidated schedule before
+   partial-pass operation is commissioned. Record actual recovery duration and
+   pointing error alongside the preview: the host replay's 12.50 s predicted gap
+   became 22.46 s at execution cadence.
+
+4. Suspend background planning alone; GPIO/watchdog service must continue,
+   holding during an unresolved intercept. Delay a normal control step beyond
+   20 ms and check inhibition with `ExecutionDeadline`, including a relay waiting
+   to activate. Delay a recovery launch/control step and check bounded hold/retry.
+   Drop link/address permission and confirm no automatic restart on recovery.
+
+5. Repeat the watchdog fault-injection checks above with tracking active. Only
+   the GPIO task feeds it. Measure actual pad release and the watchdog-fault
+   boot inhibition; a planned 20 ms service interval is not a guarantee of
+   20 ms output release during a whole-executor stall. Save timing, stack and
+   logic-analyzer evidence with the hardware/profile identity before closing T7.

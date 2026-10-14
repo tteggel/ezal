@@ -3,13 +3,16 @@
 //! policy all live in ezal-core; this task only performs I/O and yields.
 
 use core::cell::RefCell;
+use embassy_futures::yield_now;
 use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack};
-use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
+use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use ezal_core::{
-    orbit::{GroundStation, ObserverError},
+    orbit::{GroundStation, ObserverError, SATELLITES, SATELLITE_COUNT},
     passes::{needs_forecast, ConfigError, Elements, Forecast, Job, Report},
-    tracking::{CompletedOrbitalDownload, OrbitalCatalog, OrbitalDownload},
+    tracking::{
+        CompletedOrbitalDownload, OrbitalCatalog, OrbitalDownload, OrbitalSnapshot, PassEvent,
+    },
 };
 
 include!(concat!(env!("OUT_DIR"), "/prediction_config.rs"));
@@ -35,7 +38,7 @@ const _: () = match CONFIG.validate() {
 
 // HTTP is the explicitly accepted transport for this installation. Parser/age
 // checks validate data, without authenticating a potentially hostile network.
-// Predictions currently remain advisory. Every byte of
+// Forecast rows remain advisory until explicitly selected and armed. Every byte of
 // the response passes through ezal-core's bounded decoders, so a broken or
 // hostile reply can fail the download but cannot panic or stall the task.
 const TLE_HOST: &str = "celestrak.org";
@@ -48,15 +51,49 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 struct Shared {
     forecast: Option<Forecast>,
     elements: Elements,
+    sources: [Option<OrbitalSnapshot>; SATELLITE_COUNT],
 }
 
-static SHARED: Mutex<CriticalSectionRawMutex, RefCell<Shared>> = Mutex::new(RefCell::new(Shared {
+static SHARED: Mutex<ThreadModeRawMutex, RefCell<Shared>> = Mutex::new(RefCell::new(Shared {
     forecast: None,
     elements: Elements::EMPTY,
+    sources: [const { None }; SATELLITE_COUNT],
 }));
 
+/// Atomically pair the complete forecast with the exact orbital publication
+/// used to compute it. Failed/in-progress downloads never replace this pair.
+pub fn tracking_source(
+    norad_id: u64,
+) -> Option<(
+    OrbitalSnapshot,
+    heapless::Vec<PassEvent, { ezal_core::passes::MAX_PASSES }>,
+)> {
+    SHARED.lock(|cell| {
+        let shared = cell.borrow();
+        let source = shared
+            .sources
+            .iter()
+            .flatten()
+            .find(|s| s.norad_id() == norad_id)?
+            .clone();
+        let events = shared
+            .forecast
+            .as_ref()?
+            .passes
+            .iter()
+            .copied()
+            .map(PassEvent::from_pass)
+            .collect();
+        Some((source, events))
+    })
+}
+
+pub fn observer() -> ezal_core::orbit::Observer {
+    CONFIG.observer
+}
+
 /// The dashboard's view at this instant. Selecting rows copies a few hundred
-/// bytes inside the critical section; formatting happens later, outside it,
+/// bytes inside the thread-mode borrow; formatting happens later, outside it,
 /// so float formatting cannot delay IRQs and slow clients hold no lock.
 pub fn report() -> Report {
     let clock = crate::time::clock();
@@ -128,7 +165,13 @@ pub async fn run(stack: Stack<'static>) -> ! {
                     Timer::after_millis(1).await;
                 }
                 let forecast = job.finish();
-                SHARED.lock(|cell| cell.borrow_mut().forecast = Some(forecast));
+                SHARED.lock(|cell| {
+                    let mut shared = cell.borrow_mut();
+                    shared.sources =
+                        core::array::from_fn(|i| catalog.snapshot(SATELLITES[i].norad_id));
+                    shared.forecast = Some(forecast);
+                });
+                crate::tracking::refresh_inputs(&crate::state::STATE);
                 elements_changed = false;
             }
         }
@@ -183,5 +226,8 @@ async fn exchange(
         if download.is_complete() {
             return download.finish().map_err(|_| ());
         }
+        // Buffered TCP data can make every read immediately ready. Parsing is
+        // bounded per chunk and yields even in that case.
+        yield_now().await;
     }
 }

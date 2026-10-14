@@ -339,7 +339,7 @@ fn a_command_is_admitted_before_a_transition_due_at_the_same_instant() {
         0,
     );
     actuator.command(
-        Command::Stop,
+        Command::Drive(DriveCommand::IDLE),
         &gate_at(Pointing::new(180.0, 45.0), 500),
         500,
     );
@@ -350,7 +350,7 @@ fn a_command_is_admitted_before_a_transition_due_at_the_same_instant() {
 
     let mut serviced = actuator;
     assert!(serviced.service(&gate, 2_500));
-    assert!(!actuator.command(Command::Stop, &gate, 2_500));
+    assert!(!actuator.command(Command::Drive(DriveCommand::IDLE), &gate, 2_500));
     assert_eq!(actuator.actual(), DriveCommand::IDLE);
     assert_eq!(actuator.next_deadline_ms(&gate, 2_500), None);
 }

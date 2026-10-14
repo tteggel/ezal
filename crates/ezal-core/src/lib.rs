@@ -7,7 +7,7 @@
 //! The control path has four owners:
 //! * [`feedback`] validates acquisition results using [`position::InstalledCalibration`].
 //! * [`session`] admits fresh, ordered operator intent.
-//! * [`coordination`] owns manual authority and coherent command delivery.
+//! * [`coordination`] owns the operator lease and coherent command delivery.
 //! * [`actuator::Actuator::step`] is the complete physical-output decision.
 //!
 //! [`interlock`], [`motion`], [`network`] and private [`drive`] timing helpers
@@ -23,7 +23,7 @@
 //! and offline simulation. Its execution-input boundary owns orbital/clock
 //! snapshots and enforces source/timing/network validity. [`operator`] supplies
 //! its exclusive controller lease.
-//! This tracking policy is not yet connected to firmware output requests.
+//! Firmware services tracking independently through that same output boundary.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
@@ -39,7 +39,6 @@ mod test_support;
 
 pub mod actuator;
 pub mod ads1015;
-mod authority;
 pub mod coordination;
 pub mod dashboard;
 pub mod drive;

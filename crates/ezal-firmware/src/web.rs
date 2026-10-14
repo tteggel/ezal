@@ -23,9 +23,10 @@ use ezal_core::drive::Command;
 use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::passes::Report;
 use ezal_core::protocol::{
-    ClientMessage, TelemetryMessage, CONTROL_STATUS_CAPACITY, TELEMETRY_CAPACITY, WS_PATH,
+    ClientMessage, TelemetryMessage, CONTROL_STATUS_CAPACITY, INPUT_REQUIRED_MESSAGE,
+    TELEMETRY_CAPACITY, TRACKING_REPLY_CAPACITY, WS_PATH,
 };
-use ezal_core::session::{CommandFreshness, TELEMETRY_PERIOD_MS};
+use ezal_core::session::{CommandFreshness, LeaseHeartbeat, TELEMETRY_PERIOD_MS};
 
 use crate::state::{SharedState, STATE};
 
@@ -60,7 +61,7 @@ const TCP_TX_BUFFER_SIZE: usize = 4096;
 
 /// Build the dashboard app. `report` is the owning acceptor task's slot for
 /// the `/api/passes` reply it is currently sending.
-pub fn app<'a>(
+fn app<'a>(
     state: &'static SharedState,
     report: &'a RefCell<Option<Report>>,
 ) -> picoserve::Router<impl PathRouter + 'a> {
@@ -187,17 +188,31 @@ async fn send_control_status<W: PicoserveWrite>(
     Ok(())
 }
 
+/// Inhibit this client's motion and clear the browser hold too: a newly issued
+/// token must not turn a timer refresh into a new operator press after this
+/// rejection. Returns whether the inhibit signaled the actuator.
+async fn reject_input<W: PicoserveWrite>(
+    tx: &mut SocketTx<W>,
+    state: &'static SharedState,
+    client_id: u32,
+) -> Result<bool, SocketError<W::Error>> {
+    let signaled = state.accept_command(client_id, CommandEnvelope::INHIBIT);
+    tx.send_text(INPUT_REQUIRED_MESSAGE).await?;
+    Ok(signaled)
+}
+
 /// Send one observation with its proof. Acknowledgements do not issue proofs.
 async fn send_telemetry<W: PicoserveWrite>(
     tx: &mut SocketTx<W>,
     state: &'static SharedState,
     client_id: u32,
     freshness: &mut CommandFreshness,
+    heartbeat: &mut LeaseHeartbeat,
 ) -> Result<(), SocketError<W::Error>> {
     // Stamp before the state read and socket write. Slow delivery consumes the
     // original token lifetime instead of granting a fresh lease on completion.
     let now_ms = Instant::now().as_millis();
-    let snapshot = state.telemetry(client_id, now_ms);
+    let (snapshot, tracking) = state.dashboard_telemetry(client_id, now_ms);
     freshness.observe_network(
         snapshot.network.generation(),
         snapshot.control.network_ready,
@@ -205,12 +220,20 @@ async fn send_telemetry<W: PicoserveWrite>(
     let message = TelemetryMessage {
         snapshot,
         token: freshness.issue(now_ms),
+        tracking,
     };
     let mut payload: String<TELEMETRY_CAPACITY> = String::new();
     message
         .write_json(&mut payload)
         .map_err(|_| SocketError::Encoding)?;
+    // Bind the ping before either write; buffered replies retain their age.
+    let ping = state
+        .operator(client_id, now_ms)
+        .and_then(|grant| heartbeat.issue(grant.token, now_ms));
     tx.send_text(&payload).await?;
+    if let Some(ping) = ping {
+        tx.send_ping(&ping).await?;
+    }
     Ok(())
 }
 
@@ -269,11 +292,12 @@ impl DashboardSocket {
         let session = ClientSession::register(state);
         let client_id = session.id;
         let mut freshness = CommandFreshness::new(client_id);
+        let mut heartbeat = LeaseHeartbeat::default();
         let mut read_buffer = [0; ws_receive::MESSAGE_BUFFER_SIZE];
         let telemetry_period = Duration::from_millis(TELEMETRY_PERIOD_MS);
         let mut next_telemetry = Instant::now() + telemetry_period;
 
-        send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
+        send_telemetry(&mut tx, state, client_id, &mut freshness, &mut heartbeat).await?;
 
         loop {
             let event = match ws_receive::next_message(
@@ -316,12 +340,24 @@ impl DashboardSocket {
                         Some(ClientMessage::TakeControl) => {
                             freshness.reject();
                             state.take_control(client_id);
-                            tx.send_text("{\"type\":\"input_required\"}").await?;
+                            tx.send_text(INPUT_REQUIRED_MESSAGE).await?;
                             true
                         }
                         Some(ClientMessage::Stop) => {
                             freshness.disarm();
                             state.accept_command(client_id, CommandEnvelope::INHIBIT)
+                        }
+                        Some(ClientMessage::Tracking(intent)) => {
+                            freshness.disarm();
+                            let reply = state.request_tracking(client_id, intent, &freshness);
+                            // Release the executor before formatting or waiting on a reader.
+                            yield_now().await;
+                            let mut payload: String<TRACKING_REPLY_CAPACITY> = String::new();
+                            reply
+                                .write_json(&mut payload)
+                                .map_err(|_| SocketError::Encoding)?;
+                            tx.send_text(&payload).await?;
+                            true
                         }
                         Some(ClientMessage::Movement(request)) => {
                             let now_ms = Instant::now().as_millis();
@@ -334,21 +370,12 @@ impl DashboardSocket {
                                     },
                                 )
                             } else {
-                                let signaled =
-                                    state.accept_command(client_id, CommandEnvelope::INHIBIT);
-                                // Clear the browser hold too; a newly issued
-                                // token must not turn a timer refresh into a
-                                // new operator press after this rejection.
-                                tx.send_text("{\"type\":\"input_required\"}").await?;
-                                signaled
+                                reject_input(&mut tx, state, client_id).await?
                             }
                         }
                         None => {
                             freshness.reject();
-                            let signaled =
-                                state.accept_command(client_id, CommandEnvelope::INHIBIT);
-                            tx.send_text("{\"type\":\"input_required\"}").await?;
-                            signaled
+                            reject_input(&mut tx, state, client_id).await?
                         }
                     };
 
@@ -356,8 +383,12 @@ impl DashboardSocket {
                         yield_now().await;
                     }
 
-                    if parsed == Some(ClientMessage::TakeControl) {
-                        send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
+                    if matches!(
+                        parsed,
+                        Some(ClientMessage::TakeControl | ClientMessage::Tracking(_))
+                    ) {
+                        send_telemetry(&mut tx, state, client_id, &mut freshness, &mut heartbeat)
+                            .await?;
                     } else {
                         send_control_status(&mut tx, state, client_id).await?;
                     }
@@ -368,7 +399,12 @@ impl DashboardSocket {
                         yield_now().await;
                     }
                 }
-                ReceiveEvent::Message(Message::Pong(_)) => {}
+                ReceiveEvent::Message(Message::Pong(data)) => {
+                    let now = Instant::now().as_millis();
+                    if let Some(token) = heartbeat.acknowledge(data, now) {
+                        state.renew_operator(token, now);
+                    }
+                }
                 ReceiveEvent::Message(Message::Ping(data)) => tx.send_pong(data).await?,
                 ReceiveEvent::Message(Message::Close(reason)) => {
                     // Revoke motion before awaiting the close response: a peer
@@ -378,7 +414,8 @@ impl DashboardSocket {
                     return tx.close(reason).await.map_err(SocketError::Io);
                 }
                 ReceiveEvent::Telemetry => {
-                    send_telemetry(&mut tx, state, client_id, &mut freshness).await?;
+                    send_telemetry(&mut tx, state, client_id, &mut freshness, &mut heartbeat)
+                        .await?;
 
                     while next_telemetry <= Instant::now() {
                         next_telemetry += telemetry_period;

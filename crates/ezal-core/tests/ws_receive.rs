@@ -305,8 +305,15 @@ fn frame(final_frame: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
     let mask = [0x12, 0x34, 0x56, 0x78];
     let mut bytes = vec![
         if final_frame { 0x80 | opcode } else { opcode },
-        0x80 | payload.len() as u8,
+        0x80 | if payload.len() < 126 {
+            payload.len() as u8
+        } else {
+            126
+        },
     ];
+    if payload.len() >= 126 {
+        bytes.extend(u16::try_from(payload.len()).unwrap().to_be_bytes());
+    }
     bytes.extend(mask);
     bytes.extend(
         payload
@@ -417,21 +424,28 @@ fn interleaved_ping_and_pong_preserve_fragmented_text_and_reply_immediately() {
 
 #[test]
 fn control_frame_capacity_does_not_consume_fragmented_message_capacity() {
+    const HEAD: usize = ws_receive::MESSAGE_BUFFER_SIZE - 8;
     let (events, wire) = run_capture(
         vec![
-            (0, frame(false, 2, &[0x41; 120])),
+            (0, frame(false, 2, &[0x41; HEAD])),
             (100, frame(true, 9, &[0x42; 125])),
             (200, frame(true, 0, &[0x41; 8])),
         ],
         600,
         2100,
     );
-    assert_eq!(events, vec![(200, Event::Binary(vec![0x41; 128]))]);
+    assert_eq!(
+        events,
+        vec![(
+            200,
+            Event::Binary(vec![0x41; ws_receive::MESSAGE_BUFFER_SIZE])
+        )]
+    );
     assert_eq!(&wire[wire.len() - 127..wire.len() - 125], &[0x8a, 125]);
     assert_eq!(&wire[wire.len() - 125..], &[0x42; 125]);
     assert_eq!(
         run(vec![
-            (0, frame(false, 2, &[0x41; 120])),
+            (0, frame(false, 2, &[0x41; HEAD])),
             (100, frame(true, 0, &[0x41; 9])),
         ]),
         vec![(100, Event::ProtocolError(1002))]
@@ -518,4 +532,31 @@ fn delayed_complete_and_partial_commands_do_not_receive_a_new_movement_lease() {
         };
         assert_eq!(freshness.admit(request, *received_ms), None);
     }
+}
+
+#[test]
+fn tracking_selection_with_full_width_identifiers_survives_fragmentation() {
+    let text = format!(
+        "track:{0}:{0}:{0}:{0}:select:{0}:9223372036854775000:9223372036854775100",
+        u64::MAX
+    );
+    assert!(text.len() > 128 && text.len() < ws_receive::MESSAGE_BUFFER_SIZE);
+    assert_eq!(
+        run(vec![(0, frame(true, 1, text.as_bytes()))]),
+        vec![(0, Event::Text(text.clone()))]
+    );
+    let (events, _) = run_capture(
+        vec![
+            (0, frame(false, 1, &text.as_bytes()[..100])),
+            (100, frame(true, 9, b"ping")),
+            (200, frame(true, 0, &text.as_bytes()[100..])),
+        ],
+        600,
+        2100,
+    );
+    assert_eq!(events, vec![(200, Event::Text(text.clone()))]);
+    assert!(matches!(
+        ezal_core::protocol::ClientMessage::parse(&text),
+        Some(ezal_core::protocol::ClientMessage::Tracking(_))
+    ));
 }

@@ -1,23 +1,23 @@
-//! Pure coordination of manual ownership, feedback and actuator delivery.
-//!
-//! Time is supplied to transitions explicitly. Reading a snapshot never
-//! expires permissions, revokes ownership or drains pending commands.
+//! Device ownership, independent tracking and coherent actuator delivery.
+//! Reads never renew leases or drain commands. Firmware serializes mutations.
 
-use crate::actuator::{ActuatorInput, ActuatorStatus};
-use crate::authority::ControlAuthority;
+use crate::actuator::{Actuator, ActuatorInput};
 use crate::drive::DriveCommand;
 use crate::duty::DutyStatus;
-use crate::feedback::FeedbackSnapshot;
+use crate::feedback::{FeedbackHealth, FeedbackSnapshot};
 use crate::interlock::FeedbackInterlock;
-use crate::mailbox::{CommandEnvelope, CommandMailbox};
+use crate::mailbox::CommandEnvelope;
 use crate::motion::MotionFault;
 use crate::network::NetworkGate;
-use crate::position::FeedbackVoltages;
+use crate::ntp::UtcClock;
+use crate::operator::{OperatorGrant, OperatorToken};
+use crate::position::{FeedbackVoltages, Pointing};
+use crate::tracking::{RestingStart, RuntimeObservation, TrackingRuntime, TrackingStop};
 
-/// Manual ownership and the output actually applied by the GPIO task.
+/// Leased ownership and the output actually applied by the GPIO task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlStatus {
-    /// Whether the receiving connection owns current manual control.
+    /// Whether this connection owns the current exclusive operator lease.
     pub controller: bool,
     /// Last output applied to GPIOs.
     pub drive: DriveCommand,
@@ -40,15 +40,19 @@ pub struct TelemetrySnapshot {
     pub network: NetworkGate,
 }
 
-/// Runtime-independent state; firmware supplies synchronization and wakeups.
+/// One device owner for manual leases, tracking and coherent actuator delivery.
+/// The physical actuator remains outside this state, owned by the GPIO task.
 pub struct CoordinationState {
     feedback: FeedbackSnapshot,
     interlock: FeedbackInterlock,
-    authority: ControlAuthority,
-    applied_drive: DriveCommand,
-    actuator_status: ActuatorStatus,
-    commands: CommandMailbox,
+    tracking: TrackingRuntime,
+    next_client_id: u32,
     network: NetworkGate,
+    clock: UtcClock,
+    applied: Actuator,
+    applied_at_ms: Option<u64>,
+    start_revision: u64,
+    start_identity: Option<(Pointing, [u64; 2], u64)>,
 }
 
 impl Default for CoordinationState {
@@ -58,46 +62,65 @@ impl Default for CoordinationState {
 }
 
 impl CoordinationState {
-    /// Boot idle, with no feedback, network permission or owner.
+    /// Boot idle, with unknown duty, no clock, network permission or owner.
     pub const fn new() -> Self {
         Self {
             feedback: FeedbackSnapshot::INITIAL,
             interlock: FeedbackInterlock::INHIBITED,
-            authority: ControlAuthority::new(),
-            applied_drive: DriveCommand::IDLE,
-            actuator_status: ActuatorStatus {
-                motion_fault: None,
-                duty: DutyStatus::INITIAL,
-            },
-            commands: CommandMailbox::new(),
+            tracking: TrackingRuntime::new(),
+            next_client_id: 0,
             network: NetworkGate::new(),
+            clock: UtcClock::new(),
+            applied: Actuator::new(),
+            applied_at_ms: None,
+            start_revision: 1,
+            start_identity: None,
         }
     }
 
-    fn revoke_network_motion(&mut self) {
-        self.authority.revoke_manual();
-        self.commands.submit(CommandEnvelope::INHIBIT);
+    fn observation(&self, now_ms: u64) -> RuntimeObservation {
+        RuntimeObservation {
+            now_ms,
+            clock: self.clock,
+            network: self.network,
+        }
     }
 
-    /// Apply time-dependent coordination transitions before admission/drain.
+    fn revoke_network_motion(&mut self, now_ms: u64) {
+        let token = self.tracking.operator(now_ms).map(|g| g.token);
+        let observation = self.observation(now_ms);
+        if let Some(token) = token {
+            let _ = self.tracking.release(token, observation);
+        }
+        let _ = self.tracking.service(observation);
+    }
+
+    /// Service network permission without reading or moving GPIOs.
     pub fn advance(&mut self, now_ms: u64) {
         if self.network.expire(now_ms) {
-            self.revoke_network_motion();
+            self.revoke_network_motion(now_ms);
         }
     }
 
-    /// Publish readiness, returning whether motion was revoked.
+    /// Publish readiness; an outage revokes browser ownership and device motion.
     pub fn publish_network(&mut self, ready: bool, now_ms: u64) -> bool {
         let lost = self.network.observe(now_ms, ready);
         if lost {
-            self.revoke_network_motion();
+            self.revoke_network_motion(now_ms);
         }
         lost
     }
 
-    /// Read permission without changing coordination state.
+    /// Read permission without renewing it.
     pub const fn network(&self) -> NetworkGate {
         self.network
+    }
+
+    /// Publish the clock after every synchronization attempt; a disarmed clock
+    /// stops a run and blocks preview.
+    pub fn publish_clock(&mut self, clock: UtcClock, now_ms: u64) {
+        self.clock = clock;
+        let _ = self.tracking.service(self.observation(now_ms));
     }
 
     /// Retain the ADC POST readings before recurring acquisition starts.
@@ -105,15 +128,30 @@ impl CoordinationState {
         self.feedback.raw = Some(raw);
     }
 
-    /// Publish one acquisition atomically; report whether active motion needs a wakeup.
+    /// Publish one acquisition; changed pose invalidates preview work immediately.
     pub fn publish_feedback(
         &mut self,
         feedback: FeedbackSnapshot,
         interlock: FeedbackInterlock,
+        now_ms: u64,
     ) -> bool {
+        let changed = self.feedback.health != feedback.health
+            || self.feedback.last_valid.map(|s| s.position())
+                != feedback.last_valid.map(|s| s.position());
         self.feedback = feedback;
         self.interlock = interlock;
-        self.applied_drive.is_active()
+        if changed {
+            self.changed_start(now_ms);
+        }
+        if let Some(run) = self.tracking.snapshot().run {
+            let _ = self.tracking.observe_tracking(
+                run,
+                feedback,
+                &self.applied,
+                self.observation(now_ms),
+            );
+        }
+        self.applied.actual().is_active() || self.tracking.snapshot().run.is_some()
     }
 
     /// Read the latest feedback diagnostics.
@@ -121,14 +159,30 @@ impl CoordinationState {
         self.feedback
     }
 
-    /// Allocate a connection, granting unclaimed control only while online.
+    /// Allocate a never-reused connection id; zero fails closed on exhaustion.
     pub fn register_client(&mut self, now_ms: u64) -> u32 {
         self.advance(now_ms);
-        let id = self.authority.register_client();
-        if !self.network.ready(now_ms) {
-            self.authority.revoke_manual();
+        let Some(id) = self.next_client_id.checked_add(1) else {
+            return 0;
+        };
+        self.next_client_id = id;
+        if self.network.ready(now_ms) {
+            let _ = self.tracking.claim(u64::from(id), self.observation(now_ms));
         }
         id
+    }
+
+    /// Current exclusive lease for this connection; a read cannot renew it.
+    pub fn operator(&self, client_id: u32, now_ms: u64) -> Option<OperatorGrant> {
+        self.tracking
+            .operator(now_ms)
+            .filter(|g| g.token.client_id() == u64::from(client_id))
+    }
+
+    /// Renew only a still-current grant after a fresh transport round trip.
+    pub fn renew_operator(&mut self, token: OperatorToken, now_ms: u64) -> bool {
+        self.advance(now_ms);
+        self.network.ready(now_ms) && self.tracking.renew(token, self.observation(now_ms)).is_ok()
     }
 
     /// Observe one coherent snapshot without performing transitions.
@@ -137,36 +191,37 @@ impl CoordinationState {
         TelemetrySnapshot {
             feedback: self.feedback,
             control: ControlStatus {
-                controller: ready && self.authority.is_controller(client_id),
-                drive: self.applied_drive,
+                controller: ready && self.operator(client_id, now_ms).is_some(),
+                drive: self.applied.actual(),
                 network_ready: ready,
-                motion_fault: self.actuator_status.motion_fault,
-                duty: self.actuator_status.duty,
+                motion_fault: self.applied.fault(),
+                duty: self.applied.status().duty,
             },
             network: self.network,
         }
     }
 
-    /// Transfer ownership and queue inhibition before any replacement movement.
+    /// Claim unowned/expired control; a viewer cannot displace a live lease.
     pub fn take_control(&mut self, client_id: u32, now_ms: u64) -> bool {
         self.advance(now_ms);
-        if !self.network.ready(now_ms) || !self.authority.take_control(client_id) {
-            return false;
-        }
-        self.commands.submit(CommandEnvelope::INHIBIT);
-        true
+        self.network.ready(now_ms)
+            && self
+                .tracking
+                .claim(u64::from(client_id), self.observation(now_ms))
+                .is_ok()
     }
 
-    /// Releasing an old viewer cannot interrupt the current owner.
-    pub fn release_client(&mut self, client_id: u32) -> bool {
-        if !self.authority.release_client(client_id) {
-            return false;
-        }
-        self.commands.submit(CommandEnvelope::INHIBIT);
-        true
+    /// Closing a socket releases its lease, leaving a device-owned run intact.
+    pub fn release_client(&mut self, client_id: u32, now_ms: u64) -> bool {
+        self.advance(now_ms);
+        self.operator(client_id, now_ms).is_some_and(|g| {
+            self.tracking
+                .release(g.token, self.observation(now_ms))
+                .unwrap_or(false)
+        })
     }
 
-    /// Admit a source-validated envelope without restarting its expiry.
+    /// Admit manual intent through the same operator lease and mode as tracking.
     pub fn accept_command(
         &mut self,
         client_id: u32,
@@ -174,26 +229,108 @@ impl CoordinationState {
         now_ms: u64,
     ) -> bool {
         self.advance(now_ms);
-        if !self.network.ready(now_ms) || !self.authority.is_controller(client_id) {
-            return false;
+        self.operator(client_id, now_ms).is_some_and(|g| {
+            self.tracking
+                .manual_command(g.token, envelope, self.observation(now_ms))
+        })
+    }
+
+    /// Serialize a trusted device operation (planning, or leased operator intent)
+    /// with current network/clock inputs. Runtime checks cannot be bypassed.
+    pub fn tracking_operation<R>(
+        &mut self,
+        now_ms: u64,
+        operation: impl FnOnce(&mut TrackingRuntime, RuntimeObservation) -> R,
+    ) -> R {
+        self.advance(now_ms);
+        operation(
+            &mut self.tracking,
+            RuntimeObservation {
+                now_ms,
+                clock: self.clock,
+                network: self.network,
+            },
+        )
+    }
+
+    /// Read-only device execution status, independent of browser ownership.
+    pub const fn tracking(&self) -> &TrackingRuntime {
+        &self.tracking
+    }
+
+    fn changed_start(&mut self, now_ms: u64) {
+        if let Some(next) = self.start_revision.checked_add(1) {
+            self.start_revision = next;
+            self.tracking.invalidate_start(self.observation(now_ms));
+        } else {
+            let _ = self
+                .tracking
+                .interrupt(TrackingStop::ClockOrCounter, self.observation(now_ms));
         }
-        self.commands.submit(envelope);
-        true
     }
 
-    /// Record output only after the GPIO adapter has applied it.
-    pub fn record_actuator(&mut self, drive: DriveCommand, status: ActuatorStatus) {
-        self.applied_drive = drive;
-        self.actuator_status = status;
+    /// Identity of the physical starting assumptions; fresh timestamps alone
+    /// do not restart planning, while changed pose/duty/network history does.
+    pub const fn start_revision(&self) -> u64 {
+        self.start_revision
     }
 
-    /// Atomically drain pending work with the feedback and network it will use.
+    /// Last coherent, settled output snapshot. Its original time is preserved.
+    pub fn resting_start(&self) -> Option<RestingStart> {
+        let at_ms = self.applied_at_ms?;
+        let feedback = self.feedback.last_valid?;
+        if self.feedback.health != FeedbackHealth::Healthy || feedback.sampled_at_ms() > at_ms {
+            return None;
+        }
+        self.applied.resting_history(at_ms)?;
+        Some(RestingStart {
+            at_ms,
+            feedback,
+            actuator: self.applied,
+            network: self.network,
+        })
+    }
+
+    /// Record the actuator only AFTER applying its GPIO output, at its service time.
+    pub fn record_actuator(&mut self, actuator: &Actuator, now_ms: u64) {
+        self.applied = *actuator;
+        self.applied_at_ms = Some(now_ms);
+        self.tracking.observe_output(actuator.actual(), now_ms);
+        let identity = self.resting_start().and_then(|s| {
+            s.actuator
+                .resting_history(now_ms)
+                .map(|(used, _)| (s.feedback.position(), used, self.network.generation()))
+        });
+        if identity != self.start_identity {
+            self.start_identity = identity;
+            self.changed_start(now_ms);
+        }
+    }
+
+    /// Generate a device command only after the actuator was serviced/applied at
+    /// this instant. Drain again using actual current time before applying it.
+    pub fn execute_tracking(&mut self, now_ms: u64) {
+        self.advance(now_ms);
+        if self.applied_at_ms == Some(now_ms) {
+            self.tracking
+                .execution_command(self.feedback, &self.applied, self.observation(now_ms));
+        }
+    }
+
+    /// Drain pending work with current inputs. New feedback is observed before
+    /// freshness/cadence checks and before a pending relay activation can occur.
     pub fn take_actuator_input(&mut self, now_ms: u64) -> ActuatorInput {
         self.advance(now_ms);
+        let observation = self.observation(now_ms);
+        if let Some(run) = self.tracking.snapshot().run {
+            let _ = self
+                .tracking
+                .observe_tracking(run, self.feedback, &self.applied, observation);
+        }
         ActuatorInput {
             interlock: self.interlock,
             network: self.network,
-            command: self.commands.take(),
+            command: self.tracking.take_command(observation),
         }
     }
 }

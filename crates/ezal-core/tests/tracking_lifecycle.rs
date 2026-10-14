@@ -912,3 +912,41 @@ fn cancellation_reaches_real_actuator_before_a_pending_activation_at_the_same_de
         DriveCommand::IDLE
     );
 }
+
+#[test]
+fn a_new_satellite_can_use_its_older_cached_publication_without_regressing_other_inputs() {
+    let (mut session, token) = selected();
+    session
+        .refresh(
+            &[EVENT],
+            PlanRevisions {
+                orbit: 9,
+                ..REVISIONS
+            },
+            2000,
+        )
+        .unwrap();
+    let next = PassEvent {
+        norad_id: 43010,
+        ..EVENT
+    };
+    session
+        .request(
+            request(&session, token, 2, TrackingAction::Select(next)),
+            2000,
+        )
+        .unwrap();
+    session.refresh(&[next], REVISIONS, 2000).unwrap();
+    assert_eq!(session.planning_ticket().unwrap().revisions().orbit, 1);
+    assert_eq!(
+        session.refresh(
+            &[next],
+            PlanRevisions {
+                clock: 0,
+                ..REVISIONS
+            },
+            2000
+        ),
+        Err(LifecycleError::StaleInputs)
+    );
+}

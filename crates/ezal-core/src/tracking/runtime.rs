@@ -12,7 +12,7 @@ use super::{
 };
 use crate::actuator::Actuator;
 use crate::ads1015::FEEDBACK_FULL_SCALE;
-use crate::drive::{Command, MOVEMENT_LEASE_MS};
+use crate::drive::{Command, DriveCommand, MOVEMENT_LEASE_MS};
 use crate::feedback::{
     FeedbackHealth, FeedbackSample, FeedbackSnapshot, FEEDBACK_MAX_AGE_MS, FEEDBACK_MAX_LATENCY_MS,
 };
@@ -28,7 +28,7 @@ use crate::position::{InstalledCalibration, Pointing};
 pub struct RuntimeObservation {
     /// Current monotonic instant, shared with output leases.
     pub now_ms: u64,
-    /// Most recently accepted SNTP clock, or the same clock after a failed retry.
+    /// SNTP clock after its latest synchronization attempt; disarmed, it has no anchor.
     pub clock: UtcClock,
     /// Link/address observations from the existing network supervisor.
     pub network: NetworkGate,
@@ -83,6 +83,10 @@ pub struct TrackingRuntime {
     deviation: Option<DeviationMonitor>,
     feedback: Option<FeedbackSample>,
     recovery: Option<Recovery>,
+    follower: Option<FollowingController>,
+    last_control_at_ms: Option<u64>,
+    ready_since_ms: Option<u64>,
+    ready_sample_ms: Option<u64>,
 }
 
 impl Default for TrackingRuntime {
@@ -105,6 +109,10 @@ impl TrackingRuntime {
             deviation: None,
             feedback: None,
             recovery: None,
+            follower: None,
+            last_control_at_ms: None,
+            ready_since_ms: None,
+            ready_sample_ms: None,
         }
     }
     /// Read-only lifecycle status; does not renew any lease.
@@ -135,6 +143,18 @@ impl TrackingRuntime {
     /// Latest device planning job, if any.
     pub fn planning_ticket(&self) -> Option<PlanTicket> {
         self.session.planning_ticket()
+    }
+    /// A changed physical starting state invalidates preview work immediately,
+    /// before a simultaneous preparation deadline can freeze it. The worker
+    /// subsequently supplies the new complete input revisions.
+    pub fn invalidate_start(&mut self, observation: RuntimeObservation) {
+        if self.snapshot().run.is_none()
+            && (self.bound_plan().is_some() || self.planning_ticket().is_some())
+        {
+            let _ = self
+                .session
+                .invalidate_inputs(InputError::RevisionChanged, observation.now_ms);
+        }
     }
     /// Read-only operator grant at the supplied uptime.
     pub fn operator(&self, now_ms: u64) -> Option<OperatorGrant> {
@@ -258,6 +278,16 @@ impl TrackingRuntime {
         self.session.tick(observation.now_ms)?;
         self.sync_execution(observation.now_ms);
         if self.session.snapshot().run.is_some()
+            && self.session.snapshot().phase != TrackingPhase::Reacquiring
+            && self.last_control_at_ms.is_some_and(|last| {
+                observation.now_ms.saturating_sub(last)
+                    > self.session.bound_plan().unwrap().plan().config.step_ms
+            })
+        {
+            self.session
+                .interrupt(TrackingStop::ExecutionDeadline, observation.now_ms)?;
+        }
+        if self.session.snapshot().run.is_some()
             && self.feedback.is_some_and(|sample| {
                 observation
                     .now_ms
@@ -319,8 +349,14 @@ impl TrackingRuntime {
                 .session
                 .bound_plan()
                 .map(|b| DeviationMonitor::new(b.plan().config.tolerance_deg));
+            self.follower = None;
+            self.last_control_at_ms = None;
+            self.ready_since_ms = None;
+            self.ready_sample_ms = None;
         }
         if state.run.is_none() {
+            self.follower = None;
+            self.last_control_at_ms = None;
             if let Some(monitor) = self.deviation.as_mut() {
                 monitor.finish(now);
             }
@@ -343,6 +379,12 @@ impl TrackingRuntime {
             .as_ref()
             .is_some_and(|r| Some(r.status.episode) != state.recovery)
         {
+            if state.phase == TrackingPhase::Following {
+                // Preserve the physical pulse/coast history when the recovery
+                // follower joins the original route. Starting a new follower
+                // here could reuse feedback acquired before the last release.
+                self.follower = self.recovery.as_mut().and_then(|r| r.follower.take());
+            }
             self.recovery = None;
         }
         if let Some(episode) = state.recovery.filter(|_| self.recovery.is_none()) {
@@ -403,14 +445,17 @@ impl TrackingRuntime {
             return Ok(());
         }
         let sample = feedback.last_valid.unwrap();
+        let repeated_sample = self.feedback == Some(sample);
         self.feedback = Some(sample);
         if let Some(follower) = self.recovery.as_mut().and_then(|r| r.follower.as_mut()) {
             follower.observe_output(actuator.actual(), now);
         }
-        if !matches!(
-            self.session.snapshot().phase,
-            TrackingPhase::Following | TrackingPhase::Reacquiring
-        ) || sample.sampled_at_ms() < bound.plan().window.aos_at_ms
+        if repeated_sample
+            || !matches!(
+                self.session.snapshot().phase,
+                TrackingPhase::Following | TrackingPhase::Reacquiring
+            )
+            || sample.sampled_at_ms() < bound.plan().window.aos_at_ms
         {
             return Ok(());
         }
@@ -464,6 +509,140 @@ impl TrackingRuntime {
         }
         self.sync_execution(now);
         Ok(())
+    }
+
+    /// Record every physical transition, including the first service before
+    /// generating a command. Never report an output which was not applied.
+    pub fn observe_output(&mut self, applied: DriveCommand, now_ms: u64) {
+        if let Some(follower) = self.follower.as_mut() {
+            follower.observe_output(applied, now_ms);
+        }
+        if let Some(follower) = self.recovery.as_mut().and_then(|r| r.follower.as_mut()) {
+            follower.observe_output(applied, now_ms);
+        }
+    }
+
+    /// One device execution turn, called after servicing/applying the actuator
+    /// at `observation.now_ms`. Planning runs separately. The output owner must
+    /// drain again with its actual current time, preserving this command's age.
+    pub fn execution_command(
+        &mut self,
+        feedback: FeedbackSnapshot,
+        actuator: &Actuator,
+        observation: RuntimeObservation,
+    ) {
+        if let Some(run) = self.snapshot().run {
+            let _ = self.observe_tracking(run, feedback, actuator, observation);
+        }
+        if self.service(observation).is_err() {
+            return;
+        }
+        if let Some(run) = self.snapshot().run {
+            let _ = self.observe_tracking(run, feedback, actuator, observation);
+        }
+        let state = self.snapshot();
+        let Some(run) = state.run else { return };
+        let now = observation.now_ms;
+        if state.phase == TrackingPhase::Reacquiring {
+            // A subsequent normal follower must not reuse pre-gap velocity.
+            self.follower = None;
+            self.last_control_at_ms = Some(now);
+            self.reacquisition_command(run, feedback, actuator, observation);
+            return;
+        }
+        let bound = self.session.bound_plan().unwrap();
+        let plan = bound.plan();
+        let preparing = matches!(state.phase, TrackingPhase::Preparing | TrackingPhase::Ready);
+        let offset = if preparing {
+            0
+        } else {
+            now.saturating_sub(plan.window.aos_at_ms)
+        };
+        let Some(target) = u32::try_from(offset)
+            .ok()
+            .and_then(|t| plan.route.pointing_at(t))
+        else {
+            let _ = self.interrupt(TrackingStop::SourceInvalid, observation);
+            return;
+        };
+        let follower = self.follower.get_or_insert_with(|| {
+            FollowingController::with_timing(
+                plan.config.reference,
+                plan.config.deadband_deg,
+                plan.actuator.relays,
+            )
+            .expect("accepted follower configuration")
+        });
+        let command = follower.command(target, feedback.last_valid, actuator.actual(), now);
+        self.last_control_at_ms = Some(now);
+        if preparing {
+            let sample = feedback.last_valid.expect("observed healthy feedback");
+            let age = now.saturating_sub(sample.sampled_at_ms());
+            let acquired = actuator.resting_history(now).is_some_and(|(_, idle)| {
+                idle[0] >= age.saturating_add(plan.actuator.travel.azimuth.coast_ms)
+                    && idle[1] >= age.saturating_add(plan.actuator.travel.elevation.coast_ms)
+            }) && (sample.position().azimuth_deg - target.azimuth_deg).abs()
+                <= plan.config.preparation_tolerance_deg
+                && (sample.position().elevation_deg - target.elevation_deg).abs()
+                    <= plan.config.preparation_tolerance_deg;
+            if !acquired {
+                self.ready_since_ms = None;
+            } else if self.ready_sample_ms != Some(sample.sampled_at_ms()) {
+                let stamp = sample.sampled_at_ms();
+                if self
+                    .ready_sample_ms
+                    .is_none_or(|last| stamp.saturating_sub(last) >= FEEDBACK_MAX_AGE_MS)
+                {
+                    self.ready_since_ms = None;
+                }
+                let since = *self.ready_since_ms.get_or_insert(stamp);
+                if stamp.saturating_sub(since) >= REACQUISITION_DWELL_MS {
+                    let _ = self.session.preparation_ready(run, now);
+                }
+            }
+            self.ready_sample_ms = Some(sample.sampled_at_ms());
+        }
+        self.tracking_command(
+            run,
+            CommandEnvelope {
+                command,
+                valid_until_ms: now.saturating_add(MOVEMENT_LEASE_MS),
+            },
+            observation,
+        );
+    }
+
+    /// Deadlines the output task must include alongside relay/feedback/network
+    /// deadlines. A regular poll alone cannot hit a fixed recovery launch.
+    pub fn execution_deadline_ms(&self) -> Option<u64> {
+        let bound = self.bound_plan()?;
+        let plan = bound.plan();
+        let state = self.snapshot();
+        let phase_deadline = match state.phase {
+            TrackingPhase::Armed => Some(plan.assessment.prepare_at_ms),
+            TrackingPhase::Preparing | TrackingPhase::Ready => Some(plan.window.aos_at_ms),
+            TrackingPhase::Following => {
+                let gap = plan.reception().gap().map(|g| g.recovery_at_ms);
+                gap.filter(|at| self.observed_ms.is_none_or(|now| *at > now))
+                    .or(Some(
+                        plan.window.aos_at_ms + u64::from(plan.window.duration_ms),
+                    ))
+            }
+            TrackingPhase::Reacquiring => self.recovery.as_ref().map(|r| {
+                r.status
+                    .launch_at_ms
+                    .filter(|at| self.observed_ms.is_none_or(|now| *at > now))
+                    .unwrap_or(r.status.episode.deadline_ms())
+            }),
+            _ => None,
+        };
+        phase_deadline
+            .into_iter()
+            .chain(
+                self.last_control_at_ms
+                    .map(|at| at.saturating_add(plan.config.step_ms)),
+            )
+            .min()
     }
 
     /// One bounded planning unit, for a yielding background task. The immutable
@@ -652,13 +831,7 @@ impl TrackingRuntime {
         };
         if let Some(error) = error {
             if state.run.is_some() {
-                self.session.interrupt(
-                    match error {
-                        InputError::Timing(error) => TrackingStop::Timing(error),
-                        other => TrackingStop::Inputs(other),
-                    },
-                    now,
-                )?;
+                self.session.interrupt(TrackingStop::Inputs(error), now)?;
                 self.network_generation = None;
                 self.sync_execution(now);
             } else {

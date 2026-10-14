@@ -39,6 +39,16 @@ class EventTarget {
 // The firmware's real `/api/passes` reply, pinned by ezal-core's passes tests.
 const servedReport = JSON.parse(readFileSync(new URL("./fixtures/passes-report.json", import.meta.url), "utf8"));
 
+function idleTracking(overrides = {}) {
+  return {
+    revision: "0", operator: null, mode: "manual", phase: "idle", run: null, selection: null,
+    plan: { status: "unplanned", reason: null, preview: null },
+    feedback_stale: false, feedback_age_ms: 0,
+    deviation: { run: null, warning: false, maximum_deg: null, outside_ms: 0, current: null },
+    recovery: null, termination: null, summary: null, ...overrides,
+  };
+}
+
 function forecastFixture(overrides = {}) {
   const now = Date.parse("2026-10-07T23:59:00Z") / 1000;
   return {
@@ -48,7 +58,7 @@ function forecastFixture(overrides = {}) {
     observer: { latitude_deg: 51.44266, longitude_deg: -2.84053, altitude_m: 0 },
     min_elevation_deg: 5, min_peak_elevation_deg: 10,
     satellites: [{ name: "METOP-C", available: true, failed: false, experimental: false }],
-    passes: [{ name: "METOP-C", frequency_mhz: "1701.3", experimental: false,
+    passes: [{ norad_id: "43689", name: "METOP-C", frequency_mhz: "1701.3", experimental: false,
       aos_unix_s: now - 30, los_unix_s: now + 90, peak_elevation_deg: 40.5 }],
     ...overrides,
   };
@@ -118,7 +128,7 @@ test("unchanged forecasts leave the live status and rows untouched", async () =>
   const now = forecastFixture().now_unix_s;
   await ui.forecast(forecastFixture({
     valid_until_unix_s: now + 600,
-    passes: [{ name: "METOP-C", frequency_mhz: "1701.3", experimental: false,
+    passes: [{ norad_id: "43689", name: "METOP-C", frequency_mhz: "1701.3", experimental: false,
       aos_unix_s: now + 5, los_unix_s: now + 300, peak_elevation_deg: 40.5 }],
   }));
   const status = ui.ids.get("pass-status");
@@ -206,6 +216,8 @@ test("malformed forecast cannot stop subsequent polling", async () => {
 });
 
 class Element extends EventTarget {
+  attributes = new Map();
+  setAttribute(name, value) { this.attributes.set(name, value); }
   disabled = false;
   dataset = {};
   captures = new Set();
@@ -297,6 +309,7 @@ function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = conf
   const sockets = [];
   const requests = [];
   let telemetry = {
+    tracking: idleTracking(),
     position: { type: "position", a0_mv: 0, a1_mv: 0 },
     feedback: { type: "feedback", azimuth_tenths: null, elevation_tenths: null, control_state: "idle" },
     control: { type: "control", controller: false, azimuth: null, elevation: null, network_ready: true, motion_fault: null, duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0] },
@@ -356,6 +369,7 @@ function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = conf
   let token = 0;
   const freshness = (updates = {}) => {
     telemetry = { ...telemetry, ...updates };
+    telemetry.tracking = { ...telemetry.tracking, operator: telemetry.control.controller ? (telemetry.tracking.operator ?? "1") : null };
     sockets.at(-1).receive({ type: "telemetry", ...telemetry, freshness: { token: String(++token) } });
   };
   if (autoTelemetry) clock.schedule(() => {
@@ -984,4 +998,244 @@ test("network and motion inhibition disable movement and show the latched cause"
   assert.equal(page.ids.get("health").textContent, "azimuth no progress");
   assert.equal(page.buttons.get("up").disabled, true);
   assert.match(page.ids.get("control-status").textContent, /Movement locked: azimuth no progress/);
+});
+
+function trackingFixture(overrides = {}) {
+  const pass = forecastFixture().passes[0];
+  return idleTracking({
+    revision: "9007199254740993", operator: "9007199254740995",
+    selection: { id: "9007199254740997", norad_id: pass.norad_id,
+      aos_unix_s: pass.aos_unix_s, los_unix_s: pass.los_unix_s, associated: true },
+    plan: { status: "supported", reason: null, preview: {
+      route: "over-the-top", azimuth_turns: 1, prepare_unix_s: pass.aos_unix_s - 60,
+      preparation_lead_ms: 60000, bound_deg: 2.8, tolerance_deg: 3, reserve_deg: 1,
+      reception: { aos_unix_s: pass.aos_unix_s, duration_ms: 120000, windows: [[0,120000]], missed: null },
+    } },
+    ...overrides,
+  });
+}
+const trackClick = (ui, action) => ui.ids.get(`tracking-${action}`).dispatch("click");
+const trackingMessages = (ui) => ui.socket.wireMessages.filter((m) => m.startsWith("track:"));
+const ackTracking = (ui, sequence, ok = true, error = null) => ui.socket.receive({ type: "tracking_result", sequence: String(sequence), ok, revision: "9007199254740998", error });
+
+test("only the controller can select a pass and selection sends exact identity without arming", async () => {
+  const ui = dashboard();
+  ui.socket.open();
+  ui.freshness({ tracking: idleTracking() });
+  await ui.forecast(forecastFixture());
+  const select = () => ui.ids.get("pass-rows").children[0].children[4].children[0];
+  assert.ok(select().disabled);
+  select().dispatch("click");
+  assert.deepEqual(trackingMessages(ui), []);
+  ui.control();
+  assert.equal(select().disabled, false);
+  select().dispatch("click");
+  const pass = forecastFixture().passes[0];
+  assert.match(trackingMessages(ui)[0], new RegExp(`^track:\\d+:1:1:0:select:${pass.norad_id}:${pass.aos_unix_s}:${pass.los_unix_s}$`));
+  assert.equal(trackingMessages(ui).length, 1);
+  assert.ok(ui.ids.get("tracking-arm").disabled, "wait for the device plan");
+  assert.equal(ui.ids.get("manual-controls").hidden, false, "selection is a preview");
+  ackTracking(ui, 1);
+  ui.freshness({ tracking: trackingFixture() });
+  assert.equal(select().textContent, "Selected");
+  assert.equal(select().attributes.get("aria-pressed"), "true");
+});
+
+test("arming clears held input, uses exact 64-bit revision and lease, and awaits device mode", () => {
+  const ui = controller(false);
+  ui.freshness({ tracking: trackingFixture() });
+  ui.press("cw", 1);
+  trackClick(ui, "arm");
+  assert.equal(ui.socket.wireMessages.at(-2), "stop");
+  assert.match(trackingMessages(ui)[0], /^track:\d+:9007199254740995:1:9007199254740993:arm$/);
+  assert.equal(ui.ids.get("manual-controls").hidden, false);
+  assert.ok(ui.buttons.get("cw").disabled);
+  trackClick(ui, "arm");
+  assert.equal(trackingMessages(ui).length, 1, "double click cannot repeat intent");
+  ackTracking(ui, 1);
+  assert.ok(ui.buttons.get("cw").disabled, "acknowledgement is not a mode observation");
+  ui.freshness({ tracking: trackingFixture({ mode: "tracking", phase: "armed" }) });
+  assert.equal(ui.ids.get("manual-controls").hidden, true);
+  assert.match(ui.ids.get("tracking-schedule").textContent, /Prepare now requests a new feasibility check/);
+  ui.press("up", 2);
+  ui.clock.advance(config.refreshMs);
+  assert.equal(trackingMessages(ui).length, 1);
+  trackClick(ui, "prepare");
+  assert.match(trackingMessages(ui).at(-1), /:2:9007199254740993:prepare$/);
+});
+
+test("partial reception and automatic plan replacement are visible before arming", () => {
+  const ui = controller();
+  const t = trackingFixture();
+  t.plan.status = "partial";
+  t.plan.preview.reception.windows = [[20000,120000]];
+  t.plan.preview.reception.missed = [0,20000];
+  ui.freshness({ tracking: t });
+  assert.match(ui.ids.get("tracking-plan").textContent, /Partial reception supported/);
+  assert.match(ui.ids.get("tracking-reception").textContent, /Missed interval:.*0:20/);
+  assert.match(ui.ids.get("tracking-arm").textContent, /partial pass/);
+  ui.freshness({ tracking: { ...t, revision: "9007199254741001", plan: { status: "planning", reason: null, preview: null } } });
+  assert.ok(ui.ids.get("tracking-arm").disabled);
+  trackClick(ui, "arm");
+  assert.deepEqual(trackingMessages(ui), []);
+  ui.freshness({ tracking: { ...t, revision: "9007199254741002", plan: { status: "blocked", reason: "Unsupported(Some(PointingBudget))", preview: null } } });
+  assert.match(ui.ids.get("tracking-plan").textContent, /Predicted pointing error exceeds/);
+  assert.equal(ui.ids.get("tracking-reception").textContent, "", "never retain an older successful preview");
+  ui.freshness({ tracking: { ...t, revision: "9007199254741003", plan: { status: "blocked", reason: "Unsupported(Some(Simulation(TravelLimit(Azimuth))))", preview: null } } });
+  assert.match(ui.ids.get("tracking-plan").textContent, /Tracking blocked: Unsupported Some Simulation Travel Limit Azimuth\./, "an unexplained leaf shows its full path");
+});
+
+test("cancel overrides a pending request and remains available with stale or faulty telemetry", () => {
+  const ui = controller(false);
+  ui.freshness({ tracking: trackingFixture({ mode: "tracking", phase: "armed" }) });
+  trackClick(ui, "prepare");
+  ui.clock.advance(config.telemetryTimeoutMs + 1);
+  assert.ok(ui.ids.get("tracking-prepare").disabled);
+  assert.equal(ui.ids.get("tracking-cancel").disabled, false);
+  trackClick(ui, "cancel");
+  assert.match(trackingMessages(ui).at(-1), /^track:0:9007199254740995:2:9007199254740993:cancel$/);
+  ackTracking(ui, 1, false, "Rejected(Lifecycle(StateRevision))");
+  assert.match(ui.ids.get("tracking-message").textContent, /Waiting for device acknowledgement/);
+  ackTracking(ui, 2);
+  ui.freshness({ tracking: trackingFixture({ phase: "cancelled", termination: { reason: "Cancelled", run: null, event: "9007199254740997" } }) });
+  assert.equal(ui.ids.get("manual-controls").hidden, false);
+  assert.match(ui.ids.get("tracking-state").textContent, /Cancelled by controller/);
+  assert.equal(ui.buttons.get("cw").classList.contains("held"), false);
+});
+
+test("returning to Manual explicitly cancels tracking and never restores old holds", () => {
+  const ui = controller();
+  ui.freshness({ tracking: trackingFixture({ mode: "tracking", phase: "following", run: "7" }) });
+  trackClick(ui, "manual");
+  assert.match(trackingMessages(ui)[0], /:manual$/);
+  assert.equal(ui.ids.get("manual-controls").hidden, true);
+  ackTracking(ui, 1);
+  ui.freshness({ tracking: trackingFixture({ phase: "cancelled" }) });
+  assert.equal(ui.ids.get("manual-controls").hidden, false);
+  ui.clock.advance(config.refreshMs * 2);
+  assert.equal(ui.socket.messages.filter((m) => m.startsWith("drive:")).length, 0);
+});
+
+test("tracking survives browser hiding and reconnect without replaying any action", () => {
+  const ui = controller();
+  const running = trackingFixture({ mode: "tracking", phase: "following", run: "7" });
+  ui.freshness({ tracking: running });
+  for (const event of ["blur", "pagehide", "beforeunload"]) ui.window.dispatch(event);
+  ui.document.hidden = true;
+  ui.document.dispatch("visibilitychange");
+  assert.deepEqual(ui.socket.wireMessages, []);
+  const old = ui.socket;
+  old.close();
+  ui.clock.advance(400);
+  ui.socket.open();
+  ui.document.hidden = false;
+  ui.document.dispatch("visibilitychange");
+  ui.freshness({ tracking: running });
+  assert.match(ui.ids.get("tracking-state").textContent, /Tracking · following · viewer/);
+  for (const action of ["arm", "prepare", "cancel", "manual"]) {
+    assert.ok(ui.ids.get(`tracking-${action}`).disabled);
+    trackClick(ui, action);
+  }
+  old.receive({ type: "tracking_result", sequence: "1", ok: true });
+  assert.deepEqual(ui.socket.wireMessages, []);
+  assert.equal(ui.ids.get("manual-controls").hidden, true);
+  ui.control();
+  trackClick(ui, "cancel");
+  assert.equal(trackingMessages(ui).length, 1, "a fresh leased owner can interrupt the same run");
+});
+
+test("pointing shows device-computed spherical error at the matched sample time and hides stale values", () => {
+  const ui = controller(false);
+  const t = trackingFixture({ mode: "tracking", phase: "following", run: "7", feedback_age_ms: 100,
+    deviation: { run: "7", warning: true, maximum_deg: 4.2, outside_ms: 1200,
+      current: { age_ms: 100, desired: [1,60], measured: [181,120], degrees: 4.2, uncertainty_deg: 1.1 } } });
+  ui.freshness({ tracking: t });
+  assert.match(ui.ids.get("tracking-deviation").textContent, /Pointing warning · Spherical deviation 4.20°/);
+  assert.match(ui.ids.get("tracking-pointing").textContent, /desired sky 1.00° az \/ 60.00° el; measured dish 181.00° az \/ 120.00° el/);
+  ui.clock.advance(config.feedbackMaxAgeMs - 100);
+  assert.match(ui.ids.get("tracking-deviation").textContent, /unavailable.*stale/);
+  assert.equal(ui.ids.get("tracking-pointing").textContent, "");
+  ui.freshness({ tracking: { ...t, feedback_stale: true } });
+  assert.match(ui.ids.get("tracking-deviation").textContent, /stale or invalid/);
+});
+
+test("recovery shows its fixed deadline, intercept estimate, retries and retained final metrics", () => {
+  const ui = controller(false);
+  const t = trackingFixture({ mode: "tracking", phase: "reacquiring", run: "7", recovery: {
+    episode: "9", cause: "Deviation", attempts: 1, planning: false, work_steps: 2000,
+    remaining_ms: 28000, launch_in_ms: 0, intercept_in_ms: 5000, hold: null,
+  } });
+  ui.freshness({ tracking: t });
+  assert.match(ui.ids.get("tracking-recovery").textContent, /Reacquiring · Measured pointing error exceeded tolerance · attempt 1.*0:28 until fixed deadline.*Predicted join in 0:05; measured recovery still required/);
+  ui.freshness({ tracking: { ...t, recovery: { ...t.recovery, attempts: 2, remaining_ms: 25000, hold: "NoIntercept", intercept_in_ms: null } } });
+  assert.match(ui.ids.get("tracking-recovery").textContent, /attempt 2.*holding and retrying.*0:25.*No validated intercept/);
+  const summary = { termination: { reason: "ReacquisitionTimeout", event: "3", run: "7" },
+    reception: t.plan.preview.reception, deviation: { run: "7", warning: false, current: null, maximum_deg: 10.5, outside_ms: 30000 } };
+  ui.freshness({ tracking: trackingFixture({ phase: "stopped", termination: summary.termination, summary }) });
+  assert.match(ui.ids.get("tracking-summary").textContent, /Last finished run 7: Recovery deadline reached. Peak measured error 10.50°; observed outside tolerance 0:30/);
+  assert.match(ui.ids.get("tracking-summary").textContent, /predictions, not receiver-lock measurements/);
+  ui.freshness({ tracking: trackingFixture({ summary }) });
+  assert.match(ui.ids.get("tracking-summary").textContent, /Last finished run 7/, "new preview retains the preceding run summary");
+});
+
+test("selection follows device reassociation and survives missing HTTP forecasts", async () => {
+  const ui = controller();
+  const t = trackingFixture();
+  await ui.forecast(forecastFixture());
+  ui.freshness({ tracking: t });
+  const changed = forecastFixture();
+  changed.passes[0].aos_unix_s += 20;
+  changed.passes[0].los_unix_s += 20;
+  ui.clock.advance(15000);
+  await ui.forecast(changed);
+  ui.freshness({ tracking: { ...t, selection: { ...t.selection, aos_unix_s: changed.passes[0].aos_unix_s, los_unix_s: changed.passes[0].los_unix_s } } });
+  assert.equal(ui.ids.get("pass-rows").children.filter((r) => r.classList.contains("selected")).length, 1);
+  ui.clock.advance(15000);
+  await ui.forecast(changed, false);
+  assert.equal(ui.ids.get("pass-rows").children.length, 0);
+  assert.match(ui.ids.get("tracking-selection").textContent, /METOP-C/, "selection comes from device tracking, independently of the row list");
+  assert.deepEqual(trackingMessages(ui), []);
+});
+
+test("rejected, unacknowledged and malformed tracking messages cannot replay intent or renew authority", () => {
+  const ui = controller(false);
+  ui.freshness({ tracking: trackingFixture() });
+  trackClick(ui, "arm");
+  ackTracking(ui, 1, false, "Rejected(Lifecycle(StateRevision))");
+  assert.match(ui.ids.get("tracking-message").textContent, /Plan changed; review/);
+  ui.freshness({ tracking: trackingFixture() });
+  trackClick(ui, "arm");
+  const bad = { ...trackingFixture(), deviation: { current: {} } };
+  ui.clock.advance(900);
+  ui.socket.receive({ type: "telemetry", ...ui.telemetry, tracking: bad, freshness: { token: "999" } });
+  ui.clock.advance(4200);
+  assert.match(ui.ids.get("tracking-message").textContent, /No acknowledgement received/);
+  assert.equal(trackingMessages(ui).length, 2);
+  assert.ok(ui.ids.get("tracking-arm").disabled, "acknowledgements never refresh observations");
+});
+
+test("real firmware tracking snapshots render arming, independent following, reconnect and completion", () => {
+  const snapshots = JSON.parse(readFileSync(new URL("./fixtures/tracking-telemetry.json", import.meta.url), "utf8"));
+  const ui = dashboard("http:", false);
+  ui.socket.open();
+  ui.socket.receive(snapshots[0]);
+  assert.match(ui.ids.get("tracking-state").textContent, /Tracking · armed · you have control/);
+  assert.match(ui.ids.get("tracking-plan").textContent, /Full pass supported/);
+  assert.equal(ui.ids.get("manual-controls").hidden, true);
+  ui.socket.receive(snapshots[1]);
+  assert.match(ui.ids.get("tracking-state").textContent, /viewer/);
+  assert.ok(ui.ids.get("tracking-cancel").disabled);
+  ui.socket.receive(snapshots[2]);
+  assert.match(ui.ids.get("tracking-state").textContent, /preparing/);
+  ui.socket.receive(snapshots[3]);
+  assert.match(ui.ids.get("tracking-state").textContent, /following/);
+  assert.match(ui.ids.get("tracking-deviation").textContent, /Spherical deviation/);
+  assert.match(ui.ids.get("tracking-pointing").textContent, /At the same sample time/);
+  ui.socket.receive(snapshots[4]);
+  assert.equal(ui.ids.get("tracking-cancel").disabled, false);
+  ui.socket.receive(snapshots[5]);
+  assert.equal(ui.ids.get("manual-controls").hidden, false);
+  assert.match(ui.ids.get("tracking-state").textContent, /complete/);
+  assert.match(ui.ids.get("tracking-summary").textContent, /Pass finished/);
+  assert.deepEqual(ui.socket.wireMessages, [], "reading status never becomes operator input");
 });
