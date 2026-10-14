@@ -64,6 +64,9 @@ pending activation. A stalled whole executor can only cut output on resumption
 or hardware reset, so this is not a hard 20 ms physical release guarantee. Only the output task feeds the 500 ms hardware watchdog, after applying
 the permitted GPIO state. All relay/command timing uses monotonic uptime; an
 armed pass freezes its validated UTC-to-uptime mapping before execution.
+Every SNTP attempt publishes the clock; reversed uptime or an exhausted
+revision disarms it until reboot, which stops a run with
+`Inputs(Timing(Unavailable))` and blocks preview.
 
 ## Verification
 

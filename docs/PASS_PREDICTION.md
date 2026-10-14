@@ -906,8 +906,7 @@ server precision and a rounding allowance. The packet fields follow
 [RFC 5905](https://www.rfc-editor.org/rfc/rfc5905.html#section-7.3).
 It assumes honest time service and bounded local clock drift; SNTP provides no
 cryptographic time authentication. Samples announcing a leap remain usable
-for the advisory display but cannot authorize tracking. The old unquantified
-clock setter also cannot authorize execution.
+for the advisory display but cannot authorize tracking.
 
 [`ExecutionClock`](../crates/ezal-core/src/tracking/clock.rs) reserves an explicit
 share of the planner's existing uncertainty allocation:

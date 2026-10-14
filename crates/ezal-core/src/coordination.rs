@@ -116,7 +116,8 @@ impl CoordinationState {
         self.network
     }
 
-    /// Publish the accepted fractional clock, preserving its original anchor.
+    /// Publish the clock after every synchronization attempt; a disarmed clock
+    /// stops a run and blocks preview.
     pub fn publish_clock(&mut self, clock: UtcClock, now_ms: u64) {
         self.clock = clock;
         let _ = self.tracking.service(self.observation(now_ms));

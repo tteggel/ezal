@@ -285,3 +285,34 @@ fn telemetry_fits_its_fixed_buffer_and_reports_formatting_failure() {
     message.write_json(&mut payload).unwrap();
     assert!(payload.contains(r#""freshness":null,"tracking":"#));
 }
+
+#[test]
+fn tracking_replies_fit_their_fixed_buffer() {
+    use ezal_core::operator::LeaseError;
+    use ezal_core::protocol::{TrackingRejection, TrackingReply, TRACKING_REPLY_CAPACITY};
+    use ezal_core::tracking::{LifecycleError, RuntimeError};
+
+    // Maximum-width identifiers and the longest rejection name.
+    let widest = [
+        (
+            Ok(u64::MAX),
+            r#"{"type":"tracking_result","sequence":"18446744073709551615","ok":true,"revision":"18446744073709551615","error":null}"#,
+        ),
+        (
+            Err(TrackingRejection::Rejected(RuntimeError::Lifecycle(
+                LifecycleError::Lease(LeaseError::ClockOrCounter),
+            ))),
+            r#"{"type":"tracking_result","sequence":"18446744073709551615","ok":false,"revision":null,"error":"Rejected(Lifecycle(Lease(ClockOrCounter)))"}"#,
+        ),
+    ];
+    for (result, expected) in widest {
+        let mut json: heapless::String<TRACKING_REPLY_CAPACITY> = heapless::String::new();
+        TrackingReply {
+            sequence: u64::MAX,
+            result,
+        }
+        .write_json(&mut json)
+        .unwrap();
+        assert_eq!(json, expected);
+    }
+}

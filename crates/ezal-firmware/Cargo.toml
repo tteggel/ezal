@@ -10,7 +10,7 @@
 #   * `embassy-time`      — async-aware timers (used by `Timer::after`)
 #   * `defmt` + `defmt-rtt` — log framework + transport over the debug probe
 #   * `panic-probe`       — panic handler that funnels to defmt
-#   * `cortex-m` / `cortex-m-rt` — startup code, ISR vectors, panic plumbing
+#   * `cortex-m-rt`       — startup code, ISR vectors, stack limit
 #   * `ezal-core`         — *our* pure logic crate
 #
 # Anything that is "real-time-ish" or talks to peripherals belongs here.
@@ -25,26 +25,16 @@ edition.workspace      = true
 license.workspace      = true
 authors.workspace      = true
 repository.workspace   = true
-rust-version.workspace = true
-
-# We have a custom `build.rs` that stages `memory.x` into OUT_DIR so the
-# linker can find it. See build.rs for the full story.
-build = "build.rs"
 
 # Cargo discovers the single `ezal-firmware` binary from `src/main.rs`.
-
-[features]
-default = []
-
-# Diagnostic only: dumps CYW43 firmware console logs when paired with a debug
-# defmt filter, e.g. `DEFMT_LOG=debug cargo run ... --features cyw43-firmware-logs`.
-cyw43-firmware-logs = ["cyw43/firmware-logs"]
 
 [dependencies]
 ezal-core = { path = "../ezal-core" }
 
-cortex-m         = { workspace = true }
-cortex-m-rt      = { workspace = true }
+# `set-msplim`: Reset loads MSPLIM with `_stack_end`, so a stack overflow faults
+# instead of overwriting statics. memory.x defines `_stack_end` and reserves
+# the stack above it.
+cortex-m-rt      = { workspace = true, features = ["set-msplim"] }
 defmt            = { workspace = true }
 defmt-rtt        = { workspace = true }
 panic-probe      = { workspace = true }

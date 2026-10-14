@@ -36,12 +36,12 @@ pub async fn synchronize(stack: Stack<'static>) -> ! {
             Ok(Ok((uptime, sample))) => {
                 let accepted = CLOCK.lock(|clock| {
                     let mut updated = clock.get();
-                    let accepted = updated.synchronize_sample(uptime, sample).is_ok();
+                    let accepted = updated.synchronize(uptime, sample).is_ok();
                     clock.set(updated);
                     accepted
                 });
+                crate::state::STATE.publish_clock(clock());
                 if accepted {
-                    crate::state::STATE.publish_clock(clock());
                     defmt::info!(
                         "NTP synchronized: Unix seconds {=u64}, uncertainty {=u64} ms",
                         sample.unix_ms() / 1000,

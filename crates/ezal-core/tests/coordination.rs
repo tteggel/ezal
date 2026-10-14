@@ -1,6 +1,7 @@
 use ezal_core::coordination::CoordinationState;
 use ezal_core::drive::{AzimuthDirection, Command, DriveCommand};
 use ezal_core::mailbox::CommandEnvelope;
+use ezal_core::operator::{OperatorGrant, OPERATOR_LEASE_MS};
 
 const MOVE: CommandEnvelope = CommandEnvelope {
     command: Command::Jog(DriveCommand {
@@ -141,4 +142,24 @@ fn readers_and_repeated_claims_do_not_renew_an_operator_lease() {
     assert!(!state.renew_operator(token, 5000));
     assert!(state.take_control(viewer, 5000));
     assert!(!state.release_client(owner, 5000));
+}
+
+#[test]
+fn renewal_extends_the_same_grant_only_while_the_network_is_current() {
+    let mut state = CoordinationState::new();
+    state.publish_network(true, 0);
+    let owner = state.register_client(0);
+    let token = state.operator(owner, 0).unwrap().token;
+    state.publish_network(true, 200);
+    assert!(state.renew_operator(token, 400));
+    assert_eq!(
+        state.operator(owner, 400),
+        Some(OperatorGrant {
+            token,
+            expires_at_ms: 400 + OPERATOR_LEASE_MS,
+        })
+    );
+    // The observation from 200 expires at 500 and revokes the renewed lease with it.
+    assert!(!state.renew_operator(token, 700));
+    assert!(state.operator(owner, 700).is_none());
 }

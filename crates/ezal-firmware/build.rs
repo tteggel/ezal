@@ -2,10 +2,8 @@
 //!
 //! Three responsibilities:
 //!
-//!  1. Stage `memory.x` into Cargo's `OUT_DIR` so the linker can find it.
-//!     The reason we don't keep `memory.x` next to the elf is that the
-//!     linker searches its `-L` paths for `INCLUDE`d scripts, and Cargo's
-//!     `OUT_DIR` is the conventional place to drop generated artefacts.
+//!  1. Put this crate's directory on the linker search path, where the
+//!     `INCLUDE memory.x` in cortex-m-rt's `link.x` finds `memory.x`.
 //!
 //!  2. Bake WiFi credentials and station configuration from `.env` into the build. The Pico has no
 //!     filesystem, so there is nowhere to read an SSID/password from at
@@ -34,65 +32,48 @@
 //!     would re-run `build.rs` on every build (slow) or never (wrong);
 //!     the `rerun-if-changed` / `rerun-if-env-changed` lines hit the right
 //!     balance.
-//!
-//! The link chain — for the curious — is:
-//!
-//!   rustc → linker (`rust-lld`)
-//!         → `link.x`            (from `cortex-m-rt`, see .cargo/config)
-//!             → `INCLUDE memory.x`
-//!         → `defmt.x`           (from `defmt`, also in .cargo/config)
-//!
-//! `memory.x` defines `MEMORY` (FLASH and RAM origin/length) and
-//! `_stack_start`; `cortex-m-rt`'s `link.x` uses those symbols to lay out
-//! sections.
 
 use std::env;
 use std::fs;
-use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Names of the credential variables we surface to the crate via `env!`.
 const WIFI_VARS: [&str; 2] = ["EZAL_WIFI_SSID", "EZAL_WIFI_PASSWORD"];
+
+// Names of the station settings generated into `prediction_config.rs`.
+const LATITUDE: &str = "EZAL_LATITUDE_DEG";
+const LONGITUDE: &str = "EZAL_LONGITUDE_DEG";
+const ALTITUDE: &str = "EZAL_ALTITUDE_M";
+const MIN_ELEVATION: &str = "EZAL_MIN_ELEVATION_DEG";
+const MIN_PEAK_ELEVATION: &str = "EZAL_MIN_PEAK_ELEVATION_DEG";
+const INCLUDE_EXPERIMENTAL: &str = "EZAL_INCLUDE_EXPERIMENTAL";
 const PREDICTION_VARS: [&str; 6] = [
-    "EZAL_LATITUDE_DEG",
-    "EZAL_LONGITUDE_DEG",
-    "EZAL_ALTITUDE_M",
-    "EZAL_MIN_ELEVATION_DEG",
-    "EZAL_MIN_PEAK_ELEVATION_DEG",
-    "EZAL_INCLUDE_EXPERIMENTAL",
+    LATITUDE,
+    LONGITUDE,
+    ALTITUDE,
+    MIN_ELEVATION,
+    MIN_PEAK_ELEVATION,
+    INCLUDE_EXPERIMENTAL,
 ];
 
 fn main() {
-    stage_memory_x();
-    bake_configuration();
-}
-
-/// Responsibility 1: put `memory.x` where the linker will find it.
-fn stage_memory_x() {
-    let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR not set by cargo"));
-
-    File::create(out.join("memory.x"))
-        .expect("failed to create OUT_DIR/memory.x")
-        .write_all(include_bytes!("memory.x"))
-        .expect("failed to write OUT_DIR/memory.x");
-
-    // Add OUT_DIR to the linker search path so `INCLUDE memory.x` resolves.
-    println!("cargo:rustc-link-search={}", out.display());
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    // Responsibility 1: `link.x` resolves `INCLUDE memory.x` against this path.
+    println!("cargo:rustc-link-search={}", manifest_dir.display());
+    bake_configuration(&manifest_dir);
 }
 
 /// Responsibilities 2 and 3: resolve the configuration, generate the station
 /// settings, and hand the WiFi credentials to rustc as compile-time
 /// environment variables.
-fn bake_configuration() {
+fn bake_configuration(manifest_dir: &Path) {
     // The `.env` lives at the workspace root, two levels up from this crate's
     // manifest directory (crates/ezal-firmware/ → ../../).
-    let manifest_dir =
-        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     let env_path = manifest_dir
         .parent()
         .and_then(Path::parent)
-        .unwrap_or(&manifest_dir)
+        .unwrap_or(manifest_dir)
         .join(".env");
 
     // Re-run only when these change. Without the explicit list, *any*
@@ -173,19 +154,19 @@ fn write_prediction_config(lookup: impl Fn(&str) -> String) {
             .unwrap_or_else(|| panic!("{name} must be a finite decimal number"));
         format!("{parsed:?}")
     };
-    let latitude = number(PREDICTION_VARS[0], "DEFAULT.observer.latitude_deg");
-    let longitude = number(PREDICTION_VARS[1], "DEFAULT.observer.longitude_deg");
-    let altitude = number(PREDICTION_VARS[2], "DEFAULT.observer.altitude_m");
-    let mask = number(PREDICTION_VARS[3], "DEFAULT.min_elevation_deg");
+    let latitude = number(LATITUDE, "DEFAULT.observer.latitude_deg");
+    let longitude = number(LONGITUDE, "DEFAULT.observer.longitude_deg");
+    let altitude = number(ALTITUDE, "DEFAULT.observer.altitude_m");
+    let mask = number(MIN_ELEVATION, "DEFAULT.min_elevation_deg");
     let peak = number(
-        PREDICTION_VARS[4],
+        MIN_PEAK_ELEVATION,
         "ezal_core::passes::Config::default_min_peak(min_elevation_deg)",
     );
-    let experimental = match lookup(PREDICTION_VARS[5]).as_str() {
+    let experimental = match lookup(INCLUDE_EXPERIMENTAL).as_str() {
         "" => "DEFAULT.include_experimental",
         "false" => "false",
         "true" => "true",
-        _ => panic!("EZAL_INCLUDE_EXPERIMENTAL must be true or false"),
+        _ => panic!("{INCLUDE_EXPERIMENTAL} must be true or false"),
     };
     let config = format!(
         "// Generated by build.rs from the process environment or `.env`.\n\

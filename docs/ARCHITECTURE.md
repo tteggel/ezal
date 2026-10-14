@@ -169,8 +169,8 @@ a pending movement replaces its entire envelope, including the original expiry.
 Command lifetime and remaining duty must both cover an activation's minimum on-time.
 Feedback and network deadlines independently revoke movement; shortening the
 activation lease to the 300 ms network deadline would prevent every activation.
-The private relay timing model retains ordinary `Drive`/`Stop` semantics; manual
-admission produces only operator-held `Jog` or immediate `Inhibit` requests.
+Tracking `Drive` releases an axis it no longer requests after its minimum on-time;
+manual admission produces only operator-held `Jog` or immediate `Inhibit` requests.
 
 Firmware applies and records the first service result before generating a
 tracking command from that coherent actuator snapshot. It then drains with the

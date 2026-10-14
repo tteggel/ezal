@@ -1,5 +1,8 @@
 //! Bounded tracking wire projections. No route/source clones, propagation, I/O,
 //! lease renewal or lifecycle transitions occur while reading telemetry.
+//! Reasons are written in their `Debug` form, so every reason type nests closed
+//! enums down to fieldless leaves (`Rejected(Lifecycle(StateRevision))`), which the
+//! dashboard explains by innermost variant.
 
 use core::fmt;
 
@@ -144,6 +147,10 @@ pub enum TrackingRejection {
     /// The runtime rejected ordering, phase, revision or source validity.
     Rejected(RuntimeError),
 }
+
+/// Fixed acknowledgement buffer: maximum-width identifiers and the longest
+/// rejection need 140 bytes.
+pub const TRACKING_REPLY_CAPACITY: usize = 192;
 
 /// Acknowledgement is correlated with intent, and never renews observation age.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

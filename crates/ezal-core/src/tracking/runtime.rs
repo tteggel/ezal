@@ -28,7 +28,7 @@ use crate::position::{InstalledCalibration, Pointing};
 pub struct RuntimeObservation {
     /// Current monotonic instant, shared with output leases.
     pub now_ms: u64,
-    /// Most recently accepted SNTP clock, or the same clock after a failed retry.
+    /// SNTP clock after its latest synchronization attempt; disarmed, it has no anchor.
     pub clock: UtcClock,
     /// Link/address observations from the existing network supervisor.
     pub network: NetworkGate,
@@ -831,13 +831,7 @@ impl TrackingRuntime {
         };
         if let Some(error) = error {
             if state.run.is_some() {
-                self.session.interrupt(
-                    match error {
-                        InputError::Timing(error) => TrackingStop::Timing(error),
-                        other => TrackingStop::Inputs(other),
-                    },
-                    now,
-                )?;
+                self.session.interrupt(TrackingStop::Inputs(error), now)?;
                 self.network_generation = None;
                 self.sync_execution(now);
             } else {

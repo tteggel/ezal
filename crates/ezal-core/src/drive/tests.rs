@@ -68,7 +68,7 @@ fn relay_timing_holds_active_outputs_for_the_minimum_time() {
     assert_eq!(relay_timing.actual(), cw);
     assert_eq!(relay_timing.target(), cw);
 
-    assert!(!relay_timing.set_target(Command::Stop, 100));
+    assert!(!relay_timing.set_target(Command::Drive(DriveCommand::IDLE), 100));
     assert_eq!(relay_timing.actual(), cw);
     assert_eq!(relay_timing.next_transition_ms(100), Some(510));
 
@@ -119,7 +119,7 @@ fn relay_timing_delays_reversals_without_conflicting_outputs() {
     );
 
     assert!(!relay_timing.set_target(
-        Command::Stop,
+        Command::Drive(DriveCommand::IDLE),
         OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS + 1
     ));
     assert_eq!(relay_timing.actual(), ccw);
@@ -138,7 +138,7 @@ fn relay_timing_holds_inactive_outputs_for_the_minimum_time() {
     };
 
     assert!(relay_timing.set_target(Command::Drive(cw), 0));
-    assert!(relay_timing.set_target(Command::Stop, OUTPUT_MIN_ACTIVE_MS));
+    assert!(relay_timing.set_target(Command::Drive(DriveCommand::IDLE), OUTPUT_MIN_ACTIVE_MS));
     assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
 
     assert!(!relay_timing.set_target(Command::Drive(cw), OUTPUT_MIN_ACTIVE_MS + 100));
@@ -232,7 +232,7 @@ fn clockwise() -> Command {
 fn a_delayed_activation_waits_until_its_lease_covers_the_minimum_on_time() {
     let mut guard = ActuatorGuard::new();
     guard.command(clockwise(), 0);
-    guard.command(Command::Stop, 500);
+    guard.command(Command::Drive(DriveCommand::IDLE), 500);
     // The off-hold ends at 2500, but this lease ends at 2750: starting then
     // would leave only 250 ms before expiry cut the relay.
     guard.command(clockwise(), 2_000);
@@ -316,12 +316,12 @@ fn a_late_refresh_cannot_extend_an_already_expired_lease() {
 fn ordinary_release_at_a_pending_activation_deadline_never_energises_the_output() {
     let mut guard = ActuatorGuard::new();
     guard.command(clockwise(), 0);
-    guard.command(Command::Stop, 500);
+    guard.command(Command::Drive(DriveCommand::IDLE), 500);
     guard.command(clockwise(), 2_000);
     guard.command(clockwise(), 2_300);
     assert_eq!(guard.actual(), DriveCommand::IDLE);
     assert_eq!(guard.next_transition_ms(2_300), Some(2_500));
-    assert!(!guard.command(Command::Stop, 2_500));
+    assert!(!guard.command(Command::Drive(DriveCommand::IDLE), 2_500));
     assert_eq!(guard.actual(), DriveCommand::IDLE);
     assert_eq!(guard.target(), DriveCommand::IDLE);
     assert_eq!(guard.next_transition_ms(2_500), None);
@@ -331,11 +331,11 @@ fn ordinary_release_at_a_pending_activation_deadline_never_energises_the_output(
 fn ordinary_release_of_a_leased_activation_ends_at_its_minimum_on_time() {
     let mut guard = ActuatorGuard::new();
     guard.command(clockwise(), 0);
-    guard.command(Command::Stop, 500);
+    guard.command(Command::Drive(DriveCommand::IDLE), 500);
     guard.command(clockwise(), 2_000);
     guard.command(clockwise(), 2_300);
     assert!(guard.update(2_500));
-    guard.command(Command::Stop, 2_600);
+    guard.command(Command::Drive(DriveCommand::IDLE), 2_600);
     // Even a no-op interlock check must retain the lease while actual is on.
     guard.inhibit_axes(false, false, 2_600);
     assert!(guard.actual().is_active());

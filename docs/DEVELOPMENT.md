@@ -5,7 +5,7 @@ on a fresh machine, and explains the day-to-day workflow.
 
 ## One-time setup
 
-ezal pins the regular build and test tools — Rust, probe-rs, flip-link, picotool, Node.js,
+ezal pins the regular build and test tools — Rust, probe-rs, picotool, Node.js,
 the Python + schemdraw stack used to re-render the schematic — into a
 single `flake.nix` so every contributor gets the same toolchain on every
 platform. The flake is loaded automatically by [direnv](https://direnv.net)
@@ -44,9 +44,6 @@ When the shell is loaded you have:
 - `cargo`, `rustc`, `rustfmt`, `clippy` pinned to the version in
   `rust-toolchain.toml`,
 - `probe-rs` — used by `cargo run` to flash and stream defmt logs,
-- `flip-link` — optional linker wrapper for stack-overflow trapping
-  (off by default in `.cargo/config.toml`; uncomment the `linker =`
-  line to enable it),
 - `picotool` — optional, for UF2 / BOOTSEL flashing without a probe,
 - `jq` — reads Cargo's executable artifact path during UF2 packaging,
 - `node` — runs dashboard behavior tests with its built-in test runner,
@@ -124,7 +121,6 @@ for the dashboard tests, and picotool and jq separately for UF2 packaging.
 ```bash
 rustup show                                # installs the pinned toolchain
 cargo install --locked probe-rs-tools
-cargo install --locked flip-link           # optional
 node --version                            # Node.js 18+ for dashboard tests
 # picotool: https://github.com/raspberrypi/picotool
 # Only needed if you're re-rendering the schematic:
@@ -318,8 +314,14 @@ so do not select its test targets with `--workspace --all-targets`.
 
 CI runs these checks, the test scripts, and one firmware job that builds,
 lints and packages the firmware, uploading its ELF and UF2 under
-`dist/`. The optional `cyw43-firmware-logs` feature enables radio diagnostics
-independently; it does not select a control mode.
+`dist/`.
+
+To dump the CYW43 radio's own console log, enable the driver's
+diagnostic feature with a debug defmt filter:
+
+```bash
+DEFMT_LOG=debug cargo run -p ezal-firmware --release --features cyw43/firmware-logs
+```
 
 ### Watching for file changes
 
@@ -398,8 +400,16 @@ watchdog timeout. A debugger reset clears that inhibition.
 
   The address should be just past `.vector_table` (≈ `0x10000114`), not
   several KiB in.
-- **Stack overflow** → inspect stack usage and large local buffers; enable
-  `flip-link` so an overflow traps before corrupting static state.
+- **Stack overflow** → inspect stack usage and large local buffers. Reset
+  loads MSPLIM with `_stack_end` (cortex-m-rt's `set-msplim` feature), so a
+  stack pointer below the reserved stack faults instead of overwriting static
+  state; `memory.x` puts `_stack_end` on an 8-byte boundary because MSPLIM
+  ignores the low three bits. Once `direction_task` has armed the watchdog,
+  the fault stops the feeding and the board reboots with motion inhibited;
+  before that, the core halts (in HardFault, or locked up when the handler's
+  first push crosses the limit again) until a manual reset, with the
+  direction outputs low or still in their reset state, so every switch stays
+  off.
 
 ### Hardware verification after safety changes
 

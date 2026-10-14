@@ -3,6 +3,8 @@
 
 #![no_std]
 #![no_main]
+// Computing the layout of the web task's future, whose type nests picoserve's
+// router, exceeds rustc's default query depth of 128.
 #![recursion_limit = "256"]
 
 // ─── modules ────────────────────────────────────────────────────────────
@@ -25,7 +27,6 @@ use embassy_net::StackResources;
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::dma;
-use embassy_rp::gpio::{Level, Output};
 use embassy_rp::i2c::InterruptHandler as I2cInterruptHandler;
 use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0};
@@ -87,19 +88,7 @@ async fn park<T>(resources: T) -> ! {
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    // Direction-switch outputs, initially low and ordered to match the
-    // schematic:
-    //
-    //   GP10 → DIN 2  CW  (right)   D1
-    //   GP11 → DIN 4  CCW (left)    D2
-    //   GP20 → DIN 3  UP            D3
-    //   GP21 → DIN 5  DOWN          D4
-    let directions = drive::DirectionOutputs::new(
-        Output::new(p.PIN_10, Level::Low),
-        Output::new(p.PIN_11, Level::Low),
-        Output::new(p.PIN_20, Level::Low),
-        Output::new(p.PIN_21, Level::Low),
-    );
+    let directions = drive::DirectionOutputs::new(p.PIN_10, p.PIN_11, p.PIN_20, p.PIN_21);
     let mut watchdog = embassy_rp::watchdog::Watchdog::new(p.WATCHDOG);
     if watchdog::firmware_timeout_caused_reset(&mut watchdog) {
         // Keep the owned outputs low until a hardware reset clears the reason.
@@ -117,11 +106,11 @@ async fn main(spawner: Spawner) {
     // POST before WiFi so feedback diagnostics remain available during retry.
     // The actuator's network gate keeps every direction low until readiness.
     let i2c = I2c::new_async(p.I2C0, p.PIN_5, p.PIN_4, Irqs, i2c::Config::default());
-    let mut adc = Ads1015::new(i2c, ezal_core::ads1015::I2C_ADDR);
+    let mut adc = Ads1015::new(i2c);
 
     info!(
         "ezal adc-bringup: POSTing ADS1015 at 0x{=u8:x}",
-        ezal_core::ads1015::I2C_ADDR
+        ads1015::I2C_ADDR
     );
     match with_timeout(ADC_POST_TIMEOUT, adc.post()).await {
         Ok(Ok(r)) => {

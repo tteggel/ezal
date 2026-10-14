@@ -30,6 +30,11 @@ use embassy_time::{Duration, Timer};
 use ezal_core::ads1015 as ads;
 use ezal_core::ads1015::{DataRate, Mux, Register, FEEDBACK_FULL_SCALE as FS};
 
+/// 7-bit I²C address of the ADS1015 with its ADDR pin tied to GND — the
+/// wiring on the ezal interface board. (Tying ADDR to VDD / SDA / SCL would
+/// instead give 0x49 / 0x4A / 0x4B; we only ever use 0x48.)
+pub const I2C_ADDR: u8 = 0x48;
+
 /// Data rate for the single-shot reads: 1600 SPS ⇒ ≈625 µs per conversion.
 const DR: DataRate = DataRate::Sps1600;
 
@@ -38,10 +43,9 @@ const DR: DataRate = DataRate::Sps1600;
 /// is ever lowered below ~1 kSPS this needs to grow to match.
 const CONVERSION_WAIT: Duration = Duration::from_millis(1);
 
-/// An ADS1015 reachable over an owned I²C bus at a fixed 7-bit address.
+/// An ADS1015 reachable over an owned I²C bus at [`I2C_ADDR`].
 pub struct Ads1015<'d> {
     i2c: I2c<'d, I2C0, Async>,
-    addr: u8,
 }
 
 /// What a successful [`Ads1015::post`] measured, for logging.
@@ -81,10 +85,9 @@ pub enum PostError {
 }
 
 impl<'d> Ads1015<'d> {
-    /// Wrap an already-configured I²C bus. `addr` is normally
-    /// [`ezal_core::ads1015::I2C_ADDR`].
-    pub fn new(i2c: I2c<'d, I2C0, Async>, addr: u8) -> Self {
-        Self { i2c, addr }
+    /// Wrap an already-configured I²C bus.
+    pub fn new(i2c: I2c<'d, I2C0, Async>) -> Self {
+        Self { i2c }
     }
 
     /// Run the power-on self-test. On success the device is left configured
@@ -95,7 +98,7 @@ impl<'d> Ads1015<'d> {
     /// do not use this bus again until hardware reset; the HAL does not promise
     /// that dropping its transaction future restores an idle controller.
     pub async fn post(&mut self) -> Result<PostReport, PostError> {
-        // 1. Presence: a NACK here means nothing is answering at `addr`.
+        // 1. Presence: a NACK here means nothing is answering at `I2C_ADDR`.
         self.read_reg(Register::Config)
             .await
             .map_err(|_| PostError::NoDevice)?;
@@ -168,14 +171,14 @@ impl<'d> Ads1015<'d> {
     /// Write a 16-bit value to `reg`, big-endian, as the ADS1015 expects.
     async fn write_reg(&mut self, reg: Register, value: u16) -> Result<(), I2cError> {
         let [hi, lo] = value.to_be_bytes();
-        self.i2c.write_async(self.addr, [reg.addr(), hi, lo]).await
+        self.i2c.write_async(I2C_ADDR, [reg.addr(), hi, lo]).await
     }
 
     /// Read the 16-bit value of `reg`.
     async fn read_reg(&mut self, reg: Register) -> Result<u16, I2cError> {
         let mut buf = [0u8; 2];
         self.i2c
-            .write_read_async(self.addr, [reg.addr()], &mut buf)
+            .write_read_async(I2C_ADDR, [reg.addr()], &mut buf)
             .await?;
         Ok(u16::from_be_bytes(buf))
     }

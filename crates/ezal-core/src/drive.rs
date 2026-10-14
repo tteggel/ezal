@@ -129,8 +129,6 @@ pub enum Command {
     /// axis the operator releases or reverses stops immediately; reactivation
     /// still waits for the minimum inactive time.
     Jog(DriveCommand),
-    /// Ordinary controller release, respecting relay minimum active time.
-    Stop,
     /// Immediately remove motion for a fault, expired lease, or operator stop.
     /// Unlike ordinary release, safety inhibition bypasses minimum active time.
     Inhibit,
@@ -281,7 +279,6 @@ impl RelayTiming {
                 drive
             }
             Command::Drive(drive) => drive,
-            Command::Stop => DriveCommand::IDLE,
         };
         self.azimuth.target = drive.azimuth;
         self.elevation.target = drive.elevation;

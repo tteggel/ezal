@@ -5,7 +5,7 @@
 
 use super::{
     reconcile_event, AdmissionPolicy, CandidateFailure, EventError, EventId, InputError, PassEvent,
-    PlanningError, PlanningReport, PreparationTiming, ReceptionCoverage, TimingError, TrackingPlan,
+    PlanningError, PlanningReport, PreparationTiming, ReceptionCoverage, TrackingPlan,
     REACQUISITION_LIMIT_MS,
 };
 use crate::drive::{Command, MOVEMENT_LEASE_MS};
@@ -232,11 +232,10 @@ pub enum TrackingStop {
     LatePreparation,
     /// Device link/address permission was lost; browser loss is separate.
     NetworkUnavailable,
-    /// Frozen source or timing validity no longer supports execution.
+    /// Frozen plan data could not be evaluated.
     SourceInvalid,
-    /// Frozen timing uncertainty, source age or a new correction is unacceptable.
-    Timing(TimingError),
-    /// Frozen orbital input failed its execution validity checks.
+    /// Frozen orbital or clock input failed its execution validity checks, including
+    /// timing uncertainty, sample age and a new correction.
     Inputs(InputError),
     /// A physical output fault, independently enforced by the actuator.
     Motion(MotionFault),

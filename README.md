@@ -70,7 +70,7 @@ embedded Rust.
 │   │       ├── dashboard.rs       # browser asset and shared timing configuration
 │   │       └── drive.rs           # vocabulary and private relay timing
 │   └── ezal-firmware/              # the on-chip application
-│       ├── build.rs                # stages memory.x; bakes .env creds + station in
+│       ├── build.rs                # memory.x link path; bakes .env creds + station in
 │       ├── memory.x                # linker memory layout
 │       ├── cyw43-firmware/         # vendored CYW43439 radio blobs
 │       └── src/
@@ -107,7 +107,7 @@ embedded Rust.
 Prerequisites: [Nix with flakes](https://install.determinate.systems/),
 [direnv](https://direnv.net/), and
 [nix-direnv](https://github.com/nix-community/nix-direnv). The flake
-provides the pinned Rust toolchain, `probe-rs`, `flip-link`, `picotool`,
+provides the pinned Rust toolchain, `probe-rs`, `picotool`,
 and a Python+schemdraw environment so you don't have to install any of
 them yourself. See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for a rustup-
 only path if you'd rather not use Nix.
