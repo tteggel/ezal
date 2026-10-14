@@ -96,7 +96,8 @@ pub struct Actuator {
 }
 
 impl Actuator {
-    /// Boot idle with unknown prior motor duty; a full rest is required.
+    /// Boot idle with unknown prior motor duty; require rest unless the operator
+    /// explicitly asserts that both motors are already rested.
     pub const fn new() -> Self {
         Self::with_config(ActuatorConfig::DEFAULT, DutyHistory::Unknown)
     }
@@ -242,6 +243,17 @@ impl Actuator {
     /// Settings copied into a plan; replacing them during a run requires replanning.
     pub const fn configuration(&self) -> ActuatorConfig {
         self.config
+    }
+
+    /// Explicit operator assertion that both motors were already rested at boot.
+    /// Call after service at `now_ms`, while no output or pending movement exists.
+    /// This one-time action cannot reset consumed duty, relay timing or faults.
+    /// The coordination owner validates the operator lease and request freshness.
+    pub fn override_startup_rest(&mut self, now_ms: u64) -> bool {
+        if self.fault().is_some() || self.actual().is_active() || self.target().is_active() {
+            return false;
+        }
+        self.duty.override_startup_rest(now_ms)
     }
 
     /// Require a serviced, inhibited, physically settled starting snapshot.

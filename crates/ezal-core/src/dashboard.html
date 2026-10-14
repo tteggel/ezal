@@ -291,9 +291,10 @@ header {
 .tracking small { opacity: .75; }
 .tracking .warning { color: var(--gold); }
 .tracking-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-.tracking button, .passes button { padding: 10px 14px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-.tracking button:disabled, .passes button:disabled { opacity: .45; cursor: default; }
-.tracking button:focus-visible, .passes button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+.tracking button, .passes button, .startup-rest button { padding: 10px 14px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.tracking button:disabled, .passes button:disabled, .startup-rest button:disabled { opacity: .45; cursor: default; }
+.tracking button:focus-visible, .passes button:focus-visible, .startup-rest button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+.startup-rest { margin: 12px 0; }
 tr.selected { box-shadow: inset 3px 0 var(--teal); }
 @media (max-width: 430px) {
   main { gap: 12px; }
@@ -367,6 +368,11 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
   </section>
   <section id="manual-controls" class="pad-wrap" aria-labelledby="controls-title">
     <h2 id="controls-title">Manual control</h2>
+    <div id="startup-rest" class="startup-rest" hidden>
+      <p id="startup-rest-help">Bench setup: skip the startup wait only when both motors are already rested. Normal duty limits apply after this override.</p>
+      <button id="startup-rest-override" type="button" aria-describedby="startup-rest-help" disabled>Skip startup rest</button>
+    </div>
+    <p id="startup-rest-message" role="status"></p>
     <p id="control-help" class="control-help">Hold a direction to move; release to stop. With a keyboard, focus a button and hold Space or Enter.</p>
     <div class="pad">
       <button class="dir up" type="button" data-cmd="up" aria-label="Move up" aria-describedby="control-help control-status" disabled>UP</button>
@@ -410,10 +416,13 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
   const axisReady = (state, axis) => state.duty?.[axis]?.cooldown === 0;
   const canControl = (state, now) => state.connected && state.controller && state.networkReady
     && !state.motionFault && !state.hidden && telemetryFresh(state, now) && feedbackReady(state)
-    && state.tracking?.mode === "manual" && !state.pending && !state.awaitingTracking;
+    && state.tracking?.mode === "manual" && !state.pending && !state.awaitingTracking && !state.startupPending;
   const canTrack = (state, now) => state.connected && state.controller && state.networkReady
     && !state.hidden && telemetryFresh(state, now) && state.tracking?.operator !== null
-    && Boolean(state.tracking) && !state.pending && !state.awaitingTracking;
+    && Boolean(state.tracking) && !state.pending && !state.awaitingTracking && !state.startupPending;
+  const canSkipStartupRest = (state, now) => canTrack(state, now) && !state.motionFault
+    && state.tracking.mode === "manual" && state.telemetry?.control.duty_startup_rest === true
+    && !hasDesired(state) && !state.drive.azimuth && !state.drive.elevation;
   // Stopping does not require a current plan/observation or healthy feedback.
   const canCancel = (state) => state.connected && state.controller && !state.hidden
     && Boolean(state.tracking?.operator);
@@ -425,6 +434,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     held: idle(), drive: idle(), duty: null, telemetry: null, status: "offline", retryMs: 400,
     tracking: null, trackingAt: -Infinity, trackSequence: 0n, pending: null,
     awaitingTracking: false, trackingMessage: "",
+    startupPending: null, startupMessage: "",
   });
 
   // An open tab reconnects forever and `/` is not cache-controlled, so this
@@ -476,6 +486,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     && typeof message.control.controller === "boolean"
     && typeof message.control.network_ready === "boolean"
     && dutyPair(message.control.duty_remaining_ms) && dutyPair(message.control.duty_cooldown_ms)
+    && typeof message.control.duty_startup_rest === "boolean"
     && (message.freshness === null || (message.freshness
       && typeof message.freshness.token === "string" && /^\d+$/.test(message.freshness.token)));
   const validForecast = (data) => data && typeof data.status === "string"
@@ -554,6 +565,8 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
         state.drive = idle();
         state.status = "offline";
         state.pending = null;
+        state.startupPending = null;
+        state.startupMessage = "";
         state.awaitingTracking = false;
         state.trackingMessage = "Connection lost. Device status will be restored on reconnect; no action will be resent.";
         effects.push({ type: "reconnect", delay: state.retryMs });
@@ -569,8 +582,22 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
           state.token = message.freshness?.token ?? null;
           state.telemetryUntil = now + settings.telemetryTimeoutMs;
           control(message.control);
+          if (state.startupPending && !message.control.duty_startup_rest) {
+            state.startupPending = null;
+            state.startupMessage = "Startup rest cleared. Normal motor duty limits are active.";
+          }
           state.status = state.token === null ? "telemetry lost" : "online";
           if (state.token === null || !feedbackReady(state) || state.tracking.mode !== "manual") clearHeld();
+        } else if (message.type === "startup_rest_result" && state.startupPending && message.proof === state.startupPending.proof
+          && typeof message.ok === "boolean" && (message.ok || typeof message.error === "string")) {
+          if (message.ok) {
+            state.startupMessage = "Requested. Waiting for updated motor allowance…";
+          } else {
+            state.startupPending = null;
+            const reason = message.error === "Unavailable" ? "Startup rest override is unavailable. Check Manual mode and current motor status."
+              : `${trackingReason(message.error)}. Refresh the device status before trying again.`;
+            state.startupMessage = reason;
+          }
         } else if (message.type === "tracking_result" && message.sequence === state.pending?.sequence
           && typeof message.ok === "boolean" && (message.ok || typeof message.error === "string")) {
           state.pending = null;
@@ -613,6 +640,13 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
       case "take":
         if (canTake(state, now)) send("control:take");
         break;
+      case "startup-rest":
+        if (!canSkipStartupRest(state, now)) break;
+        clearHeld();
+        state.startupPending = { proof: state.token, at: now };
+        state.startupMessage = "Waiting for the device to apply the startup override…";
+        send(`startup-rest:${state.token}:${state.tracking.operator}`);
+        break;
       case "tracking": {
         const stopping = ["cancel", "manual"].includes(event.action);
         if (stopping ? !canCancel(state) : !canTrack(state, now)) break;
@@ -635,6 +669,10 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     if (state.pending && now - state.pending.at >= 5000) {
       state.pending = null;
       state.trackingMessage = "No acknowledgement received. Check the device status before trying again; the request will not be resent.";
+    }
+    if (state.startupPending && now - state.startupPending.at >= 5000) {
+      state.startupPending = null;
+      state.startupMessage = "Startup override not confirmed. Check the current motor allowance before trying again.";
     }
     return { state, effects };
   };
@@ -663,6 +701,9 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     elevation: document.getElementById("elevation-duty")
   };
   const buttons = Array.from(document.querySelectorAll(".dir"));
+  const startupRest = document.getElementById("startup-rest");
+  const startupOverride = document.getElementById("startup-rest-override");
+  const startupMessage = document.getElementById("startup-rest-message");
   let state = { ...initialControl(), hidden: document.hidden };
   let ws;
   let repeat = 0;
@@ -753,6 +794,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     if (!state.networkReady) return ["offline", "Controls unavailable. The controller's network connection is not ready."];
     if (state.tracking?.mode === "tracking") return ["tracking", "The device is tracking the selected pass. Return to Manual to use direction controls."];
     if (state.pending || state.awaitingTracking) return ["waiting", "Waiting for the device to confirm the tracking action."];
+    if (state.startupPending) return ["waiting", "Waiting for the device to confirm the startup rest override."];
     if (state.motionFault) return ["locked", `Movement locked: ${state.motionFault.replaceAll("_", " ")}.`];
     if (!state.controller) return ["viewer", "Select Take control above to enable the direction buttons."];
     if (state.hidden) return ["paused", "Controls paused while this page is hidden."];
@@ -798,6 +840,10 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     setText(controlState, summary);
     setText(controlStatus, hint);
     take.title = canTake(state, now) ? "Take control to enable manual movement" : state.controller ? "You have control" : hint;
+    startupRest.hidden = !(known && state.tracking?.mode === "manual" && data.control.duty_startup_rest);
+    startupOverride.disabled = !canSkipStartupRest(state, now);
+    startupOverride.title = state.controller ? "Confirm both motors are already rested" : "Take control to skip startup rest";
+    setText(startupMessage, state.startupMessage);
     buttons.forEach((button) => {
       const direction = button.dataset.cmd;
       const cooling = known && !axisReady(state, axes[direction]);
@@ -856,6 +902,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
   };
 
   take.addEventListener("click", () => dispatch({ type: "take" }));
+  startupOverride.addEventListener("click", () => dispatch({ type: "startup-rest" }));
   for (const action of ["arm", "manual", "prepare", "cancel"]) {
     trackElements[action].addEventListener("click", () => dispatch({ type: "tracking", action }));
   }

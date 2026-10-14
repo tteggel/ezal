@@ -59,6 +59,11 @@ onto the `RP2350` drive that appears. See
 [DEVELOPMENT.md](docs/DEVELOPMENT.md#build-a-uf2-for-bootsel-flashing) for
 the details.
 
+During bench setup with already-rested motors, take control in the dashboard's
+Manual mode and click **Skip startup rest**. This clears only the initial boot
+wait; normal duty limits remain active. See the
+[startup override contract](docs/CONTROL_CONTRACT.md#startup-rest-override).
+
 ## Documentation
 
 - **[ARCHITECTURE.md](docs/ARCHITECTURE.md)**: the core/firmware boundary,

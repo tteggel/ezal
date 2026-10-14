@@ -29,7 +29,7 @@ repeats a number.
 | Command source deadline and unrefreshed lease, at most 750 ms (`drive::MOVEMENT_LEASE_MS`) | Admission stamps; actuator enforces | Clear active and pending movement | A new request, respecting relay off-time |
 | Tracking execution interval, at most the plan's step, 20 ms by default (`tracking::PlanningConfig::step_ms`), outside recovery | `TrackingRuntime` | Stop the run with `ExecutionDeadline`; a stale command cannot start a pending relay | A fresh arm |
 | Motion progress within 5 s of accumulated energized time (`motion::MotionConfig::DEFAULT`), direction and speed | Actuator using applied output | Latch both axes off | Board reset |
-| Motor duty: 180 s per axis by default (`duty::DutyConfig::DEFAULT`); unknown history on boot | Actuator using applied output | Refuse a new pulse without its minimum allowance; cut an exhausted axis and discard its pending request | 900 s continuously idle on that axis, then fresh operator input |
+| Motor duty: 180 s per axis by default (`duty::DutyConfig::DEFAULT`); unknown history on boot | Actuator using applied output | Refuse a new pulse without its minimum allowance; cut an exhausted axis and discard its pending request | 900 s continuously idle on that axis, then fresh operator input; unknown boot history alone also permits the explicit [startup rest override](#startup-rest-override) |
 | Ordinary relay timing, 500 ms on and 2 s off (`drive::RelayConfig::DEFAULT`) | Actuator | Delay ordinary release, reversal and reactivation | Timer completion, subject to all current permissions |
 | Operator release, reversal or inhibition | Actuator | Cut affected axes immediately; retain off-time | Fresh permitted request after off-time |
 | Executor failure: no output service for 500 ms (firmware `watchdog::WATCHDOG_TIMEOUT`), including a [stack overflow](DEVELOPMENT.md#debugging-tips) once the watchdog is armed | Hardware watchdog, fed after GPIO service | Reset; boot holds outputs low after a firmware watchdog timeout. A UF2 or `picotool` reboot also restarts through the watchdog and is not a firmware timeout | Explicit reset or power cycle |
@@ -57,9 +57,10 @@ repeats a number.
   continue through startup, coast and idle. Reversal timing must cover coast
   plus maximum feedback age before establishing a new direction baseline.
 - Duty history belongs to the actuator, across command sources and ownership
-  changes. Only a full continuous rest replenishes it; reboot requires that
-  rest again because there is no persistent duty history. Front-panel motor
-  use is not recorded, so it needs a full rest before returning to Pico control.
+  changes. Only a full continuous rest replenishes consumed allowance. Reboot
+  normally requires that rest again because there is no persistent duty history;
+  the startup override below resolves only that unknown history. Front-panel
+  motor use is not recorded, so it needs a full rest before returning to Pico control.
 
 The ADC task and output task remain separate. The output task wakes for state
 changes and the earliest applicable deadline, and otherwise services the
@@ -77,6 +78,32 @@ run with `Inputs(Timing(Unavailable))` and blocks preview.
 
 `RelayConfig::TRACKING_CANDIDATE`, a shorter relay policy, is for offline
 simulation and commissioning only; the firmware runs `RelayConfig::DEFAULT`.
+
+## Startup rest override
+
+For bench setup when both motors are already rested, take control in the
+dashboard, return to Manual mode and click **Skip startup rest**. Wait for the
+updated motor allowance, then make a new direction press or replan a pass.
+The button is available only while startup duty history is unknown. Natural
+rest or an override removes it for the rest of that boot; later duty cooldowns
+cannot be skipped. A reboot returns to unknown history.
+
+The WebSocket method is `startup-rest:<proof>:<lease>`, using the current
+connection's telemetry proof and operator lease generation as nonzero decimal
+strings. Admission requires the current controller, a fresh proof, Manual mode,
+idle output and target, and no latched actuator fault. The GPIO-owning task
+rechecks the original proof expiry, grant, network generation, mode and actuator
+state before clearing the unknown usage. Both axes regain their configured
+allowance, and a changed starting state invalidates the tracking preview.
+Consumed duty, relay timers, feedback/travel checks and fault latches are retained.
+
+The reply is `{"type":"startup_rest_result","proof":"…","ok":true,"error":null}`
+for a queued request, or `ok:false` with `Lease`, `StaleObservation` or
+`Unavailable` as the error string. A successful reply acknowledges queuing;
+subsequent telemetry confirms application with `control.duty_startup_rest:false`
+and updated per-axis duty. Buffered holds and old movement proofs are discarded.
+The browser waits for telemetry before enabling movement and never retries this
+action automatically, including after a reconnect.
 
 ## Dashboard
 

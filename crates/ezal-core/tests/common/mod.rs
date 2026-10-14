@@ -60,7 +60,7 @@ pub fn full_travel_installed() -> InstalledCalibration {
 }
 
 /// Policy fixtures begin with explicitly known rested motors. Production boot
-/// uses unknown history and must complete a full rest before movement.
+/// uses unknown history and requires rest or an explicit startup rest assertion.
 pub fn rested_actuator() -> Actuator {
     Actuator::with_config(ActuatorConfig::DEFAULT, DutyHistory::Known([0, 0]))
 }

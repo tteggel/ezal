@@ -352,7 +352,13 @@ outputs:
    ROM's own watchdog reboot is not reported as a firmware watchdog fault.
 3. Let the boot duty countdown finish: unknown prior usage requires 15 minutes
    continuously idle. Both axis countdowns are visible, and a command attempted
-   during rest does not run when rest ends.
+   during rest does not run when rest ends. On another boot, with both motors
+   already rested, take control in Manual mode and click **Skip startup rest**.
+   Verify that both allowances become available without any output energizing;
+   movement needs a fresh press. The button disappears, and later cooldowns
+   remain enforced. This [startup override](CONTROL_CONTRACT.md#startup-rest-override)
+   also avoids repeating the wait during build-out; keep `DutyHistory::Unknown`
+   in the firmware configuration.
 4. Hold the CPU at a breakpoint while a direction output is active. The
    watchdog resets the board and removes the output within the 500 ms interval
    (allow for oscillator tolerance), and the next boot stays inhibited until an

@@ -314,7 +314,7 @@ function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = conf
     tracking: idleTracking(),
     position: { a0_mv: 0, a1_mv: 0 },
     feedback: { azimuth_tenths: null, elevation_tenths: null, health: healthy },
-    control: { type: "control", controller: false, azimuth: null, elevation: null, network_ready: true, motion_fault: null, duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0] },
+    control: { type: "control", controller: false, azimuth: null, elevation: null, network_ready: true, motion_fault: null, duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0], duty_startup_rest: false },
   };
   class WebSocket extends EventTarget {
     static OPEN = 1;
@@ -875,7 +875,7 @@ test("one telemetry snapshot commits position, health and ownership together", (
   page.freshness({
     position: { a0_mv: 901, a1_mv: 1200 },
     feedback: { azimuth_tenths: 1234, elevation_tenths: 456, health: healthy },
-    control: { type: "control", controller: false, azimuth: "ccw", elevation: null, network_ready: true, motion_fault: null, duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0] },
+    control: { type: "control", controller: false, azimuth: "ccw", elevation: null, network_ready: true, motion_fault: null, duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0], duty_startup_rest: false },
   });
   assert.equal(page.ids.get("a0").textContent, "901");
   assert.equal(page.ids.get("azimuth").textContent, "123.4");
@@ -925,6 +925,94 @@ test("one exhausted axis clears its hold while the other keeps its existing inpu
   assert.equal(page.socket.messages.at(-1), "drive:up", "cooldown recovery never restores the old azimuth hold");
   page.press("cw", 3);
   assert.equal(page.socket.messages.at(-1), "drive:cw+up");
+});
+
+function startupRestPage() {
+  const page = controller(false);
+  page.freshness({ control: { ...page.telemetry.control, duty_startup_rest: true,
+    duty_remaining_ms: [0, 0], duty_cooldown_ms: [900000, 900000] } });
+  return page;
+}
+
+test("startup rest override is explicit and waits for applied telemetry before a new movement press", () => {
+  const page = startupRestPage();
+  const button = page.ids.get("startup-rest-override");
+  assert.equal(page.ids.get("startup-rest").hidden, false);
+  assert.equal(button.disabled, false);
+  page.press("cw", 1);
+  assert.deepEqual(page.socket.messages, []);
+  button.dispatch("click");
+  const request = page.socket.wireMessages.at(-1);
+  assert.match(request, /^startup-rest:\d+:1$/);
+  button.dispatch("click");
+  assert.equal(page.socket.wireMessages.length, 1);
+  assert.equal(button.disabled, true);
+  assert.equal(page.ids.get("control-state").textContent, "waiting");
+  page.socket.receive({ type: "startup_rest_result", proof: request.split(":")[1], ok: true, error: null });
+  assert.match(page.ids.get("startup-rest-message").textContent, /Waiting for updated motor allowance/);
+  page.socket.receive({ ...page.telemetry.control, duty_startup_rest: false,
+    duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0] });
+  assert.equal(page.buttons.get("cw").disabled, true, "acknowledgements cannot unlock movement");
+  page.freshness();
+  assert.equal(page.ids.get("startup-rest").hidden, true);
+  assert.match(page.ids.get("startup-rest-message").textContent, /Normal motor duty limits/);
+  assert.equal(page.buttons.get("cw").disabled, false);
+  page.clock.advance(config.refreshMs);
+  assert.deepEqual(page.socket.wireMessages, [request]);
+  page.press("cw", 2);
+  assert.equal(page.socket.messages.at(-1), "drive:cw");
+});
+
+test("startup override is unavailable to viewers, stale pages, tracking and ordinary cooldowns", () => {
+  for (const mode of ["viewer", "stale", "tracking", "cooldown", "fault", "moving"]) {
+    const page = startupRestPage();
+    if (mode === "viewer") page.control(false);
+    if (mode === "stale") page.clock.advance(config.telemetryTimeoutMs + 1);
+    if (mode === "tracking") page.freshness({ tracking: { ...page.telemetry.tracking, mode: "tracking", phase: "armed" } });
+    if (mode === "cooldown") page.freshness({ control: { ...page.telemetry.control, duty_startup_rest: false } });
+    if (mode === "fault") page.freshness({ control: { ...page.telemetry.control, motion_fault: "azimuth_no_progress" } });
+    if (mode === "moving") page.freshness({ control: { ...page.telemetry.control, azimuth: "cw" } });
+    const before = page.socket.wireMessages.length;
+    assert.equal(page.ids.get("startup-rest-override").disabled, true, mode);
+    page.ids.get("startup-rest-override").dispatch("click");
+    assert.equal(page.socket.wireMessages.length, before, mode);
+  }
+});
+
+test("startup override failure, timeout and reconnect never replay the request", () => {
+  for (const ending of ["rejected", "timeout", "reconnect"]) {
+    const page = startupRestPage();
+    page.ids.get("startup-rest-override").dispatch("click");
+    const proof = page.socket.wireMessages.at(-1).split(":")[1];
+    const old = page.socket;
+    if (ending === "rejected") {
+      page.socket.receive({ type: "startup_rest_result", proof, ok: false, error: "Unavailable" });
+      assert.match(page.ids.get("startup-rest-message").textContent, /unavailable/);
+    } else if (ending === "timeout") {
+      page.clock.advance(5100);
+      assert.match(page.ids.get("startup-rest-message").textContent, /not confirmed/);
+    } else {
+      page.socket.close();
+      page.clock.advance(400);
+      page.socket.open();
+      page.control();
+    }
+    page.freshness();
+    assert.equal(old.wireMessages.filter(m => m.startsWith("startup-rest:")).length, 1);
+    if (page.socket !== old) assert.equal(page.socket.wireMessages.length, 0);
+  }
+});
+
+test("malformed or missing startup duty status cannot authorize an override", () => {
+  for (const value of [undefined, "true", 1, null]) {
+    const page = controller(false);
+    page.freshness({ control: { ...page.telemetry.control, duty_startup_rest: value } });
+    page.ids.get("startup-rest-override").dispatch("click");
+    assert.deepEqual(page.socket.wireMessages, []);
+  }
+  const page = startupRestPage();
+  page.socket.receive({ type: "startup_rest_result", ok: true });
+  assert.equal(page.ids.get("startup-rest-message").textContent, "");
 });
 
 test("duty acknowledgements and malformed duty telemetry cannot renew the observation", () => {

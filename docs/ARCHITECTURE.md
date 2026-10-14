@@ -199,10 +199,15 @@ checks apply from a pulse's first sample through its coast; once an axis has
 been driven, its speed stays bounded through startup, coast and idle. Fresh
 communication or sensor recovery cannot erase a latched fault. `ActuatorConfig`
 supplies one validated set of relay, travel, motion and duty settings. Duty is per
-axis and survives source/owner changes; only full continuous rest restores it.
-Firmware boot uses unknown history and requires a full rest. Simulations
-explicitly provide their known prior usage. The detailed timing and recovery
-rules live in [CONTROL_CONTRACT.md](CONTROL_CONTRACT.md).
+axis and survives source/owner changes; only full continuous rest restores
+consumed allowance. Firmware boot uses unknown history and normally requires
+that rest. The leased controller can explicitly assert already-rested motors
+once at startup in Manual mode. Coordination queues the assertion and
+`service_actuator` revalidates it on the GPIO task before changing the physical
+actuator's duty. Telemetry reports its application; an acknowledgement only
+confirms queuing. Simulations explicitly provide their known prior usage. The
+detailed timing and recovery rules live in
+[CONTROL_CONTRACT.md](CONTROL_CONTRACT.md#startup-rest-override).
 
 ## Transport and dashboard
 

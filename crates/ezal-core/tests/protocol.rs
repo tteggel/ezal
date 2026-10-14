@@ -152,7 +152,7 @@ fn formats_control_status_as_compact_json() {
 
     assert_eq!(
         json,
-        r#"{"type":"control","controller":true,"azimuth":"ccw","elevation":"up","network_ready":true,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]}"#
+        r#"{"type":"control","controller":true,"azimuth":"ccw","elevation":"up","network_ready":true,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000],"duty_startup_rest":true}"#
     );
 
     json.clear();
@@ -168,7 +168,7 @@ fn formats_control_status_as_compact_json() {
 
     assert_eq!(
         json,
-        r#"{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]}"#
+        r#"{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000],"duty_startup_rest":true}"#
     );
 }
 
@@ -231,7 +231,7 @@ fn telemetry_encodes_one_observation_with_its_proof() {
     message.write_json(&mut json).unwrap();
     assert_eq!(
         json,
-        r#"{"type":"telemetry","position":{"a0_mv":null,"a1_mv":null},"feedback":{"azimuth_tenths":null,"elevation_tenths":null,"health":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]},"freshness":{"token":"42"},"tracking":{"revision":"0","operator":null,"mode":"manual","phase":"idle","run":null,"selection":null,"plan":{"status":"unplanned","reason":null,"preview":null},"feedback_stale":true,"feedback_age_ms":null,"deviation":{"run":null,"warning":false,"maximum_deg":null,"outside_ms":0,"current":null},"recovery":null,"termination":null,"summary":null}}"#
+        r#"{"type":"telemetry","position":{"a0_mv":null,"a1_mv":null},"feedback":{"azimuth_tenths":null,"elevation_tenths":null,"health":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000],"duty_startup_rest":true},"freshness":{"token":"42"},"tracking":{"revision":"0","operator":null,"mode":"manual","phase":"idle","run":null,"selection":null,"plan":{"status":"unplanned","reason":null,"preview":null},"feedback_stale":true,"feedback_age_ms":null,"deviation":{"run":null,"warning":false,"maximum_deg":null,"outside_ms":0,"current":null},"recovery":null,"termination":null,"summary":null}}"#
     );
 }
 
@@ -254,6 +254,7 @@ fn telemetry_fits_its_fixed_buffer_and_reports_formatting_failure() {
         cooldown_ms: u64::MAX,
     };
     snapshot.control.duty = DutyStatus {
+        startup_rest_required: false,
         azimuth: maximum,
         elevation: maximum,
     };

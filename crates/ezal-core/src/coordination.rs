@@ -1,7 +1,7 @@
 //! Device ownership, independent tracking and coherent actuator delivery.
 //! Reads never renew leases or drain commands. Firmware serializes mutations.
 
-use crate::actuator::{Actuator, ActuatorInput};
+use crate::actuator::{Actuator, ActuatorInput, ActuatorUpdate};
 use crate::drive::{CommandEnvelope, DriveCommand};
 use crate::duty::DutyStatus;
 use crate::feedback::{FeedbackHealth, FeedbackSnapshot};
@@ -11,7 +11,15 @@ use crate::network::NetworkGate;
 use crate::ntp::UtcClock;
 use crate::operator::{OperatorGrant, OperatorToken};
 use crate::position::{FeedbackVoltages, Pointing};
-use crate::tracking::{RestingStart, RuntimeObservation, TrackingRuntime, TrackingStop};
+use crate::tracking::{
+    RestingStart, RuntimeObservation, TrackingMode, TrackingRuntime, TrackingStop,
+};
+
+struct StartupRestOverride {
+    operator: OperatorToken,
+    valid_until_ms: u64,
+    network_generation: u64,
+}
 
 /// Leased ownership and the output actually applied by the GPIO task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +60,7 @@ pub struct CoordinationState {
     applied_at_ms: Option<u64>,
     start_revision: u64,
     start_identity: Option<(Pointing, [u64; 2], u64)>,
+    startup_rest_override: Option<StartupRestOverride>,
 }
 
 impl Default for CoordinationState {
@@ -74,6 +83,7 @@ impl CoordinationState {
             applied_at_ms: None,
             start_revision: 1,
             start_identity: None,
+            startup_rest_override: None,
         }
     }
 
@@ -232,6 +242,76 @@ impl CoordinationState {
             self.tracking
                 .manual_command(g.token, envelope, self.observation(now_ms))
         })
+    }
+
+    /// Queue an explicit startup-only rest assertion from a fresh, leased
+    /// controller in Manual mode. The GPIO owner applies it to the real actuator;
+    /// admitting it never changes telemetry or grants movement by itself.
+    pub fn request_startup_rest_override(
+        &mut self,
+        operator: OperatorToken,
+        valid_until_ms: u64,
+        now_ms: u64,
+    ) -> bool {
+        self.advance(now_ms);
+        if now_ms >= valid_until_ms
+            || !self.startup_override_permitted(operator, now_ms)
+            || !self.applied.status().duty.startup_rest_required
+            || self.applied.fault().is_some()
+            || self.applied.actual().is_active()
+            || self.applied.target().is_active()
+            || self.startup_rest_override.is_some()
+        {
+            return false;
+        }
+        if !self.tracking.manual_command(
+            operator,
+            CommandEnvelope::INHIBIT,
+            self.observation(now_ms),
+        ) {
+            return false;
+        }
+        self.startup_rest_override = Some(StartupRestOverride {
+            operator,
+            valid_until_ms,
+            network_generation: self.network.generation(),
+        });
+        true
+    }
+
+    fn startup_override_permitted(&self, operator: OperatorToken, now_ms: u64) -> bool {
+        self.network.ready(now_ms)
+            && self
+                .operator(operator.client_id(), now_ms)
+                .is_some_and(|grant| grant.token == operator)
+            && self.tracking.snapshot().mode == TrackingMode::Manual
+    }
+
+    /// Service the physical actuator, including any startup rest assertion.
+    /// Ownership, network generation, freshness and mode are rechecked here.
+    /// The caller must apply the returned GPIO output before `record_actuator`.
+    pub fn service_actuator(&mut self, actuator: &mut Actuator, now_ms: u64) -> ActuatorUpdate {
+        let pending = self.startup_rest_override.take();
+        let input = self.take_actuator_input(now_ms);
+        let update = actuator.step(input, now_ms);
+        if pending.is_some_and(|request| {
+            now_ms < request.valid_until_ms
+                && self.network.generation() == request.network_generation
+                && self.startup_override_permitted(request.operator, now_ms)
+        }) && actuator.override_startup_rest(now_ms)
+        {
+            // Discard any buffered hold; a new press is required after the
+            // authoritative telemetry reports the replenished allowance.
+            actuator.step(
+                ActuatorInput {
+                    command: Some(CommandEnvelope::INHIBIT),
+                    ..input
+                },
+                now_ms,
+            )
+        } else {
+            update
+        }
     }
 
     /// Serialize a trusted device operation (planning, or leased operator intent)

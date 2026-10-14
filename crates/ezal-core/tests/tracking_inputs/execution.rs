@@ -134,8 +134,7 @@ impl Device {
 
     fn apply(&mut self, at: u64) {
         let old = self.actuator.actual();
-        let input = self.state.take_actuator_input(at);
-        let update = self.actuator.step(input, at);
+        let update = self.state.service_actuator(&mut self.actuator, at);
         self.applied_transitions += usize::from(update.output != old);
         // Apply EVERY transition, including the service before command generation.
         self.model.advance(update.output, 0).unwrap();
@@ -273,6 +272,58 @@ fn delayed_control_or_delayed_drain_inhibits_before_any_pending_relay_can_start(
             stopped.termination
         );
     }
+}
+
+#[test]
+fn startup_override_requires_returning_to_manual_even_with_unknown_duty_history() {
+    use ezal_core::protocol::{StartupRestIntent, StartupRestRejection};
+    use ezal_core::session::CommandFreshness;
+
+    let mut device = Device::new();
+    let config = device.actuator.configuration();
+    device.actuator = Actuator::with_config(config, DutyHistory::Unknown);
+    device.apply(device.now);
+    assert_eq!(
+        device.state.tracking().snapshot().mode,
+        TrackingMode::Tracking
+    );
+    assert!(device.actuator.status().duty.startup_rest_required);
+    assert!(!device.actuator.actual().is_active());
+    assert!(!device.actuator.target().is_active());
+    assert_eq!(device.actuator.fault(), None);
+    let mut freshness = CommandFreshness::new(device.owner);
+    let intent = StartupRestIntent {
+        proof: freshness.issue(device.now).unwrap().token,
+        lease: device
+            .state
+            .operator(device.owner, device.now)
+            .unwrap()
+            .token
+            .generation(),
+    };
+    assert_eq!(
+        device
+            .state
+            .request_startup_rest(device.owner, intent, &freshness, device.now)
+            .result,
+        Err(StartupRestRejection::Unavailable)
+    );
+
+    device.request(3, TrackingAction::Manual);
+    assert_eq!(
+        device
+            .state
+            .request_startup_rest(device.owner, intent, &freshness, device.now)
+            .result,
+        Ok(())
+    );
+    device.apply(device.now);
+    assert!(!device.actuator.status().duty.startup_rest_required);
+    assert_eq!(
+        device.actuator.status().duty.azimuth.remaining_ms,
+        config.duty.energized_ms
+    );
+    assert!(!device.actuator.actual().is_active());
 }
 
 #[test]

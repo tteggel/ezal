@@ -179,9 +179,16 @@ impl CommandFreshness {
 
     /// Check a tracking action's observation without renewing it or arming a hold.
     pub fn proves_fresh(&self, token: u64, now_ms: u64) -> bool {
+        self.proof_deadline(token, now_ms).is_some()
+    }
+
+    /// Original expiry for an administrative request queued to the output owner.
+    /// Carry it through delivery instead of starting a new lifetime on receipt.
+    pub fn proof_deadline(&self, token: u64, now_ms: u64) -> Option<u64> {
         self.tokens
             .iter()
             .flatten()
-            .any(|proof| proof.token == token && now_ms < proof.expires_ms)
+            .find(|proof| proof.token == token && now_ms < proof.expires_ms)
+            .map(|proof| proof.expires_ms)
     }
 }

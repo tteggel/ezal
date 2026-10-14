@@ -16,7 +16,11 @@
 use crate::coordination::TelemetrySnapshot;
 use core::fmt;
 
+mod startup_rest;
 mod tracking;
+pub use startup_rest::{
+    StartupRestIntent, StartupRestRejection, StartupRestReply, STARTUP_REST_REPLY_CAPACITY,
+};
 pub use tracking::{
     TrackingIntent, TrackingRejection, TrackingReply, TrackingTelemetry, TRACKING_REPLY_CAPACITY,
 };
@@ -81,6 +85,8 @@ pub enum ClientMessage {
     Movement(MovementRequest),
     /// Single-pass intent; the server supplies connection identity and inputs.
     Tracking(TrackingIntent),
+    /// Operator assertion that both motors were already rested at startup.
+    StartupRest(StartupRestIntent),
 }
 
 impl ClientMessage {
@@ -92,6 +98,8 @@ impl ClientMessage {
             Some(Self::Stop)
         } else if let Some(message) = message.strip_prefix("track:") {
             TrackingIntent::parse(message).map(Self::Tracking)
+        } else if let Some(message) = message.strip_prefix("startup-rest:") {
+            StartupRestIntent::parse(message).map(Self::StartupRest)
         } else {
             let mut fields = message.splitn(4, ':');
             let pressed = match fields.next()? {
@@ -156,11 +164,12 @@ impl ControlStatus {
         write_option(out, self.motion_fault.map(MotionFault::as_str))?;
         write!(
             out,
-            ",\"duty_remaining_ms\":[{},{}],\"duty_cooldown_ms\":[{},{}]}}",
+            ",\"duty_remaining_ms\":[{},{}],\"duty_cooldown_ms\":[{},{}],\"duty_startup_rest\":{}}}",
             self.duty.azimuth.remaining_ms,
             self.duty.elevation.remaining_ms,
             self.duty.azimuth.cooldown_ms,
-            self.duty.elevation.cooldown_ms
+            self.duty.elevation.cooldown_ms,
+            self.duty.startup_rest_required
         )
     }
 }

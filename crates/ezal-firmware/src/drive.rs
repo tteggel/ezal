@@ -123,8 +123,7 @@ pub async fn direction_task(
 
     loop {
         let now = Instant::now();
-        let input = state.take_actuator_input(now.as_millis());
-        let update = actuator.step(input, now.as_millis());
+        let update = state.service_actuator(&mut actuator, now.as_millis());
         outputs.apply_drive(update.output);
         state.record_actuator(&actuator, now.as_millis());
 
@@ -133,8 +132,7 @@ pub async fn direction_task(
         // Every intermediate transition really reaches the pins and follower.
         state.execute_tracking(now.as_millis());
         let drain = Instant::now();
-        let input = state.take_actuator_input(drain.as_millis());
-        let update = actuator.step(input, drain.as_millis());
+        let update = state.service_actuator(&mut actuator, drain.as_millis());
         outputs.apply_drive(update.output);
         state.record_actuator(&actuator, drain.as_millis());
 
