@@ -4,11 +4,11 @@ mod common;
 
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput, ActuatorUpdate};
 use ezal_core::drive::{
-    AzimuthDirection, Command, DriveCommand, ElevationDirection, RelayConfig, MOVEMENT_LEASE_MS,
+    AzimuthDirection, Command, CommandEnvelope, DriveCommand, ElevationDirection, RelayConfig,
+    MOVEMENT_LEASE_MS,
 };
 use ezal_core::duty::{DutyConfig, DutyHistory};
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::motion::MotionFault;
 use ezal_core::network::NetworkGate;
 use ezal_core::position::Pointing;

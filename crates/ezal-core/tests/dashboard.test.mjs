@@ -38,6 +38,8 @@ class EventTarget {
 
 // The firmware's real `/api/passes` reply, pinned by ezal-core's passes tests.
 const servedReport = JSON.parse(readFileSync(new URL("./fixtures/passes-report.json", import.meta.url), "utf8"));
+const servedTelemetry = JSON.parse(readFileSync(new URL("./fixtures/tracking-telemetry.json", import.meta.url), "utf8"));
+const healthy = servedTelemetry[0].feedback.health;
 
 function idleTracking(overrides = {}) {
   return {
@@ -310,8 +312,8 @@ function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = conf
   const requests = [];
   let telemetry = {
     tracking: idleTracking(),
-    position: { type: "position", a0_mv: 0, a1_mv: 0 },
-    feedback: { type: "feedback", azimuth_tenths: null, elevation_tenths: null, control_state: "idle" },
+    position: { a0_mv: 0, a1_mv: 0 },
+    feedback: { azimuth_tenths: null, elevation_tenths: null, health: healthy },
     control: { type: "control", controller: false, azimuth: null, elevation: null, network_ready: true, motion_fault: null, duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0] },
   };
   class WebSocket extends EventTarget {
@@ -653,10 +655,11 @@ test("unusable position feedback disables directions and explains why movement c
     ["calibration-invalid", /calibration is invalid/],
     ["no-feedback", /Waiting for position feedback/],
     ["feedback-stale", /feedback is stale/],
+    ["read-timeout", /latched until the device is reset/],
     ["timestamp-invalid", /timing is invalid/],
   ]) {
     const page = controller();
-    page.freshness({ feedback: { ...page.telemetry.feedback, control_state: health } });
+    page.freshness({ feedback: { ...page.telemetry.feedback, health } });
     page.press("cw", 1);
     page.buttons.get("up").dispatch("keydown", { key: "Enter" });
     assert.deepEqual(page.socket.messages, []);
@@ -674,10 +677,10 @@ test("bad feedback stops held inputs and recovery requires a fresh press", () =>
   const page = controller();
   page.press("cw", 1);
   page.buttons.get("up").dispatch("keydown", { key: "Enter" });
-  page.freshness({ feedback: { ...page.telemetry.feedback, control_state: "feedback-invalid" } });
+  page.freshness({ feedback: { ...page.telemetry.feedback, health: "feedback-invalid" } });
   assert.equal(page.socket.messages.at(-1), "stop");
   for (const button of page.buttons.values()) assert.equal(button.classList.contains("held"), false);
-  page.freshness({ feedback: { ...page.telemetry.feedback, control_state: "idle" } });
+  page.freshness({ feedback: { ...page.telemetry.feedback, health: healthy } });
   page.buttons.get("up").dispatch("keydown", { key: "Enter", repeat: true });
   page.clock.advance(config.refreshMs * 2);
   assert.equal(page.socket.messages.at(-1), "stop");
@@ -792,13 +795,18 @@ test("failed reconnects back off and a successful open resets the delay", () => 
 test("telemetry renders measured position and feedback health", () => {
   const page = controller();
   page.socket.dispatch("message", { data: "{malformed" });
+  const [{ position, feedback }] = servedTelemetry;
+  page.freshness({ position, feedback });
+  assert.equal(page.ids.get("a0").textContent, "--", "no completed ADC pair");
+  assert.equal(page.ids.get("control-state").textContent, "ready");
+  for (const button of page.buttons.values()) assert.equal(button.disabled, false);
   page.freshness({
-    position: { type: "position", a0_mv: 901, a1_mv: -12 },
-    feedback: { type: "feedback", control_state: "idle", azimuth_tenths: 4247, elevation_tenths: 3 },
+    position: { a0_mv: 901, a1_mv: -12 },
+    feedback: { health: healthy, azimuth_tenths: 4247, elevation_tenths: 3 },
   });
   assert.equal(String(page.ids.get("a0").textContent), "901");
   assert.equal(String(page.ids.get("a1").textContent), "-12");
-  assert.equal(page.ids.get("health").textContent, "idle");
+  assert.equal(page.ids.get("health").textContent, healthy);
   assert.equal(page.ids.get("azimuth").textContent, "424.7");
   assert.equal(page.ids.get("elevation").textContent, "0.3");
 });
@@ -820,7 +828,7 @@ test("an open socket with a silent telemetry return path loses control and held 
   const page = controller(false);
   page.press("cw", 1);
   page.control(true, "cw");
-  page.freshness({ position: { type: "position", a0_mv: 900, a1_mv: 1200 } });
+  page.freshness({ position: { a0_mv: 900, a1_mv: 1200 } });
   page.clock.advance(config.telemetryTimeoutMs);
   assert.equal(page.socket.readyState, 1);
   assert.equal(page.socket.messages.at(-1), "stop");
@@ -865,8 +873,8 @@ test("acknowledgements and incomplete or malformed telemetry cannot renew lifeti
 test("one telemetry snapshot commits position, health and ownership together", () => {
   const page = controller(false);
   page.freshness({
-    position: { type: "position", a0_mv: 901, a1_mv: 1200 },
-    feedback: { type: "feedback", azimuth_tenths: 1234, elevation_tenths: 456, control_state: "idle" },
+    position: { a0_mv: 901, a1_mv: 1200 },
+    feedback: { azimuth_tenths: 1234, elevation_tenths: 456, health: healthy },
     control: { type: "control", controller: false, azimuth: "ccw", elevation: null, network_ready: true, motion_fault: null, duty_remaining_ms: [180000, 180000], duty_cooldown_ms: [0, 0] },
   });
   assert.equal(page.ids.get("a0").textContent, "901");
@@ -1215,25 +1223,24 @@ test("rejected, unacknowledged and malformed tracking messages cannot replay int
 });
 
 test("real firmware tracking snapshots render arming, independent following, reconnect and completion", () => {
-  const snapshots = JSON.parse(readFileSync(new URL("./fixtures/tracking-telemetry.json", import.meta.url), "utf8"));
   const ui = dashboard("http:", false);
   ui.socket.open();
-  ui.socket.receive(snapshots[0]);
+  ui.socket.receive(servedTelemetry[0]);
   assert.match(ui.ids.get("tracking-state").textContent, /Tracking · armed · you have control/);
   assert.match(ui.ids.get("tracking-plan").textContent, /Full pass supported/);
   assert.equal(ui.ids.get("manual-controls").hidden, true);
-  ui.socket.receive(snapshots[1]);
+  ui.socket.receive(servedTelemetry[1]);
   assert.match(ui.ids.get("tracking-state").textContent, /viewer/);
   assert.ok(ui.ids.get("tracking-cancel").disabled);
-  ui.socket.receive(snapshots[2]);
+  ui.socket.receive(servedTelemetry[2]);
   assert.match(ui.ids.get("tracking-state").textContent, /preparing/);
-  ui.socket.receive(snapshots[3]);
+  ui.socket.receive(servedTelemetry[3]);
   assert.match(ui.ids.get("tracking-state").textContent, /following/);
   assert.match(ui.ids.get("tracking-deviation").textContent, /Spherical deviation/);
   assert.match(ui.ids.get("tracking-pointing").textContent, /At the same sample time/);
-  ui.socket.receive(snapshots[4]);
+  ui.socket.receive(servedTelemetry[4]);
   assert.equal(ui.ids.get("tracking-cancel").disabled, false);
-  ui.socket.receive(snapshots[5]);
+  ui.socket.receive(servedTelemetry[5]);
   assert.equal(ui.ids.get("manual-controls").hidden, false);
   assert.match(ui.ids.get("tracking-state").textContent, /complete/);
   assert.match(ui.ids.get("tracking-summary").textContent, /Pass finished/);

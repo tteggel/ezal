@@ -1,14 +1,16 @@
-use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
+mod common;
+
+use common::{resting_start, FULL_TRAVEL_CALIBRATION};
+use ezal_core::actuator::{Actuator, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::drive::{AzimuthDirection, Command, DriveCommand};
-use ezal_core::duty::{DutyConfig, DutyHistory};
+use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
+use ezal_core::duty::DutyHistory;
 use ezal_core::feedback::FeedbackSample;
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::network::NetworkGate;
 use ezal_core::operator::{LeaseError, OperatorToken};
 use ezal_core::orbit::LookAngle;
-use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
+use ezal_core::position::{InstalledCalibration, Pointing};
 use ezal_core::tracking::*;
 use std::sync::OnceLock;
 
@@ -19,9 +21,6 @@ const EVENT: PassEvent = PassEvent {
 };
 const REVISIONS: PlanRevisions = PlanRevisions {
     orbit: 1,
-    observer: 1,
-    calibration: 1,
-    motion: 1,
     clock: 1,
     start: 1,
 };
@@ -43,53 +42,6 @@ fn report(timing: PreparationTiming) -> PlanningReport {
     };
     cache
         .get_or_init(|| {
-            let calibration = PositionCalibration {
-                azimuth: AxisCalibration {
-                    angle_min_deg: 0.0,
-                    angle_max_deg: 450.0,
-                    voltage_min_mv: 200,
-                    voltage_max_mv: 2900,
-                },
-                elevation: AxisCalibration {
-                    angle_min_deg: 0.0,
-                    angle_max_deg: 180.0,
-                    voltage_min_mv: 2800,
-                    voltage_max_mv: 1000,
-                },
-            };
-            let installed = InstalledCalibration::new(calibration, FEEDBACK_FULL_SCALE).unwrap();
-            let mut actuator = Actuator::with_config(
-                ActuatorConfig {
-                    duty: DutyConfig::CONFIRMED_AC,
-                    ..ActuatorConfig::DEFAULT
-                },
-                DutyHistory::Known([0, 0]),
-            );
-            let mut network = NetworkGate::new();
-            let mut feedback = None;
-            for at in [0, 2000] {
-                feedback = Some(
-                    FeedbackSample::from_voltages(
-                        installed,
-                        calibration
-                            .position_to_feedback(Pointing::new(180.0, 45.0))
-                            .unwrap(),
-                        at,
-                    )
-                    .unwrap(),
-                );
-                let mut interlock = FeedbackInterlock::new(installed);
-                interlock.publish(feedback);
-                network.observe(at, true);
-                actuator.step(
-                    ActuatorInput {
-                        interlock,
-                        network,
-                        command: None,
-                    },
-                    at,
-                );
-            }
             let mut config = PlanningConfig {
                 preparation_timing: timing,
                 ..PlanningConfig::default()
@@ -108,20 +60,15 @@ fn report(timing: PreparationTiming) -> PlanningReport {
                     aos_at_ms: AOS,
                     duration_ms: 30_000,
                 },
-                calibration,
-                RestingStart {
-                    at_ms: 2000,
-                    feedback: feedback.unwrap(),
-                    actuator,
-                    network,
-                },
+                FULL_TRAVEL_CALIBRATION,
+                resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 45.0), [0, 0]),
                 config,
             )
             .unwrap();
             while !planner.is_finished() {
                 planner.step().unwrap();
             }
-            let report = planner.into_report().unwrap();
+            let report = planner.take_report().unwrap();
             assert!(report.plan.is_some());
             report
         })
@@ -129,7 +76,7 @@ fn report(timing: PreparationTiming) -> PlanningReport {
 }
 
 fn request(
-    session: &TrackingSession<&'static str>,
+    session: &TrackingLifecycle<&'static str>,
     owner: OperatorToken,
     sequence: u64,
     action: TrackingAction,
@@ -142,8 +89,8 @@ fn request(
     }
 }
 
-fn selected() -> (TrackingSession<&'static str>, OperatorToken) {
-    let mut session = TrackingSession::new();
+fn selected() -> (TrackingLifecycle<&'static str>, OperatorToken) {
+    let mut session = TrackingLifecycle::new();
     let token = session.claim(1, 2000).unwrap().token;
     session
         .request(
@@ -166,7 +113,7 @@ fn selected() -> (TrackingSession<&'static str>, OperatorToken) {
     (session, token)
 }
 
-fn armed() -> (TrackingSession<&'static str>, OperatorToken) {
+fn armed() -> (TrackingLifecycle<&'static str>, OperatorToken) {
     let (mut session, token) = selected();
     session
         .request(request(&session, token, 2, TrackingAction::Arm), 2000)
@@ -184,7 +131,7 @@ fn output(now: u64, command: Command) -> CommandEnvelope {
 
 #[test]
 fn boot_and_selection_are_manual_and_do_not_begin_preparation() {
-    let empty = TrackingSession::<()>::new();
+    let empty = TrackingLifecycle::<()>::new();
     assert_eq!(empty.snapshot().selection, None);
     assert_eq!(empty.snapshot().mode, TrackingMode::Manual);
     assert_eq!(empty.snapshot().run, None);
@@ -408,7 +355,7 @@ fn auto_refresh_preserves_identity_and_discards_old_or_ambiguous_work() {
 }
 
 #[test]
-fn freeze_is_atomic_and_only_installation_changes_replace_it_with_a_stop() {
+fn freeze_is_atomic_and_newer_revisions_cannot_replace_it() {
     let (mut session, _) = armed();
     session.tick(PREP).unwrap();
     let run = session.snapshot().run.unwrap();
@@ -419,9 +366,7 @@ fn freeze_is_atomic_and_only_installation_changes_replace_it_with_a_stop() {
             PlanRevisions {
                 orbit: 20,
                 clock: 20,
-                observer: 20,
                 start: 20,
-                ..REVISIONS
             },
             PREP,
         )
@@ -439,29 +384,6 @@ fn freeze_is_atomic_and_only_installation_changes_replace_it_with_a_stop() {
         ),
         Err(LifecycleError::StaleJob)
     );
-    session
-        .refresh(
-            &[],
-            PlanRevisions {
-                orbit: 20,
-                clock: 20,
-                observer: 20,
-                start: 20,
-                calibration: 2,
-                ..REVISIONS
-            },
-            PREP + 1,
-        )
-        .unwrap();
-    assert_eq!(
-        session.snapshot().termination.unwrap().reason,
-        TrackingStop::InstallationChanged
-    );
-    assert_eq!(
-        session.take_command(PREP + 1),
-        Some(CommandEnvelope::INHIBIT)
-    );
-    assert!(!session.tracking_command(run, output(PREP + 1, Command::Drive(CW)), PREP + 1));
 }
 
 #[test]
@@ -604,7 +526,7 @@ fn manual_admission_cannot_cross_tracking_mode_or_reuse_a_moving_starting_pose()
 
 #[test]
 fn manual_owner_expiry_and_source_deadlines_still_stop_manual_output() {
-    let mut session = TrackingSession::<()>::new();
+    let mut session = TrackingLifecycle::<()>::new();
     let owner = session.claim(1, 0).unwrap().token;
     session.take_command(0);
     assert!(session.manual_command(owner, output(4900, Command::Jog(CW)), 4900));
@@ -856,7 +778,7 @@ fn cancellation_reaches_real_actuator_before_a_pending_activation_at_the_same_de
     let calibration = plan.calibration;
     let installed = InstalledCalibration::new(calibration, FEEDBACK_FULL_SCALE).unwrap();
     let mut actuator = Actuator::with_config(plan.actuator, DutyHistory::Known([0, 0]));
-    let service = |session: &mut TrackingSession<&'static str>, actuator: &mut Actuator, now| {
+    let service = |session: &mut TrackingLifecycle<&'static str>, actuator: &mut Actuator, now| {
         let mut interlock = FeedbackInterlock::new(installed);
         interlock.publish(Some(
             FeedbackSample::from_voltages(

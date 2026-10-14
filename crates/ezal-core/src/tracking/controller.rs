@@ -94,13 +94,8 @@ pub struct FollowingController {
 }
 
 impl FollowingController {
-    /// Use installed relay timing with a fixed reference model across scenarios.
-    pub fn new(reference: MotorProfile, deadband_deg: f32) -> Result<Self, SimulationError> {
-        Self::with_timing(reference, deadband_deg, RelayConfig::DEFAULT)
-    }
-
     /// Build against the output policy used by the simulation/execution owner.
-    pub fn with_timing(
+    pub fn new(
         reference: MotorProfile,
         deadband_deg: f32,
         timing: RelayConfig,

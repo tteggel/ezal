@@ -1,49 +1,19 @@
-# Build artefacts
-/target/
-**/target/
-
-# Cargo lockfile policy:
-#   For *binaries* / *firmware* the lockfile SHOULD be committed so builds
-#   are reproducible bit-for-bit. ezal-firmware is the binary here, so we
-#   keep Cargo.lock under version control. (It lives at the workspace root.)
-# (No ignore entry for Cargo.lock — committed deliberately.)
-
-# Editor backups and swap files
-**/*.rs.bk
-*.swp
-.idea/
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json
-
-# Nix / direnv
-# `.envrc` is committed (it just says `use flake`); the local cache that
-# direnv writes alongside it is not, and neither are `nix build` outputs.
+target/
 .direnv/
 result
 result-*
 
-# Secrets: WiFi credentials for STA mode live in .env, which build.rs bakes
-# into the firmware at compile time. Never commit it — the committed template
-# is .env.example. (`.env.example` is re-included so it stays tracked.)
+# WiFi credentials and station settings; .env.example is the committed template.
 .env
 !.env.example
 
-# AI tooling
-.antigravitycli/
-
-# OS junk
-.DS_Store
-Thumbs.db
-
-# probe-rs / cargo-flash artefacts
+# Firmware images and defmt dumps. The vendored CYW43439 blobs are a build
+# input (see crates/ezal-firmware/cyw43-firmware/README.md), so they stay.
 *.uf2
 *.bin
 *.hex
-# …but the vendored CYW43439 radio firmware blobs ARE tracked — they're a
-# build input (`include_bytes!`d into the image), not a build artefact. See
-# crates/ezal-firmware/cyw43-firmware/README.md for their provenance.
 !crates/ezal-firmware/cyw43-firmware/*.bin
-
-# defmt log dumps
 *.defmt
+
+.vscode/
+.idea/

@@ -1,6 +1,9 @@
+mod common;
+
+use common::download;
+use ezal_core::catalog::Catalog;
 use ezal_core::orbit::{
-    Catalog, GroundStation, LookAngle, Observer, ObserverError, Orbit, Update, MAX_TLE_AGE_S,
-    SATELLITES,
+    GroundStation, LookAngle, Observer, ObserverError, Orbit, Update, MAX_TLE_AGE_S, SATELLITES,
 };
 use ezal_core::passes::{
     needs_forecast, Config, ConfigError, Elements, Error, Forecast, Job, Outcome, Pass, Report,
@@ -13,13 +16,23 @@ const START: i64 = 1_791_385_200; // 2026-10-07T15:00:00Z
 
 fn catalog() -> Catalog {
     let mut catalog = Catalog::new();
-    assert_eq!(catalog.update(TLES, START), SATELLITES.len());
+    assert_eq!(
+        catalog.commit(download(TLES, START), 0),
+        Ok(SATELLITES.len())
+    );
     catalog
+}
+
+/// Parse `text` as one read and count the element sets it stages.
+fn staged(text: &str, now_unix_s: i64) -> usize {
+    let mut update = Update::new(now_unix_s);
+    update.push(text.as_bytes());
+    update.finish().iter().flatten().count()
 }
 
 fn predict(catalog: &Catalog, start: i64, config: Config) -> Forecast {
     let station = GroundStation::new(config.observer).unwrap();
-    let mut job: Job = Job::new(catalog, &station, config, start).unwrap();
+    let mut job = Job::new(catalog, &station, config, start).unwrap();
     let mut steps = 0;
     while !job.step() {
         steps += 1;
@@ -191,12 +204,18 @@ fn default_catalog_filters_legacy_services_and_configuration_changes_results() {
 fn parser_handles_partial_crlf_and_bad_data_without_losing_good_elements() {
     let mut catalog = catalog();
     let before: Vec<_> = catalog.orbits().map(|orbit| orbit.epoch_unix_s).collect();
-    assert_eq!(catalog.update("<html>rate limited</html>", START), 0);
     assert_eq!(
-        catalog.update(&TLES.replace("1 38771", "1 99999"), START),
-        6
+        catalog.commit(download("<html>rate limited</html>", START), 0),
+        Ok(0)
     );
-    assert_eq!(catalog.update(&TLES.replace('\n', "\r\n"), START), 7);
+    assert_eq!(
+        catalog.commit(download(&TLES.replace("1 38771", "1 99999"), START), 0),
+        Ok(6)
+    );
+    assert_eq!(
+        catalog.commit(download(&TLES.replace('\n', "\r\n"), START), 0),
+        Ok(7)
+    );
     assert_eq!(
         before,
         catalog
@@ -212,10 +231,9 @@ fn parser_handles_partial_crlf_and_bad_data_without_losing_good_elements() {
     let mut corrupt = lines[1].as_bytes().to_vec();
     corrupt[68] = if corrupt[68] == b'0' { b'1' } else { b'0' };
     assert!(Orbit::from_tle(&SATELLITES[4], &corrupt, lines[2].as_bytes()).is_none());
-    let mut empty = Catalog::new();
-    assert_eq!(empty.update(TLES, START - 3 * 86_400), 0, "future epochs");
-    assert_eq!(empty.update(TLES, START + 9 * 86_400), 0, "stale epochs");
-    assert_eq!(empty.update(lines[1], START), 0, "truncated pair");
+    assert_eq!(staged(TLES, START - 3 * 86_400), 0, "future epochs");
+    assert_eq!(staged(TLES, START + 9 * 86_400), 0, "stale epochs");
+    assert_eq!(staged(lines[1], START), 0, "truncated pair");
 }
 
 #[test]
@@ -235,9 +253,8 @@ fn every_non_digit_checksum_column_is_rejected_without_panicking() {
         }
     }
     // The same lines arriving through a download stage nothing either.
-    let mut catalog = Catalog::new();
     let text = format!("METOP-B\n{}-\n{line2}\n", &line1[..68]);
-    assert_eq!(catalog.update(&text, START), 0);
+    assert_eq!(staged(&text, START), 0);
 }
 
 #[test]
@@ -266,8 +283,8 @@ fn non_numeric_or_impossible_elements_are_rejected_even_with_valid_checksums() {
         let good = catalog.orbit(0).unwrap().epoch_unix_s;
         let newer = with_checksum(&line1.replacen("26280.", "26281.", 1));
         assert_eq!(
-            catalog.update(&format!("{newer}\n{edited}\n"), START + 86_400),
-            0
+            catalog.commit(download(&format!("{newer}\n{edited}\n"), START + 86_400), 0),
+            Ok(0)
         );
         assert_eq!(catalog.orbit(0).unwrap().epoch_unix_s, good);
     }
@@ -288,25 +305,24 @@ fn non_numeric_or_impossible_elements_are_rejected_even_with_valid_checksums() {
 
 #[test]
 fn streamed_updates_match_a_whole_body_at_every_split() {
-    let reference: Vec<_> = catalog().epochs().to_vec();
+    let reference = catalog().epochs();
     for chunk in [1, 2, 7, 68, 69, 70, 512] {
         let mut update = Update::new(START);
         for piece in TLES.replace('\n', "\r\n").as_bytes().chunks(chunk) {
             update.push(piece);
         }
-        let mut streamed = Catalog::new();
-        assert_eq!(streamed.commit(update), SATELLITES.len(), "chunk {chunk}");
-        assert_eq!(streamed.epochs().to_vec(), reference, "chunk {chunk}");
+        let epochs = update
+            .finish()
+            .map(|orbit| orbit.map(|orbit| orbit.epoch_unix_s));
+        assert_eq!(epochs, reference, "chunk {chunk}");
     }
     // A final line without a newline, and an overlong line between sets.
     let (line1, line2) = fixture_lines(38771);
-    let mut update = Update::new(START);
-    update.push(format!("{}\n{line1}\n{line2}", "x".repeat(500)).as_bytes());
-    assert_eq!(Catalog::new().commit(update), 1);
+    let text = format!("{}\n{line1}\n{line2}", "x".repeat(500));
+    assert_eq!(staged(&text, START), 1);
     // An overlong line between a pair breaks it.
-    let mut update = Update::new(START);
-    update.push(format!("{line1}\n{}\n{line2}\n", "2".repeat(500)).as_bytes());
-    assert_eq!(Catalog::new().commit(update), 0);
+    let text = format!("{line1}\n{}\n{line2}\n", "2".repeat(500));
+    assert_eq!(staged(&text, START), 0);
 }
 
 #[test]
@@ -314,11 +330,14 @@ fn staged_elements_never_replace_newer_catalog_entries() {
     let mut catalog = catalog();
     let (line1, line2) = fixture_lines(38771);
     let older = with_checksum(&line1.replacen("26280.", "26279.", 1));
-    assert_eq!(catalog.update(&format!("{older}\n{line2}\n"), START), 0);
+    assert_eq!(
+        catalog.commit(download(&format!("{older}\n{line2}\n"), START), 0),
+        Ok(0)
+    );
     let newer = with_checksum(&line1.replacen("26280.", "26281.", 1));
     assert_eq!(
-        catalog.update(&format!("{newer}\n{line2}\n"), START + 86_400),
-        1
+        catalog.commit(download(&format!("{newer}\n{line2}\n"), START + 86_400), 0),
+        Ok(1)
     );
     let epochs = catalog.epochs();
     assert!(epochs[0].unwrap() > START as f64);
@@ -482,13 +501,16 @@ fn a_mask_above_the_default_peak_raises_the_default_peak() {
 }
 
 #[test]
-fn propagation_failure_and_quota_overflow_discard_only_that_candidate() {
+fn propagation_failure_discards_only_that_candidate() {
     // Extreme drag (B* columns 53–60) decays METOP-B within the span, so
     // propagation fails partway through its search.
     let (line1, line2) = fixture_lines(38771);
     let decaying = with_checksum(&format!("{}  99999+3{}", &line1[..52], &line1[61..]));
     let mut catalog = catalog();
-    assert_eq!(catalog.update(&format!("{decaying}\n{line2}\n"), START), 1);
+    assert_eq!(
+        catalog.commit(download(&format!("{decaying}\n{line2}\n"), START), 0),
+        Ok(1)
+    );
     let forecast = predict(&catalog, START, Config::DEFAULT);
     assert_eq!(forecast.outcomes[0], Outcome::Failed);
     assert!(forecast
@@ -496,27 +518,6 @@ fn propagation_failure_and_quota_overflow_discard_only_that_candidate() {
         .iter()
         .all(|pass| pass.satellite.norad_id != 38771));
     assert_eq!(forecast.outcomes[index_of(43689)], Outcome::Predicted);
-
-    // A quota of one pass discards every candidate with two or more.
-    let station = GroundStation::new(Observer::CLEVEDON).unwrap();
-    let catalog = self::catalog();
-    let mut job = Job::<1>::new(&catalog, &station, Config::DEFAULT, START).unwrap();
-    while !job.step() {}
-    let small = job.finish();
-    let full = predict(&catalog, START, Config::DEFAULT);
-    for (index, outcome) in small.outcomes.iter().enumerate() {
-        let count = full
-            .passes
-            .iter()
-            .filter(|pass| pass.satellite == &SATELLITES[index])
-            .count();
-        let expected = match full.outcomes[index] {
-            Outcome::Predicted if count > 1 => Outcome::Failed,
-            other => other,
-        };
-        assert_eq!(*outcome, expected, "{}", SATELLITES[index].name);
-    }
-    assert!(small.passes.len() <= SATELLITES.len());
 }
 
 #[test]

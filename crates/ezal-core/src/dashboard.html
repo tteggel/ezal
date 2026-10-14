@@ -20,6 +20,7 @@
   --shadow: 0 18px 48px rgba(23, 32, 35, 0.14);
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { min-height: 100%; background: var(--bg); }
 body {
   min-height: 100vh;
@@ -283,6 +284,17 @@ header {
 .passes small { display: block; margin-top: 4px; color: var(--muted); }
 .passes .underway { color: var(--teal); font-weight: 750; }
 #pass-status { color: var(--ink); }
+.tracking { padding: 24px 0; border-top: 1px solid var(--line); }
+.tracking h2 { margin-top: 0; }
+.tracking p { line-height: 1.55; }
+.tracking p:empty { display: none; }
+.tracking small { opacity: .75; }
+.tracking .warning { color: var(--gold); }
+.tracking-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.tracking button, .passes button { padding: 10px 14px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.tracking button:disabled, .passes button:disabled { opacity: .45; cursor: default; }
+.tracking button:focus-visible, .passes button:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+tr.selected { box-shadow: inset 3px 0 var(--teal); }
 @media (max-width: 430px) {
   main { gap: 12px; }
   header { align-items: flex-start; }
@@ -303,19 +315,6 @@ header {
     gap: 8px;
   }
 }
-
-  [hidden] { display: none !important; }
-  .tracking { padding: 24px 0; border-top: 1px solid var(--line, #344045); }
-  .tracking h2 { margin-top: 0; }
-  .tracking-actions { display: flex; flex-wrap: wrap; gap: 10px; }
-  .tracking button, .passes button { padding: 10px 14px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-  .tracking button:disabled, .passes button:disabled { opacity: .45; cursor: default; }
-  .tracking button:focus-visible, .passes button:focus-visible { outline: 3px solid #83e3b1; outline-offset: 3px; }
-  .tracking .warning { color: #f9bc65; }
-  tr.selected { box-shadow: inset 3px 0 #83e3b1; }
-  .tracking p { line-height: 1.55; }
-  .tracking p:empty { display: none; }
-  .tracking small { opacity: .75; }
 </style>
 </head>
 <body>
@@ -407,7 +406,7 @@ header {
   const idle = () => ({ azimuth: null, elevation: null });
   const hasDesired = (state) => Boolean(state.held.azimuth || state.held.elevation);
   const telemetryFresh = (state, now) => state.token !== null && now < state.telemetryUntil;
-  const feedbackReady = (state) => state.telemetry?.feedback.control_state === "idle";
+  const feedbackReady = (state) => state.telemetry?.feedback.health === "healthy";
   const axisReady = (state, axis) => state.duty?.[axis]?.cooldown === 0;
   const canControl = (state, now) => state.connected && state.controller && state.networkReady
     && !state.motionFault && !state.hidden && telemetryFresh(state, now) && feedbackReady(state)
@@ -428,14 +427,20 @@ header {
     awaitingTracking: false, trackingMessage: "",
   });
 
+  // An open tab reconnects forever and `/` is not cache-controlled, so this
+  // page routinely meets firmware newer or older than itself. Every device
+  // message is checked against the shape this page renders: a mismatched frame
+  // fails closed to "telemetry lost" or "predictions unavailable" instead of
+  // throwing inside transition, render or the poll loop.
   const identity = (value) => typeof value === "string" && /^\d{1,20}$/.test(value);
   const optionalIdentity = (value) => value === null || identity(value);
+  const optionalNumber = (value) => value === null || Number.isFinite(value);
   const pair = (value) => Array.isArray(value) && value.length === 2 && value.every(Number.isFinite);
   const validReception = (r) => r && Number.isFinite(r.aos_unix_s) && Number.isFinite(r.duration_ms)
     && Array.isArray(r.windows) && r.windows.length <= 2 && r.windows.every(pair)
     && (r.missed === null || pair(r.missed));
   const validDeviation = (d) => d && optionalIdentity(d.run) && typeof d.warning === "boolean"
-    && (d.maximum_deg === null || Number.isFinite(d.maximum_deg)) && Number.isFinite(d.outside_ms)
+    && optionalNumber(d.maximum_deg) && Number.isFinite(d.outside_ms)
     && (d.current === null || (d.current && pair(d.current.desired) && pair(d.current.measured)
       && [d.current.age_ms, d.current.degrees, d.current.uncertainty_deg].every(Number.isFinite)));
   const validTermination = (t) => t === null || (t && typeof t.reason === "string"
@@ -443,8 +448,7 @@ header {
   const validTracking = (t) => t && identity(t.revision) && optionalIdentity(t.operator)
     && ["manual", "tracking"].includes(t.mode)
     && ["idle", "armed", "preparing", "ready", "following", "reacquiring", "complete", "cancelled", "stopped"].includes(t.phase)
-    && optionalIdentity(t.run) && typeof t.feedback_stale === "boolean"
-    && (t.feedback_age_ms === null || Number.isFinite(t.feedback_age_ms))
+    && optionalIdentity(t.run) && typeof t.feedback_stale === "boolean" && optionalNumber(t.feedback_age_ms)
     && (t.selection === null || (t.selection && identity(t.selection.id) && identity(t.selection.norad_id)
       && [t.selection.aos_unix_s, t.selection.los_unix_s].every(Number.isFinite) && typeof t.selection.associated === "boolean"))
     && t.plan && ["unplanned", "planning", "supported", "partial", "frozen", "blocked"].includes(t.plan.status)
@@ -456,26 +460,30 @@ header {
     && validDeviation(t.deviation) && validTermination(t.termination)
     && (t.recovery === null || (t.recovery && identity(t.recovery.episode) && typeof t.recovery.cause === "string"
       && typeof t.recovery.planning === "boolean" && [t.recovery.attempts, t.recovery.work_steps, t.recovery.remaining_ms].every(Number.isFinite)
-      && [t.recovery.launch_in_ms, t.recovery.intercept_in_ms].every((v) => v === null || Number.isFinite(v))
+      && [t.recovery.launch_in_ms, t.recovery.intercept_in_ms].every(optionalNumber)
       && (t.recovery.hold === null || typeof t.recovery.hold === "string")))
     && (t.summary === null || (t.summary && t.summary.termination && validTermination(t.summary.termination)
       && validReception(t.summary.reception) && validDeviation(t.summary.deviation)));
 
   const dutyPair = (value) => Array.isArray(value) && value.length === 2
     && value.every((ms) => Number.isSafeInteger(ms) && ms >= 0);
-  const validTelemetry = (message) => {
-    const optionalNumber = (value) => value === null || Number.isFinite(value);
-    return message.position && message.feedback && message.control && validTracking(message.tracking)
-      && Number.isFinite(message.position.a0_mv) && Number.isFinite(message.position.a1_mv)
-      && optionalNumber(message.feedback.azimuth_tenths)
-      && optionalNumber(message.feedback.elevation_tenths)
-      && typeof message.feedback.control_state === "string"
-      && typeof message.control.controller === "boolean"
-      && typeof message.control.network_ready === "boolean"
-      && dutyPair(message.control.duty_remaining_ms) && dutyPair(message.control.duty_cooldown_ms)
-      && (message.freshness === null || (message.freshness
-        && typeof message.freshness.token === "string" && /^\d+$/.test(message.freshness.token)));
-  };
+  const validTelemetry = (message) => message.position && message.feedback && message.control
+    && validTracking(message.tracking)
+    && optionalNumber(message.position.a0_mv) && optionalNumber(message.position.a1_mv)
+    && optionalNumber(message.feedback.azimuth_tenths)
+    && optionalNumber(message.feedback.elevation_tenths)
+    && typeof message.feedback.health === "string"
+    && typeof message.control.controller === "boolean"
+    && typeof message.control.network_ready === "boolean"
+    && dutyPair(message.control.duty_remaining_ms) && dutyPair(message.control.duty_cooldown_ms)
+    && (message.freshness === null || (message.freshness
+      && typeof message.freshness.token === "string" && /^\d+$/.test(message.freshness.token)));
+  const validForecast = (data) => data && typeof data.status === "string"
+    && Array.isArray(data.passes) && Array.isArray(data.satellites) && data.observer
+    && [data.observer.latitude_deg, data.observer.longitude_deg, data.observer.altitude_m, data.window_s].every(Number.isFinite)
+    && data.passes.every((pass) => pass && identity(pass.norad_id) && [pass.aos_unix_s, pass.los_unix_s, pass.peak_elevation_deg].every(Number.isFinite))
+    && data.satellites.every((satellite) => satellite && typeof satellite.name === "string")
+    && [data.now_unix_s, data.valid_until_unix_s, data.tle_updated_unix_s].every(optionalNumber);
 
   // This transition has no browser I/O. Each axis owns at most one input;
   // held input and the firmware's applied drive remain distinct state.
@@ -645,6 +653,7 @@ header {
   const health = document.getElementById("health");
   const controlState = document.getElementById("control-state");
   const controlStatus = document.getElementById("control-status");
+  const manualControls = document.getElementById("manual-controls");
   const driveIndicators = {
     azimuth: document.getElementById("azimuth-drive"),
     elevation: document.getElementById("elevation-drive")
@@ -698,7 +707,7 @@ header {
   const renderTracking = (now) => {
     const t = state.tracking;
     const known = Boolean(t && telemetryFresh(state, now) && state.connected);
-    document.getElementById("manual-controls").hidden = t?.mode === "tracking";
+    manualControls.hidden = t?.mode === "tracking";
     const writable = canTrack(state, now);
     trackElements.arm.disabled = !writable || t.mode !== "manual" || !["supported", "partial"].includes(t.plan.status)
       || state.motionFault || !feedbackReady(state) || t.feedback_stale;
@@ -747,13 +756,14 @@ header {
     if (state.motionFault) return ["locked", `Movement locked: ${state.motionFault.replaceAll("_", " ")}.`];
     if (!state.controller) return ["viewer", "Select Take control above to enable the direction buttons."];
     if (state.hidden) return ["paused", "Controls paused while this page is hidden."];
-    const feedback = state.telemetry.feedback.control_state;
+    const feedback = state.telemetry.feedback.health;
     if (!feedbackReady(state)) {
       const reason = {
         "feedback-invalid": "Position feedback is outside the calibrated range. Check the A0/A1 readings and calibration.",
         "calibration-invalid": "The installed position calibration is invalid.",
         "no-feedback": "Waiting for position feedback from the controller.",
         "feedback-stale": "Position feedback is stale. Check the feedback connection.",
+        "read-timeout": "A position feedback read timed out. Acquisition is latched until the device is reset.",
         "timestamp-invalid": "Position feedback timing is invalid.",
       }[feedback] || `Check position feedback (${feedback.replaceAll("-", " ")}).`;
       return ["blocked", `Movement blocked. ${reason}`];
@@ -777,11 +787,11 @@ header {
     const online = known && state.networkReady;
     setText(status, !configured ? "configuration unavailable" : known && !state.networkReady ? "network unavailable" : state.status);
     status.classList.toggle("online", online);
-    setText(a0, data ? data.position.a0_mv : "--");
-    setText(a1, data ? data.position.a1_mv : "--");
+    setText(a0, data?.position.a0_mv ?? "--");
+    setText(a1, data?.position.a1_mv ?? "--");
     setText(azimuth, degrees(data?.feedback.azimuth_tenths));
     setText(elevation, degrees(data?.feedback.elevation_tenths));
-    setText(health, state.motionFault ? state.motionFault.replaceAll("_", " ") : data?.feedback.control_state ?? "unknown");
+    setText(health, state.motionFault ? state.motionFault.replaceAll("_", " ") : data?.feedback.health ?? "unknown");
     take.disabled = !canTake(state, now);
     setText(take, state.controller ? "controller" : "take control");
     const [summary, hint] = controlView(now);
@@ -890,6 +900,8 @@ header {
   const passStatus = document.getElementById("pass-status");
   const passSite = document.getElementById("pass-site");
   const utcClock = document.getElementById("utc-clock");
+  const passCoverage = document.getElementById("pass-coverage");
+  const tleStatus = document.getElementById("tle-status");
   let forecast = null;
   let forecastReceivedAt = -Infinity;
   let forecastFailed = false;
@@ -985,21 +997,16 @@ header {
       const response = await fetch("/api/passes", { cache: "no-store", signal: abort.signal });
       if (!response.ok) throw new Error("forecast request failed");
       const data = await response.json();
-      const optional = (value) => value === null || Number.isFinite(value);
-      if (typeof data.status !== "string" || !Array.isArray(data.passes) || !Array.isArray(data.satellites) || !data.observer
-        || ![data.observer.latitude_deg, data.observer.longitude_deg, data.observer.altitude_m, data.window_s].every(Number.isFinite)
-        || !data.passes.every((pass) => pass && identity(pass.norad_id) && [pass.aos_unix_s, pass.los_unix_s, pass.peak_elevation_deg].every(Number.isFinite))
-        || !data.satellites.every((satellite) => satellite && typeof satellite.name === "string")
-        || ![data.now_unix_s, data.valid_until_unix_s, data.tle_updated_unix_s].every(optional)) throw new Error("invalid forecast");
+      if (!validForecast(data)) throw new Error("invalid forecast");
       forecast = data;
       forecastReceivedAt = performance.now();
       forecastFailed = false;
       stationKnown = true;
       const site = data.observer;
       setText(passSite, `${site.latitude_deg.toFixed(5)}°, ${site.longitude_deg.toFixed(5)}° · ${site.altitude_m} m · cutoff ${data.min_elevation_deg}° · minimum peak ${data.min_peak_elevation_deg}°`);
-      setText(document.getElementById("pass-coverage"), data.satellites
+      setText(passCoverage, data.satellites
         .map((sat) => `${sat.name}: ${sat.failed ? "prediction failed" : sat.available ? "ready" : "missing or stale elements"}${sat.experimental ? " (experimental)" : ""}`).join(" · "));
-      setText(document.getElementById("tle-status"), `${data.tle_updated_unix_s === null ? "No orbital elements downloaded yet" : `Elements downloaded ${utc(data.tle_updated_unix_s)} UTC`}${data.download_failed ? " · refresh failed, retrying" : ""}`);
+      setText(tleStatus, `${data.tle_updated_unix_s === null ? "No orbital elements downloaded yet" : `Elements downloaded ${utc(data.tle_updated_unix_s)} UTC`}${data.download_failed ? " · refresh failed, retrying" : ""}`);
     } catch (_) {
       forecastFailed = true;
       // Settings come only from the device; never imply a site it hasn't sent.

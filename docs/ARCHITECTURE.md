@@ -57,12 +57,13 @@ coordination; the mailbox stores each command together with its source deadline.
 
 Other core modules remain independent: `ads1015` models registers and decoding;
 `wifi` validates credentials and selects retry delays; `ntp` validates packets
-and maintains an expiring UTC anchor; `http`, `orbit` and `passes` parse streamed
-elements and calculate reception windows. UTC never drives motion timers.
+and maintains an expiring UTC anchor; `http` and `orbit` parse streamed elements,
+`catalog` publishes them and `passes` calculates reception windows. UTC never
+drives motion timers.
 
 Tracking has separate ownership for operator authority and
 the selected run. `operator::OperatorLease` enforces exclusive, expiring grants;
-`tracking::TrackingSession` binds the selection, planning tickets, frozen inputs,
+`tracking::TrackingLifecycle` binds the selection, planning tickets, frozen inputs,
 executor generations and pending output. Releasing a browser grant does not
 release an armed run. The planner and lifecycle both use the existing actuator
 policy, so simulation, preparation and later following share duty and relay
@@ -75,8 +76,8 @@ The firmware uses this owner: it validates source snapshots,
 clock corrections and timestamped network generations before preparation,
 executor commands and mailbox drain. `ExecutionInputs` owns its elements,
 observer and millisecond UTC anchor; later publications cannot edit a frozen
-run. A completed `OrbitalDownload` is required before `OrbitalCatalog` can
-publish element sets and their revisions. The installation explicitly accepts
+run. Only a completed `OrbitalDownload` can publish element sets and their
+revisions to `catalog::Catalog`. The installation explicitly accepts
 HTTP orbital data; these types establish framing/validation and identity, not
 cryptographic authenticity. NTP also remains unauthenticated.
 

@@ -1,8 +1,9 @@
 //! Response framing for the orbital-element download. Every case is fed both
 //! whole and in every two-part split, as TCP may deliver it either way.
 
+use ezal_core::catalog::{Catalog, OrbitalDownload};
 use ezal_core::http::{Error, Response, MAX_BODY, MAX_HEADER_BYTES};
-use ezal_core::orbit::{Catalog, Update, SATELLITES};
+use ezal_core::orbit::SATELLITES;
 
 const TLES: &str = include_str!("fixtures/weather-2026-10-07.tle");
 const START: i64 = 1_791_385_200;
@@ -214,13 +215,16 @@ fn a_chunked_element_download_streams_into_the_catalog() {
     }
     raw.extend_from_slice(b"0\r\n\r\n");
     for read in [1, 13, 536, 1460] {
-        let mut response = Response::new();
-        let mut update = Update::new(START);
+        let mut download = OrbitalDownload::new(START);
         for segment in raw.chunks(read) {
-            response.feed(segment, |data| update.push(data)).unwrap();
+            download.push(segment).unwrap();
         }
-        assert!(response.is_done() && response.finish().is_ok());
+        assert!(download.is_complete());
         let mut catalog = Catalog::new();
-        assert_eq!(catalog.commit(update), SATELLITES.len(), "read size {read}");
+        assert_eq!(
+            catalog.commit(download.finish().unwrap(), 0),
+            Ok(SATELLITES.len()),
+            "read size {read}"
+        );
     }
 }

@@ -3,8 +3,8 @@
 
 use super::route::{self, Bridge, Knot, Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
 use super::{
-    pointing_deviation_deg, AdmissionPolicy, FollowingController, MotorProfile, ReceptionCoverage,
-    RestingStart, Simulation, SimulationError, SimulationSettings, TrackingTarget,
+    pointing_deviation_deg, FollowingController, MotorProfile, ReceptionCoverage, RestingStart,
+    Scenario, Simulation, SimulationError, SimulationSettings, TrackingTarget,
 };
 use crate::passes::Ephemeris;
 use crate::position::{Pointing, PositionCalibration};
@@ -35,36 +35,6 @@ pub struct PlanningWindow {
     pub duration_ms: u32,
 }
 
-/// One repeatable uncertainty case. These finite cases do not prove all
-/// intermediate combinations of motor behavior, noise or atmospheric effects.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Scenario {
-    /// Assumed loaded motor response; the follower keeps its own fixed reference.
-    pub motor: MotorProfile,
-    /// Total paired acquisition latency, at most 150 ms.
-    pub latency_ms: u64,
-    /// Delay between capturing A0 and A1, included in that latency.
-    pub channel_skew_ms: u64,
-    /// Azimuth/elevation ADC-code offsets before quantization.
-    pub noise_codes: [i8; 2],
-    /// Alternating offsets exercise code-boundary chatter as well as fixed bias.
-    pub alternate_noise: bool,
-    /// Explicit gear engagement at preparation start, where known/assumed.
-    pub initial_engagement: [Option<bool>; 2],
-}
-
-impl Scenario {
-    /// Nominal AC case, initially engaged in the first requested direction.
-    pub const NOMINAL: Self = Self {
-        motor: MotorProfile::AC_50HZ,
-        latency_ms: 100,
-        channel_skew_ms: 0,
-        noise_codes: [0, 0],
-        alternate_noise: false,
-        initial_engagement: [None, None],
-    };
-}
-
 /// Preparation schedule that must be included in the complete simulation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PreparationTiming {
@@ -78,8 +48,6 @@ pub enum PreparationTiming {
 /// Explicit planning assumptions, frozen with a supported route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanningConfig {
-    /// Complete support is preferred; partial support requires recovery validation.
-    pub admission: AdmissionPolicy,
     /// Starting early needs its own duty/relay evaluation, not a schedule override.
     pub preparation_timing: PreparationTiming,
     /// Total operational pointing target (provisional default 3°).
@@ -109,7 +77,6 @@ impl Default for PlanningConfig {
         let slow = MotorProfile::AC_SLOW;
         let fast = MotorProfile::AC_FAST;
         Self {
-            admission: AdmissionPolicy::AllowPartial,
             preparation_timing: PreparationTiming::Scheduled,
             tolerance_deg: 3.0,
             uncertainty_deg: 1.0,
@@ -195,8 +162,6 @@ pub enum PlanningError {
     Configuration,
     /// The caller must supply a serviced, settled, fault-free starting snapshot.
     StartingState,
-    /// A complete-only job cannot start after AOS; partial admission was disabled.
-    PassAlreadyStarted,
     /// No future reception remains in the selected original window.
     PassEnded,
     /// Propagation failed or returned a non-finite/out-of-range visible sky direction.
@@ -207,9 +172,7 @@ pub enum PlanningError {
     RouteCapacity,
     /// Search exceeded its hard work bound instead of blocking indefinitely.
     WorkLimit,
-    /// Cancelled work cannot publish or revive an earlier candidate.
-    Cancelled,
-    /// Result requested before all candidates were evaluated.
+    /// No completed result is held: the search is unfinished or its report was already taken.
     Incomplete,
 }
 
@@ -265,8 +228,6 @@ pub struct Assessment {
     pub bounded_peak_deg: f32,
     /// Worst nominal gap duration, or the admitted partial plan's missed interval.
     pub gap_time_ms: u64,
-    /// Scenario whose diagnostic intervals are retained; partial plans aggregate cases.
-    pub gap_scenario: usize,
     /// Diagnostic gaps, or the validated missed interval for a supported partial plan.
     pub gaps: Vec<PlannedGap, MAX_GAPS>,
     /// Additional gaps existed beyond storage; totals and rejection remain valid.
@@ -296,7 +257,6 @@ impl Assessment {
             sampled_peak_deg: 0.0,
             bounded_peak_deg: 0.0,
             gap_time_ms: 0,
-            gap_scenario: 0,
             gaps: Vec::new(),
             gaps_truncated: false,
             energized_ms: [0, 0],
@@ -327,7 +287,7 @@ impl Assessment {
 }
 
 /// Supported in every supplied scenario for its explicit reception coverage. Keep its
-/// ephemeris/calibration/clock revisions bound externally when freezing a run.
+/// ephemeris and clock revisions bound externally when freezing a run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackingPlan {
     pub(super) reception: ReceptionCoverage,
@@ -459,11 +419,8 @@ impl<E: Ephemeris> Planner<E> {
         if start.at_ms >= window.aos_at_ms + u64::from(window.duration_ms) {
             return Err(PlanningError::PassEnded);
         }
-        if window.aos_at_ms < start.at_ms && config.admission == AdmissionPolicy::CompleteOnly {
-            return Err(PlanningError::PassAlreadyStarted);
-        }
         let follower =
-            FollowingController::with_timing(config.reference, config.deadband_deg, output.relays)
+            FollowingController::new(config.reference, config.deadband_deg, output.relays)
                 .map_err(|_| PlanningError::Configuration)?;
         for scenario in &config.scenarios {
             if scenario.motor.azimuth.rate_deg_per_s > output.travel.azimuth.max_speed_deg_per_s
@@ -476,9 +433,11 @@ impl<E: Ephemeris> Planner<E> {
             }
             Simulation::from_rest(
                 calibration,
-                scenario.motor,
                 follower,
-                Self::settings(&config, start, *scenario),
+                SimulationSettings {
+                    step_ms: config.step_ms,
+                    scenario: *scenario,
+                },
                 start,
             )
             .map_err(|error| {
@@ -490,8 +449,7 @@ impl<E: Ephemeris> Planner<E> {
             })?;
         }
         let choice = route::choice(0);
-        let partial_round =
-            start.at_ms >= window.aos_at_ms && config.admission == AdmissionPolicy::AllowPartial;
+        let partial_round = start.at_ms >= window.aos_at_ms;
         Ok(Self {
             source,
             window,
@@ -529,24 +487,6 @@ impl<E: Ephemeris> Planner<E> {
         })
     }
 
-    fn settings(
-        config: &PlanningConfig,
-        start: RestingStart,
-        scenario: Scenario,
-    ) -> SimulationSettings {
-        SimulationSettings {
-            step_ms: config.step_ms,
-            feedback_latency_ms: scenario.latency_ms,
-            channel_skew_ms: scenario.channel_skew_ms,
-            noise_codes: scenario.noise_codes,
-            alternate_noise: scenario.alternate_noise,
-            initial_engagement: scenario.initial_engagement,
-            actuator: start.actuator.configuration(),
-            tolerance_deg: config.tolerance_deg - config.uncertainty_deg,
-            ..SimulationSettings::default()
-        }
-    }
-
     /// True after a terminal error, complete search or validated partial fallback.
     pub fn is_finished(&self) -> bool {
         self.phase == Phase::Complete || self.error.is_some()
@@ -555,26 +495,9 @@ impl<E: Ephemeris> Planner<E> {
     pub const fn source(&self) -> &E {
         &self.source
     }
-    /// Cancelling invalidates all partial and earlier candidate results.
-    pub fn cancel(&mut self) {
-        self.error = Some(PlanningError::Cancelled);
-        self.sim = None;
-        self.partial = None;
-        self.report.plan = None;
-    }
-    /// Consume the completed result; partial work never becomes a supported plan.
-    pub fn into_report(self) -> Result<PlanningReport, PlanningError> {
-        if let Some(error) = self.error {
-            Err(error)
-        } else if self.phase != Phase::Complete {
-            Err(PlanningError::Incomplete)
-        } else {
-            Ok(self.report)
-        }
-    }
-    /// Move out a completed report without moving the large planner workspace.
-    /// Useful for a statically stored embedded worker. A second extraction is
-    /// rejected; partial work is never published as success.
+    /// Move out the completed report without moving the large planner workspace.
+    /// A failed job returns its error, an unfinished or already-taken one
+    /// [`PlanningError::Incomplete`]; partial work is never published as success.
     pub fn take_report(&mut self) -> Result<PlanningReport, PlanningError> {
         if let Some(error) = self.error {
             return Err(error);
@@ -688,10 +611,7 @@ impl<E: Ephemeris> Planner<E> {
         self.scenario = 0;
         self.route.points.clear();
         if self.candidate == route::CANDIDATES {
-            if self.report.plan.is_none()
-                && !self.partial_round
-                && self.config.admission == AdmissionPolicy::AllowPartial
-            {
+            if self.report.plan.is_none() && !self.partial_round {
                 self.partial_round = true;
                 self.candidate = 0;
             } else {
@@ -741,7 +661,7 @@ impl<E: Ephemeris> Planner<E> {
 
     fn start_simulation(&mut self, probe: bool) -> Result<(), PlanningError> {
         let case = self.config.scenarios[self.scenario];
-        let follower = FollowingController::with_timing(
+        let follower = FollowingController::new(
             self.config.reference,
             self.config.deadband_deg,
             self.start.actuator.configuration().relays,
@@ -749,9 +669,11 @@ impl<E: Ephemeris> Planner<E> {
         .map_err(|_| PlanningError::Configuration)?;
         let mut sim = Simulation::from_rest(
             self.calibration,
-            case.motor,
             follower,
-            Self::settings(&self.config, self.start, case),
+            SimulationSettings {
+                step_ms: self.config.step_ms,
+                scenario: case,
+            },
             self.start,
         )
         .map_err(|_| PlanningError::StartingState)?;
@@ -1045,7 +967,6 @@ impl<E: Ephemeris> Planner<E> {
         }
         if self.metrics.gap_time > self.assessment.gap_time_ms {
             self.assessment.gap_time_ms = self.metrics.gap_time;
-            self.assessment.gap_scenario = self.scenario;
             self.assessment.gaps = self.metrics.gaps.clone();
             self.assessment.gaps_truncated = self.metrics.truncated;
         }

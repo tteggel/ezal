@@ -4,34 +4,10 @@
 //! to [`ezal_core::wifi`]'s pure credential rules. It powers the Pico 2 W's
 //! on-module Infineon **CYW43439** radio, spawns the driver's background task,
 //! and joins the access point whose SSID/password `build.rs` baked in from
-//! `.env`. Initialization runs once; the supervisor owns every retry.
-//!
-//! ## Why the radio needs a background task
-//!
-//! The CYW43439 has no dedicated SPI peripheral on the RP2350; its gSPI bus is
-//! bit-banged on a **PIO** state machine ([`cyw43_pio`]) with a DMA channel.
-//! All of that — plus the chip's event pump and the control-message plumbing —
-//! is driven by a long-lived [`cyw43::Runner`] future, which we hand to the
-//! Embassy executor as its own task ([`cyw43_task`]). Everything else (join,
-//! GPIO) talks to the chip through the returned [`cyw43::Control`] handle,
-//! which we wrap in [`Wifi`]. The IP stack uses the separate [`NetDriver`].
-//!
-//! ## STA mode
-//!
-//! "Station mode" (STA) is the ordinary client role — the Pico joins someone
-//! else's access point, as opposed to *being* one (AP mode). It is the
-//! CYW43439's default after [`Control::init`], so bringing up STA is simply a
-//! matter of [`Control::join`]-ing a network; there is no explicit mode call.
-//! (AP mode would instead use `control.start_ap_*`.)
-//!
-//! ## Association and recovery
-//!
-//! The supervisor validates immutable credentials once, then owns every retry,
-//! DHCP wait, and link/address check. [`Wifi::associate_once`] clears the old
-//! association, waits for it to settle, and attempts one bounded join.
-//!
-//! A successful join establishes station association; motion permission also
-//! requires a usable DHCP address. Every unsuccessful attempt stays offline.
+//! `.env`. Initialization runs once; [`supervise`] validates the immutable
+//! credentials once, then owns every retry, DHCP wait, and link/address check.
+//! Motion permission requires both station association and a usable DHCP
+//! address.
 
 use cyw43::aligned_bytes;
 use cyw43::{Control, JoinAuth, JoinError, JoinOptions, NetDriver, PowerManagementMode};
@@ -102,14 +78,6 @@ async fn cyw43_task(
 /// Built by [`Wifi::init`]; [`Wifi::associate_once`] joins the configured AP.
 pub struct Wifi<'d> {
     control: Control<'d>,
-}
-
-/// What a successful [`Wifi::associate_once`] established, for logging.
-#[derive(Format)]
-struct AssociationReport {
-    /// Whether the joined network is password-protected (`true`) or open
-    /// (`false`).
-    protected: bool,
 }
 
 /// Why a bounded association attempt failed.
@@ -224,7 +192,7 @@ impl Wifi<'static> {
         creds: &Credentials<'_>,
         security: Security,
         timeout: Duration,
-    ) -> Result<AssociationReport, AssociationError> {
+    ) -> Result<(), AssociationError> {
         self.leave().await?;
         Timer::after(JOIN_LEAVE_SETTLE).await;
         let options = match security {
@@ -236,13 +204,10 @@ impl Wifi<'static> {
             }
         };
 
-        match with_timeout(timeout, self.control.join(creds.ssid, options)).await {
-            Ok(Ok(())) => Ok(AssociationReport {
-                protected: matches!(security, Security::Protected),
-            }),
-            Ok(Err(error)) => Err(AssociationError::Join(error)),
-            Err(_) => Err(AssociationError::JoinTimeout),
-        }
+        with_timeout(timeout, self.control.join(creds.ssid, options))
+            .await
+            .map_err(|_| AssociationError::JoinTimeout)?
+            .map_err(AssociationError::Join)
     }
 
     /// Clear chip association state before another join or after a failed one.
@@ -260,7 +225,9 @@ impl Wifi<'static> {
 
 /// Maintain station association, DHCP, and the actuator's expiring network
 /// permit for the lifetime of the firmware. HTTP acceptors are already running
-/// when this task starts; late AP/DHCP recovery needs no reboot.
+/// when this task starts; late AP/DHCP recovery needs no reboot. This task is
+/// the only writer of network readiness: it grants the permit only inside the
+/// ready loop and revokes it on leaving, so every other path is already offline.
 #[embassy_executor::task]
 pub async fn supervise(
     mut wifi: Wifi<'static>,
@@ -271,7 +238,6 @@ pub async fn supervise(
     let security = match creds.validate() {
         Ok(security) => security,
         Err(error) => {
-            state.publish_network(false);
             stack.set_config_v4(ConfigV4::None);
             error!(
                 "WiFi credentials invalid: {=str}; motion inhibited; reconfigure and restart",
@@ -282,16 +248,18 @@ pub async fn supervise(
     };
     let mut retries = ConnectionRetries::new();
     loop {
-        state.publish_network(false);
         // Clear any cached address BEFORE retrying association. A lease from
         // the previous link must not count as successful DHCP on the new one.
         stack.set_config_v4(ConfigV4::None);
         let timeout = Duration::from_millis(retries.association_timeout_ms());
         match wifi.associate_once(&creds, security, timeout).await {
-            Ok(report) => {
+            Ok(()) => {
                 info!(
                     "WiFi associated ({=str}); waiting for DHCP",
-                    if report.protected { "secured" } else { "open" }
+                    match security {
+                        Security::Open => "open",
+                        Security::Protected => "secured",
+                    }
                 );
                 stack.set_config_v4(ConfigV4::Dhcp(Default::default()));
                 let configured = with_timeout(DHCP_TIMEOUT, async {
@@ -352,7 +320,6 @@ pub async fn supervise(
             }
         }
 
-        state.publish_network(false);
         let retry_secs = retries.backoff_secs();
         info!("network retry in {=u64}s", retry_secs);
         Timer::after(Duration::from_secs(retry_secs)).await;

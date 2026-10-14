@@ -3,14 +3,12 @@
 mod common;
 
 use common::TEST_CALIBRATION;
-use ezal_core::coordination::ControlStatus;
+use ezal_core::coordination::{ControlStatus, CoordinationState};
 use ezal_core::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
 use ezal_core::duty::DutyStatus;
 use ezal_core::feedback::{FeedbackHealth, FeedbackMonitor, FeedbackReadError, FeedbackSnapshot};
-use ezal_core::position::Pointing;
-use ezal_core::protocol::{
-    ClientMessage, FeedbackTelemetry, PositionTelemetry, TAKE_CONTROL_MESSAGE,
-};
+use ezal_core::position::{FeedbackVoltages, Pointing};
+use ezal_core::protocol::{ClientMessage, TelemetryMessage, TAKE_CONTROL_MESSAGE};
 use ezal_core::session::MovementRequest;
 
 #[test]
@@ -104,21 +102,40 @@ fn rejects_conflicting_axis_commands() {
     assert_eq!(parse_command("drive:cw+cw"), None);
 }
 
-#[test]
-fn formats_position_telemetry_as_compact_json() {
+/// The position and feedback members of the telemetry frame carrying `feedback`.
+fn feedback_frame(feedback: FeedbackSnapshot) -> String {
+    let mut snapshot = CoordinationState::new().telemetry(1, 0);
+    snapshot.feedback = feedback;
+    let message = TelemetryMessage {
+        snapshot,
+        token: None,
+        tracking: CoordinationState::new().tracking_telemetry(1, 0),
+    };
     let mut json = String::new();
-    PositionTelemetry {
-        a0_mv: 901,
-        a1_mv: -12,
-    }
-    .write_json(&mut json)
-    .unwrap();
+    message.write_json(&mut json).unwrap();
+    json.truncate(json.find(",\"control\":").unwrap());
+    json
+}
 
-    assert_eq!(json, r#"{"type":"position","a0_mv":901,"a1_mv":-12}"#);
+#[test]
+fn telemetry_nulls_each_absent_measurement_independently() {
+    let rejected = FeedbackSnapshot {
+        raw: Some(FeedbackVoltages {
+            a0_elevation_mv: 901,
+            a1_azimuth_mv: -12,
+        }),
+        last_valid: None,
+        health: FeedbackHealth::Invalid,
+    };
+    assert_eq!(
+        feedback_frame(rejected),
+        r#"{"type":"telemetry","position":{"a0_mv":901,"a1_mv":-12},"feedback":{"azimuth_tenths":null,"elevation_tenths":null,"health":"feedback-invalid"}"#
+    );
 }
 
 #[test]
 fn formats_control_status_as_compact_json() {
+    let duty = CoordinationState::new().telemetry(1, 0).control.duty;
     let mut json = String::new();
     ControlStatus {
         controller: true,
@@ -128,7 +145,7 @@ fn formats_control_status_as_compact_json() {
         },
         network_ready: true,
         motion_fault: None,
-        duty: DutyStatus::INITIAL,
+        duty,
     }
     .write_json(&mut json)
     .unwrap();
@@ -144,7 +161,7 @@ fn formats_control_status_as_compact_json() {
         drive: DriveCommand::IDLE,
         network_ready: false,
         motion_fault: None,
-        duty: DutyStatus::INITIAL,
+        duty,
     }
     .write_json(&mut json)
     .unwrap();
@@ -156,23 +173,24 @@ fn formats_control_status_as_compact_json() {
 }
 
 #[test]
-fn formats_calibrated_feedback_as_compact_json() {
-    let mut json = String::new();
-    FeedbackTelemetry {
-        azimuth_tenths: 4247,
-        elevation_tenths: 3,
-        health: FeedbackHealth::Healthy,
-    }
-    .write_json(&mut json)
-    .unwrap();
+fn telemetry_projects_healthy_feedback_with_a0_elevation_and_a1_azimuth() {
+    let raw = TEST_CALIBRATION
+        .position_to_feedback(Pointing::new(100.0, 20.0))
+        .unwrap();
+    assert_ne!(raw.a0_elevation_mv, raw.a1_azimuth_mv);
+    let mut monitor = FeedbackMonitor::new(TEST_CALIBRATION, None);
+    let healthy = monitor.update(100, 98, Ok(raw)).snapshot;
     assert_eq!(
-        json,
-        r#"{"type":"feedback","azimuth_tenths":4247,"elevation_tenths":3,"control_state":"idle"}"#
+        feedback_frame(healthy),
+        format!(
+            r#"{{"type":"telemetry","position":{{"a0_mv":{},"a1_mv":{}}},"feedback":{{"azimuth_tenths":1000,"elevation_tenths":200,"health":"healthy"}}"#,
+            raw.a0_elevation_mv, raw.a1_azimuth_mv
+        )
     );
 }
 
 #[test]
-fn domain_feedback_projects_retained_diagnostics_and_legacy_wire_health() {
+fn telemetry_retains_diagnostics_after_a_failed_read() {
     let raw = TEST_CALIBRATION
         .position_to_feedback(Pointing::new(100.0, 20.0))
         .unwrap();
@@ -181,29 +199,12 @@ fn domain_feedback_projects_retained_diagnostics_and_legacy_wire_health() {
     let failed = monitor
         .update(200, 198, Err(FeedbackReadError::TimedOut))
         .snapshot;
-    let mut json = String::new();
-    FeedbackTelemetry::from(failed)
-        .write_json(&mut json)
-        .unwrap();
     assert_eq!(
-        json,
-        r#"{"type":"feedback","azimuth_tenths":1000,"elevation_tenths":200,"control_state":"feedback-stale"}"#
-    );
-    assert_eq!(
-        PositionTelemetry::from(failed),
-        PositionTelemetry {
-            a0_mv: raw.a0_elevation_mv,
-            a1_mv: raw.a1_azimuth_mv
-        }
-    );
-
-    json.clear();
-    FeedbackTelemetry::from(FeedbackSnapshot::INITIAL)
-        .write_json(&mut json)
-        .unwrap();
-    assert_eq!(
-        json,
-        r#"{"type":"feedback","azimuth_tenths":0,"elevation_tenths":0,"control_state":"no-feedback"}"#
+        feedback_frame(failed),
+        format!(
+            r#"{{"type":"telemetry","position":{{"a0_mv":{},"a1_mv":{}}},"feedback":{{"azimuth_tenths":1000,"elevation_tenths":200,"health":"read-timeout"}}"#,
+            raw.a0_elevation_mv, raw.a1_azimuth_mv
+        )
     );
 }
 
@@ -216,8 +217,6 @@ fn parse_command(text: &str) -> Option<DriveCommand> {
 
 #[test]
 fn telemetry_encodes_one_observation_with_its_proof() {
-    use ezal_core::coordination::CoordinationState;
-    use ezal_core::protocol::TelemetryMessage;
     use ezal_core::session::CommandToken;
 
     let message = TelemetryMessage {
@@ -232,16 +231,14 @@ fn telemetry_encodes_one_observation_with_its_proof() {
     message.write_json(&mut json).unwrap();
     assert_eq!(
         json,
-        r#"{"type":"telemetry","position":{"type":"position","a0_mv":0,"a1_mv":0},"feedback":{"type":"feedback","azimuth_tenths":0,"elevation_tenths":0,"control_state":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]},"freshness":{"token":"42"},"tracking":{"revision":"0","operator":null,"mode":"manual","phase":"idle","run":null,"selection":null,"plan":{"status":"unplanned","reason":null,"preview":null},"feedback_stale":true,"feedback_age_ms":null,"deviation":{"run":null,"warning":false,"maximum_deg":null,"outside_ms":0,"current":null},"recovery":null,"termination":null,"summary":null}}"#
+        r#"{"type":"telemetry","position":{"a0_mv":null,"a1_mv":null},"feedback":{"azimuth_tenths":null,"elevation_tenths":null,"health":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000]},"freshness":{"token":"42"},"tracking":{"revision":"0","operator":null,"mode":"manual","phase":"idle","run":null,"selection":null,"plan":{"status":"unplanned","reason":null,"preview":null},"feedback_stale":true,"feedback_age_ms":null,"deviation":{"run":null,"warning":false,"maximum_deg":null,"outside_ms":0,"current":null},"recovery":null,"termination":null,"summary":null}}"#
     );
 }
 
 #[test]
 fn telemetry_fits_its_fixed_buffer_and_reports_formatting_failure() {
-    use ezal_core::coordination::CoordinationState;
     use ezal_core::motion::MotionFault;
-    use ezal_core::position::FeedbackVoltages;
-    use ezal_core::protocol::{TelemetryMessage, TELEMETRY_CAPACITY};
+    use ezal_core::protocol::TELEMETRY_CAPACITY;
     use ezal_core::session::CommandToken;
 
     let mut snapshot = CoordinationState::new().telemetry(1, 0);

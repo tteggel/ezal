@@ -19,8 +19,7 @@ use picoserve::response::{Content, Response};
 use picoserve::routing::{get, PathRouter};
 
 use ezal_core::dashboard::{ClientConfig, CONFIG_PATH, INDEX_HTML};
-use ezal_core::drive::Command;
-use ezal_core::mailbox::CommandEnvelope;
+use ezal_core::drive::{Command, CommandEnvelope};
 use ezal_core::passes::Report;
 use ezal_core::protocol::{
     ClientMessage, TelemetryMessage, CONTROL_STATUS_CAPACITY, INPUT_REQUIRED_MESSAGE,

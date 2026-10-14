@@ -5,7 +5,7 @@
 //! The incremental simulator exercises that controller through the production
 //! actuator, using explicit, unmeasured motor assumptions. Its sampled results
 //! are development diagnostics, not permission to track a pass on hardware.
-//! [`TrackingSession`] binds a single selected event, revisioned plans and
+//! [`TrackingLifecycle`] binds a single selected event, revisioned plans and
 //! executor generations to an exclusive operator lease. It owns frozen input
 //! snapshots independently of browser connections.
 //! [`TrackingRuntime`] adds validated input publication and execution gating;
@@ -19,6 +19,7 @@ mod deviation;
 mod event;
 mod inputs;
 mod lifecycle;
+mod mailbox;
 mod model;
 mod planner;
 mod reception;
@@ -34,31 +35,27 @@ pub use deviation::{
     REACQUISITION_LIMIT_MS, REACQUISITION_TOLERANCE_DEG,
 };
 pub use event::{reconcile_event, EventError, EventId, PassEvent, MAX_EVENT_SHIFT_S};
-pub use inputs::{
-    CompletedOrbitalDownload, ExecutionInputs, InputError, InputSettings, OrbitalCatalog,
-    OrbitalDownload, OrbitalPublication, OrbitalSnapshot, OrbitalTransport,
-};
+pub use inputs::{ExecutionInputs, InputError, InputSettings};
 pub use lifecycle::{
     BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
-    RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingMode, TrackingPhase,
-    TrackingRequest, TrackingSession, TrackingSnapshot, TrackingStop, TrackingTermination,
+    RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingLifecycle,
+    TrackingMode, TrackingPhase, TrackingRequest, TrackingSnapshot, TrackingStop,
+    TrackingTermination,
 };
 pub use model::MotorModel;
 pub use planner::{
     Assessment, CandidateFailure, EvaluationPhase, PlannedGap, Planner, PlanningConfig,
-    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, Scenario, TrackingPlan,
-    MAX_GAPS, MAX_PLANNING_STEPS, MAX_SCENARIOS,
+    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, TrackingPlan, MAX_GAPS,
+    MAX_PLANNING_STEPS, MAX_SCENARIOS,
 };
-pub use reception::{
-    AdmissionPolicy, ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS,
-};
+pub use reception::{ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS};
 pub use recovery::{
     RecoveryHold, RecoveryStatus, INTERCEPT_GRID_MS, INTERCEPT_PLANNING_LEAD_MS, INTERCEPT_RETRY_MS,
 };
 pub use route::{Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
 pub use runtime::{RuntimeError, RuntimeObservation, TrackingRuntime, TrackingSummary};
 pub use simulation::{
-    RestingStart, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
+    RestingStart, Scenario, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
 };
 
 use crate::feedback::FeedbackHealth;
@@ -202,7 +199,7 @@ pub enum SimulationError {
     InvalidCalibration,
     /// Controller thresholds were non-finite or outside their supported range.
     InvalidController,
-    /// Simulation cadence, ADC latency or tolerance was invalid.
+    /// Sampling cadence, acquisition, output policy or consumed duty was invalid.
     InvalidSettings,
     /// Initial/commanded mechanical coordinates were outside installed travel.
     InvalidPointing,

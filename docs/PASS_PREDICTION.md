@@ -695,16 +695,13 @@ bridges at 80°, 85° and 88° can intentionally offset the sky direction. Every
 following-error check includes that offset.
 
 Run the offline [planning example](../crates/ezal-core/examples/tracking-plan.rs)
-or the individual [controller replays](../crates/ezal-core/examples/tracking-sim.rs)
 inside the development shell:
 
 ```bash
-TRACKING_HOST=$(rustc -vV | sed -n 's/host: //p')
+TRACKING_HOST=$(rustc --print host-tuple)
 cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-plan
-cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim
 # Compare proposed timing offline; this does not configure the device:
 cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-plan -- --candidate-timing
-cargo run --locked -p ezal-core --target "$TRACKING_HOST" --example tracking-sim -- --candidate-timing
 ```
 
 The planner requires a serviced, settled copy of the output owner's actuator,
@@ -747,8 +744,8 @@ recovers a frozen run and handles preparation that misses AOS. T6a adds a
 separate partial-reception claim only after validating a bounded recovery and
 the remaining window; unsupported diagnostic attempts still cannot authorize
 movement. Complete reception is preferred whenever this search finds it.
-Cancellation or a source/work/storage failure invalidates the entire job,
-including earlier candidates. Exhausting this finite search means no supported
+A source, work or storage failure invalidates the entire job, including
+earlier candidates. Exhausting this finite search means no supported
 route was found, not that every possible physical route is impossible.
 
 The planner stores at most 2,048 route points, nine scenarios and 16 gap
@@ -780,11 +777,11 @@ relaxing live limits. The examples never extend the installed 0–360°/0–90°
 calibration. Live firmware retains 500 ms on / 2 s off timing, the unidentified
 hardware 180 s duty policy, and 900 s initial rest.
 
-[Planner tests](../crates/ezal-core/tests/planner.rs) exercise full zenith/recorded
+[Planner tests](../crates/ezal-core/tests/planner/main.rs) exercise full zenith/recorded
 passes, wrap continuity, one-propagation steps, preparation/duty carryover,
-retained relay holds, far-future rest, late starts, cancellation and bounded
-storage. [Controller tests](../crates/ezal-core/tests/tracking.rs) cover plant
-physics, noisy/skewed feedback, relay timing and pulse hysteresis.
+retained relay holds, far-future rest, late starts and bounded storage.
+[Controller tests](../crates/ezal-core/tests/tracking.rs) cover plant physics,
+noisy/skewed feedback, relay timing and pulse hysteresis.
 [Output-policy tests](../crates/ezal-core/tests/output_policy.rs) verify that
 post-release coast can prove progress without forgiving stalls, reversed
 feedback or movement first observed after a long idle.
@@ -794,7 +791,7 @@ lifecycle below. T7/T8 subsequently integrated execution and the dashboard.
 
 ### Current lifecycle milestone
 
-[`TrackingSession`](../crates/ezal-core/src/tracking/lifecycle.rs) implements
+[`TrackingLifecycle`](../crates/ezal-core/src/tracking/lifecycle.rs) implements
 the device-owned selection and lifecycle in the pure core. It starts disarmed
 in Manual mode, owns at most one selection and accepts only a supported plan
 when arming. Selection alone previews a pass. Tracking rejects manual movement
@@ -825,8 +822,8 @@ refreshes cannot walk the association to another orbit. Missing, ambiguous,
 invalid or over-capacity forecasts block preparation with explicit reasons.
 The comparison uses a complete forecast and is independent of row order.
 
-Each planning ticket binds the selection to orbital, observer, calibration,
-motion, clock and starting-state revisions, plus the preparation schedule.
+Each planning ticket binds the selection to orbital, clock and starting-state
+revisions, plus the preparation schedule.
 Publishing newer inputs immediately removes the preceding plan's permission
 to prepare. Only the latest job can publish, even if an older successful job
 finishes later. Manual movement also invalidates a preview's starting pose.
@@ -878,7 +875,8 @@ the watchdog. T8 exposes selection and arming through the browser.
 
 ### Current execution-input milestone
 
-T5 adds [`OrbitalDownload`, `OrbitalCatalog` and `ExecutionInputs`](../crates/ezal-core/src/tracking/inputs.rs).
+T5 adds [`OrbitalDownload` and `Catalog`](../crates/ezal-core/src/catalog.rs) and
+[`ExecutionInputs`](../crates/ezal-core/src/tracking/inputs.rs).
 The download wrapper composes the existing bounded HTTP decoder and TLE parser.
 Only a complete framed response can produce a catalog publication; the first
 framing error stays latched. Truncation, timeout or non-200 responses cannot
@@ -954,7 +952,7 @@ without a selection, run or persisted permission.
 
 [Clock tests](../crates/ezal-core/tests/tracking_clock.rs) exercise fractional
 conversion, signed corrections, cumulative drift, expiry, leap announcements
-and checked arithmetic. [Input/runtime tests](../crates/ezal-core/tests/tracking_inputs.rs)
+and checked arithmetic. [Input/runtime tests](../crates/ezal-core/tests/tracking_inputs/main.rs)
 use the recorded orbital fixture and real planner to test source binding,
 atomic download publication, through-LOS age, refresh/freeze ordering,
 browser-independent execution, network interruption, queued-output inhibition
@@ -1039,7 +1037,7 @@ computation lead must be measured in T7 before enabling tracking.
 [Core recovery tests](../crates/ezal-core/src/tracking/recovery/tests.rs) exercise
 all nine scenarios, remaining-pass source failure, impossible/duty-limited
 intercepts, preserved overlap/over-the-top routes, changed starting history and
-immutable episode deadlines. [Runtime tests](../crates/ezal-core/tests/common/tracking_recovery.rs)
+immutable episode deadlines. [Runtime tests](../crates/ezal-core/tests/tracking_inputs/recovery.rs)
 use the recorded TLE fixture, a separate motor model and delayed feedback to
 exercise successful recovery, late preparation, missed measured intercepts,
 late computation/output, repeated retries, cancellation, feedback/network/motion
@@ -1058,8 +1056,7 @@ AOS, LOS and mechanical route, and exposes:
   predicted reception time. The missed interval includes the two-second
   recovery dwell and 500 ms feedback allowance after the latest route join.
 
-`AllowPartial` is the default admission policy; `CompleteOnly` preserves the
-complete-window requirement. The [planner's second search](../crates/ezal-core/src/tracking/planner/partial.rs)
+The [planner's second search](../crates/ezal-core/src/tracking/planner/partial.rs)
 runs only after no complete route qualifies (or selection is already past
 AOS). A nominal failed route does not become supported by changing its label.
 For every starting scenario, the planner replays preparation and the supported
@@ -1077,7 +1074,7 @@ gaps needing additional planned episodes remain unsupported. All complete
 routes are preferred to partial reception; within the partial round the first
 qualifying route wins. The nested work shares the original 20-million-step
 job limit; each step still performs at most one propagation and one simulation
-service. Cancellation and source/work/storage failure discard the whole job.
+service. A source, work or storage failure discards the whole job.
 
 For initial late acquisition, the fixed entry is `max(original AOS, snapshot
 time + 5 s)`. Selection only previews it. Explicit arming allows the device to
@@ -1099,14 +1096,14 @@ window and complete/partial prediction alongside measured deviation and the
 actual termination reason. Reaching LOS does not turn a partial forecast into
 a complete-reception claim.
 
-[Admission tests](../crates/ezal-core/tests/common/tracking_partial.rs) cover
+[Admission tests](../crates/ezal-core/tests/planner/partial.rs) cover
 late starts before/after AOS across all nine default cases, an explicitly
 nominal-profile keyhole gap, complete OTT preference, insufficient remaining
-time/duty, separated gaps, expired/invalid publication, fixed episode deadlines,
-cancellation and one-propagation-per-step yielding. The same keyhole fixture
+time/duty, separated gaps, expired/invalid publication, fixed episode deadlines
+and one-propagation-per-step yielding. The same keyhole fixture
 remains unsupported with all nine default cases because a noisy fast-axis
 case trips motion supervision. Partial admission does not relax that policy.
-The [real-orbit runtime test](../crates/ezal-core/tests/common/tracking_recovery.rs)
+The [real-orbit runtime test](../crates/ezal-core/tests/tracking_inputs/recovery.rs)
 executes an admitted late plan through recovery to LOS with delayed feedback
 and verifies that the final summary retains its partial prediction.
 The offline example's static late-acquisition case qualifies across all nine
@@ -1154,9 +1151,9 @@ artificial millisecond sleep. Downloads yield after every bounded parsing chunk;
 forecasting retains its own cooperative task. Complete forecasts and their exact
 orbital snapshots publish atomically. Clock corrections and changed starting
 pose/duty/history invalidate preview work before it can freeze; fresh ADC
-*timestamps alone* do not restart planning. Installed calibration/motion settings
-remain compile-time revisions. Noisy changing starting positions can prevent a
-stable preview from completing; commissioning must check this with real feedback.
+*timestamps alone* do not restart planning. Noisy changing starting positions can
+prevent a stable preview from completing; commissioning must check this with real
+feedback.
 All shared tracking/forecast users run on the single core-0 thread executor.
 Thread-mode borrows keep interrupts enabled and never span an await or I/O.
 
@@ -1296,9 +1293,9 @@ task pool. These are capacity checks, not measured board high-water or timing.
 ### Complete-pass acceptance (T9)
 
 The host acceptance matrix is in
-[`tracking_plan_acceptance.rs`](../crates/ezal-core/tests/common/tracking_plan_acceptance.rs)
+[`planner/acceptance.rs`](../crates/ezal-core/tests/planner/acceptance.rs)
 and
-[`tracking_execution_acceptance.rs`](../crates/ezal-core/tests/common/tracking_execution_acceptance.rs).
+[`tracking_inputs/execution/acceptance.rs`](../crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs).
 It runs automatically with the existing host suite. To print the comparisons:
 
 ```bash

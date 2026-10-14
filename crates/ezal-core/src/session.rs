@@ -47,9 +47,6 @@ pub const TELEMETRY_PERIOD_MS: u64 = 500;
 /// How often the browser repeats a held drive state.
 pub const COMMAND_REFRESH_MS: u64 = 150;
 
-/// How long the firmware allows a movement command to live without refresh.
-pub const COMMAND_TIMEOUT_MS: u64 = MOVEMENT_LEASE_MS;
-
 /// Maximum age of the server observation a dashboard movement can reference.
 /// A token proves a recent round trip without trusting the browser's clock.
 /// Its absolute expiry also bounds motion after a command waited in a TCP
@@ -59,8 +56,8 @@ pub const COMMAND_MAX_AGE_MS: u64 = 1_000;
 // The browser's refresh must beat the firmware lease. A steadily held control
 // must also leave the minimum on-time on its lease between refreshes, or the
 // actuator would defer an activation until the following refresh.
-const _: () = assert!(COMMAND_REFRESH_MS < COMMAND_TIMEOUT_MS);
-const _: () = assert!(COMMAND_REFRESH_MS + OUTPUT_MIN_ACTIVE_MS <= COMMAND_TIMEOUT_MS);
+const _: () = assert!(COMMAND_REFRESH_MS < MOVEMENT_LEASE_MS);
+const _: () = assert!(COMMAND_REFRESH_MS + OUTPUT_MIN_ACTIVE_MS <= MOVEMENT_LEASE_MS);
 const _: () = assert!(TELEMETRY_PERIOD_MS + COMMAND_REFRESH_MS < COMMAND_MAX_AGE_MS);
 
 /// Parsed `press:<token>:<sequence>:drive:cw` or `hold:…` movement envelope.
@@ -175,7 +172,7 @@ impl CommandFreshness {
             return None;
         }
         self.last_sequence = request.sequence;
-        let deadline = deadline?.min(now_ms.saturating_add(COMMAND_TIMEOUT_MS));
+        let deadline = deadline?.min(now_ms.saturating_add(MOVEMENT_LEASE_MS));
         self.armed_until_ms = Some(deadline);
         Some(deadline)
     }

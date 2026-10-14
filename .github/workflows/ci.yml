@@ -13,17 +13,15 @@
 # `nicknovitski/nix-develop`, which exports the shell's environment to every
 # later step, so plain commands and `Swatinem/rust-cache` all see it.
 #
-# The five jobs run in parallel:
+# Every check is a script contributors run locally. The four jobs run in
+# parallel:
 #
-#   fmt            — `cargo fmt --check` (style)
-#   test-host      — `cargo test` for ezal-core, on the host
-#   test-dashboard — Node's test runner against the served dashboard JS
-#   clippy-host    — clippy lints for the host build of ezal-core
-#   build-firmware — cross-compiles and lints ezal-firmware for the Pico 2,
-#                    packages its UF2 image, and uploads the elf and UF2
-#
-# All five are required to pass before a PR can be merged (configure that
-# in GitHub's branch-protection settings).
+#   fmt            — scripts/lint.sh (formatting, clippy for both crates,
+#                    rustdoc) and scripts/test-build-tools.sh
+#   test-host      — scripts/test-host.sh: ezal-core's tests on the host
+#   test-dashboard — scripts/test-dashboard.sh: the served dashboard JS
+#                    under Node's test runner
+#   build-firmware — scripts/build-uf2.sh, then uploads the elf and UF2
 # ────────────────────────────────────────────────────────────────────────
 
 name: CI
@@ -47,7 +45,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Formatting ────────────────────────────────────────────────────────
+  # ── Static checks and build tooling ──────────────────────────────────
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -59,7 +57,8 @@ jobs:
         uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
         with:
           arguments: ".#ci"
-      - run: cargo fmt --all -- --check
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: ./scripts/lint.sh
       - run: ./scripts/test-build-tools.sh
 
   # ── Host unit tests ──────────────────────────────────────────────────
@@ -92,22 +91,6 @@ jobs:
           arguments: ".#dashboard"
       - run: ./scripts/test-dashboard.sh
 
-  # ── Lints on the host crate ──────────────────────────────────────────
-  clippy-host:
-    name: Clippy (host)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
-        with:
-          arguments: ".#ci"
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Clippy
-        run: |
-          HOST_TRIPLE=$(rustc -vV | sed -n 's/host: //p')
-          cargo clippy --locked -p ezal-core --target "$HOST_TRIPLE" --all-features --all-targets -- -D warnings
-
   # ── Cross-compile firmware + package UF2 ─────────────────────────────
   build-firmware:
     name: Build firmware
@@ -119,27 +102,12 @@ jobs:
         with:
           arguments: ".#ci"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Build, lint, and package firmware
-        # The default target (from .cargo/config.toml) is
-        # thumbv8m.main-none-eabihf. There is one manual control firmware
-        # configuration; optional radio diagnostics do not select a mode.
-        #
-        # build-uf2.sh is the same script contributors run locally, so the
-        # picotool convert flags live in exactly one place; its `cargo build`
-        # is a cached no-op after the release build above it.
-        #
-        # Firmware is `no_std`/`no_main`; the test/bench targets can't be
-        # built for the embedded triple (they need libtest), so clippy takes
-        # the bin target only.
+      - name: Build and package firmware
+        # build-uf2.sh prints the paths of the elf and UF2 it built.
         run: |
           set -euo pipefail
-          cargo build --locked -p ezal-firmware --release
-          cargo clippy --locked -p ezal-firmware --bins -- -D warnings
-          ./scripts/build-uf2.sh
           mkdir -p dist
-          cp target/thumbv8m.main-none-eabihf/release/ezal-firmware \
-             target/thumbv8m.main-none-eabihf/release/ezal-firmware.uf2 \
-             dist/
+          ./scripts/build-uf2.sh | xargs -d '\n' cp -t dist/ --
       - name: Upload firmware artefacts
         # Lets reviewers download the firmware from a PR run without building
         # it: the elf for a debug probe (probe-rs / SWD), and the UF2 for

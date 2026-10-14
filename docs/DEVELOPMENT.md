@@ -43,12 +43,13 @@ When the shell is loaded you have:
 
 - `cargo`, `rustc`, `rustfmt`, `clippy` pinned to the version in
   `rust-toolchain.toml`,
+- `cargo size` and `cargo objdump` (`cargo-binutils` over the toolchain's
+  `llvm-tools`) for inspecting the firmware image,
 - `probe-rs` — used by `cargo run` to flash and stream defmt logs,
 - `picotool` — optional, for UF2 / BOOTSEL flashing without a probe,
 - `jq` — reads Cargo's executable artifact path during UF2 packaging,
 - `node` — runs dashboard behavior tests with its built-in test runner,
-- `python3` with `schemdraw` and `matplotlib` ready to go for
-  `python3 design/circuit.py`.
+- `python3` with `schemdraw` ready to go for `python3 design/circuit.py`.
 
 ### 3. Linux only: udev rules
 
@@ -121,10 +122,11 @@ for the dashboard tests, and picotool and jq separately for UF2 packaging.
 ```bash
 rustup show                                # installs the pinned toolchain
 cargo install --locked probe-rs-tools
+cargo install --locked cargo-binutils      # cargo size / cargo objdump
 node --version                            # Node.js 18+ for dashboard tests
 # picotool: https://github.com/raspberrypi/picotool
 # Only needed if you're re-rendering the schematic:
-pip install --user schemdraw matplotlib
+pip install --user schemdraw
 ```
 
 You're then responsible for keeping versions roughly in sync with what
@@ -241,9 +243,10 @@ resulting elf, tagging the image with the `rp2350-arm-s` family (the
 correct one for our secure-Arm build) and verifying every block lands in
 valid RP2350 flash. It uses Cargo's JSON artifact report to locate the ELF,
 including when `--target-dir` or Cargo configuration changes its directory;
-it never falls back to an older image at the default path. `picotool` and `jq`
-come from the dev shell. Build and test helpers use `--locked` so dependency
-changes require an explicit lockfile update.
+it never falls back to an older image at the default path, and prints the
+ELF and UF2 paths on stdout. `picotool` and `jq` come from the dev shell.
+Build and test helpers use `--locked` so dependency changes require an
+explicit lockfile update.
 
 The trade-off versus `cargo run` is that there's no probe attached, so you
 won't see the live defmt log stream — the firmware still emits it over RTT,
@@ -261,16 +264,16 @@ straight from the command line.
 
 This is equivalent to `cargo test -p ezal-core` with the right `--target`
 override (since the workspace default target is the Pico's ARM core,
-running tests for the host needs an explicit triple — the script computes
-it from `rustc -vV`). Host tests cover feedback validation, the feedback
-gate and its travel-aware endpoint band, ownership, the command mailbox, and
-the actuator sequence the firmware itself runs, as well as the actual pinned
-picoserve HTTP upgrade/WebSocket parser with deterministic timeouts. Pass
-prediction tests cover TLE validation, the streamed HTTP framing of the
-element download, forecast coverage, and the `/api/passes` JSON. The core's
-only runtime dependencies are `sgp4` (TLE fields and propagation), `libm`
-and `heapless`; picoserve is test-only, sharing the workspace's version pin
-with the firmware so both exercise one parser.
+running tests for the host needs an explicit triple — the script takes it
+from `rustc --print host-tuple`). Host tests cover feedback validation, the
+feedback gate and its travel-aware endpoint band, ownership, the command
+mailbox, and the actuator sequence the firmware itself runs, as well as the
+actual pinned picoserve HTTP upgrade/WebSocket parser with deterministic
+timeouts. Pass prediction tests cover TLE validation, the streamed HTTP
+framing of the element download, forecast coverage, and the `/api/passes`
+JSON. The core's only runtime dependencies are `sgp4` (TLE fields and
+propagation), `libm` and `heapless`; picoserve is test-only, sharing the
+workspace's version pin with the firmware so both exercise one parser.
 
 Apart from one sanity test of the installed calibration, the policy tests use
 their own fixture in `crates/ezal-core/tests/common/`, so replacing
@@ -303,18 +306,17 @@ minimum Rust version matches the tested pin in `rust-toolchain.toml`.
 Before pushing:
 
 ```bash
-cargo fmt --all -- --check
-HOST_TRIPLE=$(rustc -vV | sed -n 's/host: //p')
-cargo clippy -p ezal-core --target "$HOST_TRIPLE" --all-targets --all-features -- -D warnings
-cargo clippy -p ezal-firmware --bins -- -D warnings
+./scripts/lint.sh
 ```
 
-Use `cargo fmt --all` to apply formatting. Firmware has no embedded `libtest`,
-so do not select its test targets with `--workspace --all-targets`.
+The script checks formatting, runs clippy with warnings denied on the host
+build of ezal-core (all targets) and on the firmware binary, and builds both
+crates' rustdoc with warnings denied, so a broken intra-doc link fails. Use
+`cargo fmt --all` to apply formatting. Firmware has no embedded `libtest`, so
+do not select its test targets with `--workspace --all-targets`.
 
-CI runs these checks, the test scripts, and one firmware job that builds,
-lints and packages the firmware, uploading its ELF and UF2 under
-`dist/`.
+CI runs the same scripts: the lint script, the three test scripts, and
+`build-uf2.sh`, uploading the firmware's ELF and UF2 under `dist/`.
 
 To dump the CYW43 radio's own console log, enable the driver's
 diagnostic feature with a debug defmt filter:
@@ -349,19 +351,15 @@ Wipes `target/`. Rare; cargo handles incremental builds well.
 cargo size -p ezal-firmware --release -- -A
 ```
 
-Requires `cargo-binutils` (`cargo install --locked cargo-binutils`) as well as
-the `llvm-tools` component already in our toolchain file. The optional Cargo
-subcommands are not installed by the Nix shell. `.text` is executable code;
-flash also contains read-only data and initial values for `.data`. `.data` and
-`.bss` describe static RAM usage, excluding runtime stack use.
+`.text` is executable code; flash also contains read-only data and initial
+values for `.data`. `.data` and `.bss` describe static RAM usage, excluding
+runtime stack use.
 
 ### Inspecting the disassembly
 
 ```bash
 cargo objdump -p ezal-firmware --release -- --disassemble --no-show-raw-insn
 ```
-
-Uses the same `cargo-binutils` and `llvm-tools` prerequisites.
 
 ### Running a debugger session
 
@@ -475,13 +473,11 @@ leads disconnected and suitable feedback simulation first; use the existing
 commissioning procedure before powered movement. The installed calibration
 still limits azimuth/elevation to 360°/90° until measured replacements are made.
 
-1. Build the release image and inspect RAM with the pinned tools; no extra
-   `cargo-binutils` installation is needed:
+1. Build the release image and inspect RAM and the stack frames:
 
    ```bash
-   EZAL_TOOLS="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/host: //p')/bin"
-   "$EZAL_TOOLS/llvm-size" -A target/thumbv8m.main-none-eabihf/release/ezal-firmware
-   "$EZAL_TOOLS/llvm-objdump" -d --demangle target/thumbv8m.main-none-eabihf/release/ezal-firmware
+   cargo size -p ezal-firmware --release -- -A
+   cargo objdump -p ezal-firmware --release -- -d --demangle
    ```
 
    Include `.data`, `.bss` and `.uninit`; Embassy task pools include all eight

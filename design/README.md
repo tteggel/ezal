@@ -10,7 +10,6 @@ board.
 | [`pinout.md`](pinout.md)     | Pin assignments for the G-5500's 8-pin external-control DIN |
 | [`circuit.py`](circuit.py)   | [Schemdraw](https://schemdraw.readthedocs.io/) source for the schematic — **edit this** when the circuit changes |
 | [`circuit.svg`](circuit.svg) | Rendered schematic (vector) — viewable directly in GitHub |
-| `circuit.png`                | Rendered schematic (raster) — same image, for tools that don't speak SVG |
 
 ## What the circuit does
 
@@ -25,12 +24,11 @@ board.
 ## Re-rendering after changes
 
 ```bash
-pip install --user schemdraw matplotlib
+pip install --user schemdraw
 python3 circuit.py
 ```
 
-This writes both `circuit.svg` (always) and `circuit.png` (when
-matplotlib is present). Both are checked in so GitHub renders them
+This writes `circuit.svg`, which is checked in so GitHub renders it
 without anyone needing a Python environment to view.
 
 ## Conventions for adding more

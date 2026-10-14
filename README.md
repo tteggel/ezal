@@ -55,7 +55,6 @@ embedded Rust.
 │   │       ├── coordination.rs    # ownership, coherent snapshots, command delivery
 │   │       ├── session.rs         # source freshness and ordered manual intent
 │   │       ├── interlock.rs       # fresh feedback and endpoint motion gate
-│   │       ├── mailbox.rs         # pending inhibition has priority
 │   │       ├── actuator.rs        # complete output decision in one step
 │   │       ├── motion.rs          # latched progress, direction, and speed checks
 │   │       ├── duty.rs            # per-axis energized allowance and continuous rest
@@ -63,7 +62,7 @@ embedded Rust.
 │   │       ├── operator.rs        # exclusive leases for the tracking lifecycle
 │   │       ├── ntp.rs             # SNTP validation, uncertainty + revisioned UTC anchor
 │   │       ├── http.rs            # streamed HTTP framing for TLE downloads
-│   │       ├── orbit.rs           # TLE validation, catalog, SGP4 look angles
+│   │       ├── orbit.rs           # TLE validation, SGP4 look angles
 │   │       ├── passes.rs          # pass search, forecasts, /api/passes JSON
 │   │       ├── tracking.rs        # planning, lifecycle, following + offline simulation
 │   │       ├── protocol.rs        # wire parsing and coherent telemetry
@@ -96,8 +95,7 @@ embedded Rust.
 ├── design/
 │   ├── pinout.md                   # G-5500 8-pin DIN pinout
 │   ├── circuit.py                  # schemdraw source for the schematic
-│   ├── circuit.svg                 # rendered schematic (vector)
-│   └── circuit.png                 # rendered schematic (raster)
+│   └── circuit.svg                 # rendered schematic (vector)
 ├── scripts/                        # build, test, flash helpers
 └── .github/workflows/ci.yml        # CI (Nix flake): fmt, clippy, tests, UF2
 ```

@@ -1,4 +1,4 @@
-//! Allocator-free orbit catalog and WGS84 observer geometry.
+//! Allocator-free TLE parsing and WGS84 observer geometry.
 //!
 //! SGP4 owns TLE field parsing, propagation and sidereal time. This module
 //! checks every downloaded line before the library sees it, selects our
@@ -33,7 +33,7 @@ pub const MAX_FUTURE_EPOCH_S: i64 = 86_400;
 /// Number of curated reception candidates.
 pub const SATELLITE_COUNT: usize = 7;
 /// Every TLE data line is exactly this many ASCII characters.
-pub const TLE_LINE_LEN: usize = 69;
+const TLE_LINE_LEN: usize = 69;
 
 /// A curated L-band receiver candidate; status is not inferred from its TLE.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -415,9 +415,9 @@ const LINE_CAPACITY: usize = 80;
 
 /// Incremental 2LE/3LE parser for a streamed download, so no response-sized
 /// buffer is needed. Tolerates unrelated satellites, CRLF, blank lines and
-/// line breaks split across reads. Accepted element sets are only staged: they
-/// reach a [`Catalog`] through [`Catalog::commit`], once the caller knows the
-/// transfer completed.
+/// line breaks split across reads. Accepted element sets are only staged until
+/// [`finish`](Self::finish); the device publishes them through
+/// [`crate::catalog`] once it knows the transfer completed.
 pub struct Update {
     now_unix_s: i64,
     line: Vec<u8, LINE_CAPACITY>,
@@ -447,6 +447,15 @@ impl Update {
                 self.overlong = true;
             }
         }
+    }
+
+    /// End the stream and return the staged element sets in `SATELLITES`
+    /// order. A final line without a trailing newline is still a line.
+    pub fn finish(mut self) -> [Option<Orbit>; SATELLITE_COUNT] {
+        if !self.line.is_empty() || self.overlong {
+            self.end_line();
+        }
+        self.staged
     }
 
     fn end_line(&mut self) {
@@ -484,83 +493,5 @@ impl Update {
         {
             self.staged[index] = Some(orbit);
         }
-    }
-}
-
-/// Bounded in-memory catalog. Failed or older downloads never replace good data.
-#[derive(Clone, Debug)]
-pub struct Catalog {
-    orbits: [Option<Orbit>; SATELLITE_COUNT],
-}
-
-impl Default for Catalog {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Catalog {
-    /// Empty at boot: no baked-in orbital elements silently masquerade as fresh.
-    pub const fn new() -> Self {
-        Self {
-            orbits: [const { None }; SATELLITE_COUNT],
-        }
-    }
-
-    /// Apply a completed download. Staged entries replace current ones unless
-    /// their epoch is older. Returns the number of entries updated.
-    pub fn commit(&mut self, mut update: Update) -> usize {
-        self.commit_mask(&mut update).count_ones() as usize
-    }
-
-    /// Exact accepted slots, for attaching source metadata only to entries
-    /// actually published by a completed download.
-    pub(crate) fn commit_mask(&mut self, update: &mut Update) -> u8 {
-        // A final line without a trailing newline is still a line.
-        if !update.line.is_empty() || update.overlong {
-            update.end_line();
-        }
-        let mut updated = 0u8;
-        for (index, (slot, staged)) in self
-            .orbits
-            .iter_mut()
-            .zip(update.staged.iter_mut())
-            .enumerate()
-        {
-            if let Some(orbit) = staged.take() {
-                if slot
-                    .as_ref()
-                    .is_none_or(|old| orbit.epoch_unix_s >= old.epoch_unix_s)
-                {
-                    *slot = Some(orbit);
-                    updated |= 1 << index;
-                }
-            }
-        }
-        updated
-    }
-
-    /// Parse and commit a complete 2LE/3LE text in one call. Malformed,
-    /// wrong-ID, stale or regressive entries are ignored.
-    pub fn update(&mut self, text: &str, now_unix_s: i64) -> usize {
-        let mut update = Update::new(now_unix_s);
-        update.push(text.as_bytes());
-        self.commit(update)
-    }
-
-    /// The validated entry for `SATELLITES[index]`, if any.
-    pub fn orbit(&self, index: usize) -> Option<&Orbit> {
-        self.orbits.get(index)?.as_ref()
-    }
-
-    /// Validated entries; callers select services and enforce current epoch age.
-    pub fn orbits(&self) -> impl Iterator<Item = &Orbit> {
-        self.orbits.iter().flatten()
-    }
-
-    /// Epoch of each catalog entry, in `SATELLITES` order, so availability can
-    /// be judged later without holding the catalog.
-    pub fn epochs(&self) -> [Option<f64>; SATELLITE_COUNT] {
-        core::array::from_fn(|index| self.orbit(index).map(|orbit| orbit.epoch_unix_s))
     }
 }

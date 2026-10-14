@@ -1,16 +1,15 @@
-//! Device-owned single-pass policy. Firmware must serialize these transitions
-//! with input publication and output admission. No method performs I/O or GPIO.
-//! `S` owns immutable execution inputs; `TrackingRuntime` supplies their gates. Transport
-//! never supplies those inputs or planning results directly.
+//! Device-owned single-pass policy. It owns the Manual/Tracking mode, the operator lease and
+//! the command mailbox; [`crate::coordination`] serializes its inputs and delivers its commands.
+//! No method performs I/O or GPIO. `S` owns immutable execution inputs; `TrackingRuntime`
+//! supplies their gates. Transport never supplies those inputs or planning results directly.
 
+use super::mailbox::CommandMailbox;
 use super::{
-    reconcile_event, AdmissionPolicy, CandidateFailure, EventError, EventId, InputError, PassEvent,
-    PlanningError, PlanningReport, PreparationTiming, ReceptionCoverage, TrackingPlan,
-    REACQUISITION_LIMIT_MS,
+    reconcile_event, CandidateFailure, EventError, EventId, InputError, PassEvent, PlanningError,
+    PlanningReport, PreparationTiming, ReceptionCoverage, TrackingPlan, REACQUISITION_LIMIT_MS,
 };
-use crate::drive::{Command, MOVEMENT_LEASE_MS};
+use crate::drive::{Command, CommandEnvelope, MOVEMENT_LEASE_MS};
 use crate::feedback::FeedbackHealth;
-use crate::mailbox::{CommandEnvelope, CommandMailbox};
 use crate::motion::MotionFault;
 use crate::operator::{LeaseError, OperatorGrant, OperatorLease, OperatorToken};
 
@@ -20,12 +19,6 @@ use crate::operator::{LeaseError, OperatorGrant, OperatorLease, OperatorToken};
 pub struct PlanRevisions {
     /// Accepted orbital data, including source/expiry metadata.
     pub orbit: u64,
-    /// Ground station and reception mask.
-    pub observer: u64,
-    /// Installed feedback mapping and mechanical limits.
-    pub calibration: u64,
-    /// Motor, relay, duty and pointing assumptions.
-    pub motion: u64,
     /// Fractional UTC anchor and its uncertainty.
     pub clock: u64,
     /// Starting pose/output history; advance when that planning assumption changes.
@@ -34,12 +27,7 @@ pub struct PlanRevisions {
 
 impl PlanRevisions {
     fn follows(self, previous: Self) -> bool {
-        self.orbit >= previous.orbit
-            && self.observer >= previous.observer
-            && self.calibration >= previous.calibration
-            && self.motion >= previous.motion
-            && self.clock >= previous.clock
-            && self.start >= previous.start
+        self.orbit >= previous.orbit && self.clock >= previous.clock && self.start >= previous.start
     }
 }
 
@@ -58,17 +46,12 @@ pub struct Selection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanTicket {
     serial: u64,
-    event: EventId,
     pass: PassEvent,
     revisions: PlanRevisions,
     timing: PreparationTiming,
 }
 
 impl PlanTicket {
-    /// Boot-local job identity, distinct from UI state revisions.
-    pub const fn serial(self) -> u64 {
-        self.serial
-    }
     /// Selected event whose complete window must be evaluated.
     pub const fn pass(self) -> PassEvent {
         self.pass
@@ -87,7 +70,6 @@ impl PlanTicket {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunToken {
     serial: u64,
-    event: EventId,
 }
 
 impl RunToken {
@@ -95,16 +77,11 @@ impl RunToken {
     pub const fn serial(self) -> u64 {
         self.serial
     }
-    /// Event being executed.
-    pub const fn event(self) -> EventId {
-        self.event
-    }
 }
 
 /// One bounded episode. Replanning never changes this identity or deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecoveryToken {
-    run: RunToken,
     serial: u64,
     started_at_ms: u64,
     deadline_ms: u64,
@@ -125,10 +102,6 @@ pub enum RecoveryCause {
 }
 
 impl RecoveryToken {
-    /// Frozen pass being recovered.
-    pub const fn run(self) -> RunToken {
-        self.run
-    }
     /// Boot-local episode identity, distinct from intercept attempts.
     pub const fn serial(self) -> u64 {
         self.serial
@@ -226,7 +199,7 @@ pub enum TrackingStop {
     ManualMode,
     /// A replacement selection stopped the preceding run first.
     Replaced,
-    /// Installed calibration, travel or motor policy changed during execution.
+    /// The actuator's installed configuration no longer matches the frozen plan.
     InstallationChanged,
     /// Preparation was not established before AOS.
     LatePreparation,
@@ -258,8 +231,6 @@ pub struct TrackingTermination {
     pub event: Option<EventId>,
     /// Frozen run that was stopped, when any.
     pub run: Option<RunToken>,
-    /// Current recovery episode, unchanged by intercept retries.
-    pub recovery: Option<RecoveryToken>,
     /// Explicit cause, independent of operator presence.
     pub reason: TrackingStop,
     /// Service instant when inhibition was requested.
@@ -367,11 +338,11 @@ struct Receipt {
     result: Result<u64, LifecycleError>,
 }
 
-/// Pure coordination ready for firmware integration: one operator lease, one
-/// selection, one plan and one output mailbox. Browser loss only removes the
-/// operator; tracking requests use a separate execution generation. Keep the
-/// final production actuator/network/feedback gates downstream of this policy.
-pub struct TrackingSession<S> {
+/// One operator lease, one selection, one plan and one output mailbox. Browser
+/// loss only removes the operator; tracking requests use a separate execution
+/// generation. Keep the final production actuator/network/feedback gates
+/// downstream of this policy.
+pub struct TrackingLifecycle<S> {
     operator: OperatorLease,
     revision: u64,
     serial: u64,
@@ -393,13 +364,13 @@ pub struct TrackingSession<S> {
     commands: CommandMailbox,
 }
 
-impl<S> Default for TrackingSession<S> {
+impl<S> Default for TrackingLifecycle<S> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S> TrackingSession<S> {
+impl<S> TrackingLifecycle<S> {
     /// Boot Manual, disarmed and without a selection or operator.
     pub const fn new() -> Self {
         Self {
@@ -538,7 +509,6 @@ impl<S> TrackingSession<S> {
         self.termination = Some(TrackingTermination {
             event: self.selection.map(|s| s.id),
             run: self.run,
-            recovery: self.recovery,
             reason,
             at_ms: now_ms,
         });
@@ -613,7 +583,7 @@ impl<S> TrackingSession<S> {
                 });
                 // Orbital publication revisions belong to a satellite. A
                 // different selection may legitimately use an older cached
-                // publication; installation/clock/start counters still follow.
+                // publication; the clock and start counters still follow.
                 if let Some(revisions) = self.revisions.as_mut() {
                     revisions.orbit = 0;
                 }
@@ -673,7 +643,6 @@ impl<S> TrackingSession<S> {
         self.bump(now_ms)?;
         self.ticket = Some(PlanTicket {
             serial,
-            event: selection.id,
             pass,
             revisions,
             timing: self.timing,
@@ -684,8 +653,8 @@ impl<S> TrackingSession<S> {
     }
 
     /// Publish a complete forecast/input revision atomically before servicing
-    /// preparation. Refreshes cannot replace frozen inputs; installation changes
-    /// stop them instead. `TrackingRuntime` enforces clock/source validity.
+    /// preparation. Refreshes cannot replace frozen inputs; after freeze they only
+    /// record the newer revisions. `TrackingRuntime` enforces clock/source validity.
     pub fn refresh(
         &mut self,
         forecast: &[PassEvent],
@@ -699,26 +668,10 @@ impl<S> TrackingSession<S> {
         {
             return Err(LifecycleError::StaleInputs);
         }
+        let changed = self.revisions.replace(revisions) != Some(revisions);
         if self.run.is_some() {
-            let frozen = self
-                .plan
-                .as_ref()
-                .expect("run owns its frozen plan")
-                .ticket
-                .revisions;
-            if revisions.calibration != frozen.calibration || revisions.motion != frozen.motion {
-                self.bump(now_ms)?;
-                self.stop(
-                    TrackingStop::InstallationChanged,
-                    TrackingPhase::Stopped,
-                    now_ms,
-                );
-            }
-            self.revisions = Some(revisions);
             return Ok(());
         }
-        let changed = self.revisions != Some(revisions);
-        self.revisions = Some(revisions);
         let Some(selection) = self.selection else {
             return Ok(());
         };
@@ -854,12 +807,7 @@ impl<S> TrackingSession<S> {
             let window = self.plan.as_ref().unwrap().plan.window;
             let los = window.aos_at_ms + u64::from(window.duration_ms);
             if self.phase == TrackingPhase::Preparing && now_ms >= window.aos_at_ms {
-                self.enter_reacquisition(
-                    self.run.unwrap(),
-                    RecoveryCause::LatePreparation,
-                    window.aos_at_ms,
-                    now_ms,
-                )?;
+                self.enter_reacquisition(RecoveryCause::LatePreparation, window.aos_at_ms, now_ms)?;
             }
             if let Some(gap) = self
                 .plan
@@ -874,7 +822,6 @@ impl<S> TrackingSession<S> {
                 // An unexpected earlier episode keeps its original deadline.
                 if self.recovery.is_none() {
                     self.enter_reacquisition(
-                        self.run.unwrap(),
                         RecoveryCause::PlannedGap,
                         gap.recovery_at_ms,
                         now_ms,
@@ -927,7 +874,6 @@ impl<S> TrackingSession<S> {
                 } else {
                     let token = RunToken {
                         serial: self.serial(now_ms)?,
-                        event: self.selection.unwrap().id,
                     };
                     self.bump(now_ms)?;
                     self.run = Some(token);
@@ -944,7 +890,6 @@ impl<S> TrackingSession<S> {
                     {
                         self.planned_recovery_handled = true;
                         self.enter_reacquisition(
-                            token,
                             RecoveryCause::LateAcquisition,
                             gap.recovery_at_ms,
                             now_ms,
@@ -995,13 +940,12 @@ impl<S> TrackingSession<S> {
         if self.phase != TrackingPhase::Following {
             return Ok(None);
         }
-        self.enter_reacquisition(run, RecoveryCause::Deviation, now_ms, now_ms)
+        self.enter_reacquisition(RecoveryCause::Deviation, now_ms, now_ms)
             .map(Some)
     }
 
     fn enter_reacquisition(
         &mut self,
-        run: RunToken,
         cause: RecoveryCause,
         started_at_ms: u64,
         now_ms: u64,
@@ -1011,7 +955,6 @@ impl<S> TrackingSession<S> {
             .saturating_add(REACQUISITION_LIMIT_MS)
             .min(window.aos_at_ms + u64::from(window.duration_ms));
         let recovery = RecoveryToken {
-            run,
             serial: self.serial(now_ms)?,
             started_at_ms,
             deadline_ms,
@@ -1195,8 +1138,7 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
                     && assessment.gaps.is_empty()
             }
             ReceptionCoverage::Partial(gap) => {
-                plan.config.admission == AdmissionPolicy::AllowPartial
-                    && plan.reception().valid(window)
+                plan.reception().valid(window)
                     && assessment.gaps.as_slice()
                         == [super::PlannedGap {
                             start_ms: gap.missed.start_ms,

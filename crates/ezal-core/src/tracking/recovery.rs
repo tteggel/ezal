@@ -211,7 +211,7 @@ impl InterceptSearch {
         let plan = plan.into();
         let launch_at_ms = start.at_ms.checked_add(INTERCEPT_PLANNING_LEAD_MS)?;
         let join_at_ms = launch_at_ms.checked_add(INTERCEPT_GRID_MS)?;
-        let follower = FollowingController::with_timing(
+        let follower = FollowingController::new(
             plan.config.reference,
             plan.config.deadband_deg,
             plan.actuator.relays,
@@ -229,9 +229,11 @@ impl InterceptSearch {
         for case in &plan.config.scenarios {
             Simulation::from_rest(
                 plan.calibration,
-                case.motor,
                 follower,
-                settings(plan, *case),
+                SimulationSettings {
+                    step_ms: plan.config.step_ms,
+                    scenario: *case,
+                },
                 start,
             )
             .ok()?;
@@ -287,7 +289,7 @@ impl InterceptSearch {
         };
         let case = plan.config.scenarios[self.scenario];
         if self.sim.is_none() {
-            let follower = FollowingController::with_timing(
+            let follower = FollowingController::new(
                 plan.config.reference,
                 plan.config.deadband_deg,
                 plan.actuator.relays,
@@ -295,9 +297,11 @@ impl InterceptSearch {
             .map_err(|_| ())?;
             let sim = Simulation::from_rest(
                 plan.calibration,
-                case.motor,
                 follower,
-                settings(plan, case),
+                SimulationSettings {
+                    step_ms: plan.config.step_ms,
+                    scenario: case,
+                },
                 self.start,
             )
             .map_err(|_| ())?;
@@ -411,21 +415,6 @@ impl InterceptSearch {
         self.sim = None;
         self.previous = None;
         self.metrics = RecoveryMetrics::default();
-    }
-}
-
-fn settings(plan: SearchRoute<'_>, case: super::Scenario) -> SimulationSettings {
-    SimulationSettings {
-        step_ms: plan.config.step_ms,
-        feedback_latency_ms: case.latency_ms,
-        channel_skew_ms: case.channel_skew_ms,
-        noise_codes: case.noise_codes,
-        alternate_noise: case.alternate_noise,
-        initial_engagement: case.initial_engagement,
-        tolerance_deg: (plan.config.tolerance_deg - plan.config.uncertainty_deg)
-            .min(REACQUISITION_TOLERANCE_DEG),
-        actuator: plan.actuator,
-        ..SimulationSettings::default()
     }
 }
 

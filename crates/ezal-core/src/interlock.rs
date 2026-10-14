@@ -13,9 +13,7 @@
 //! without waiting for another sample. The release/coast allowance is an
 //! explicit engineering assumption until measured on the installed mechanism.
 
-use crate::drive::{
-    Command, DriveCommand, AZIMUTH_MAX_SPEED_DEG_PER_S, ELEVATION_MAX_SPEED_DEG_PER_S,
-};
+use crate::drive::{Command, DriveCommand};
 use crate::feedback::{FeedbackSample, FEEDBACK_MAX_AGE_MS};
 use crate::position::{InstalledCalibration, Pointing};
 
@@ -54,11 +52,13 @@ impl TravelProfile {
     /// Existing AC rate assumptions plus the provisional 500 ms coast allowance.
     pub const DEFAULT: Self = Self {
         azimuth: AxisTravel {
-            max_speed_deg_per_s: AZIMUTH_MAX_SPEED_DEG_PER_S,
+            // The G-5500 manual's 58 s per 360° at 60 Hz (6.2°/s), plus margin.
+            max_speed_deg_per_s: 7.0,
             coast_ms: 500,
         },
         elevation: AxisTravel {
-            max_speed_deg_per_s: ELEVATION_MAX_SPEED_DEG_PER_S,
+            // The G-5500 manual's 67 s per 180° at 60 Hz (2.7°/s), plus margin.
+            max_speed_deg_per_s: 3.0,
             coast_ms: 500,
         },
     };

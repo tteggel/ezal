@@ -49,30 +49,20 @@ pub enum Security {
     Protected,
 }
 
-/// Why a set of [`Credentials`] is not join-able. Each variant carries the
-/// offending length where one applies, and [`CredentialError::message`] gives
-/// a short static description suitable for a boot-time log line.
+/// Why a set of [`Credentials`] is not join-able. [`CredentialError::message`]
+/// gives a short static description suitable for a boot-time log line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CredentialError {
     /// The SSID was empty — nothing to join. Usually means `.env` is missing
     /// or `EZAL_WIFI_SSID` was left blank.
     SsidEmpty,
     /// The SSID was longer than [`SSID_MAX_LEN`] octets.
-    SsidTooLong {
-        /// The offending SSID length, in octets.
-        len: usize,
-    },
+    SsidTooLong,
     /// A non-empty password was shorter than [`PSK_MIN_LEN`] octets. (An
     /// *empty* password is not an error — it selects an open network.)
-    PasswordTooShort {
-        /// The offending password length, in octets.
-        len: usize,
-    },
+    PasswordTooShort,
     /// The password was longer than [`PSK_MAX_LEN`] octets.
-    PasswordTooLong {
-        /// The offending password length, in octets.
-        len: usize,
-    },
+    PasswordTooLong,
 }
 
 impl CredentialError {
@@ -81,11 +71,11 @@ impl CredentialError {
     pub const fn message(self) -> &'static str {
         match self {
             CredentialError::SsidEmpty => "SSID is empty (set EZAL_WIFI_SSID in .env)",
-            CredentialError::SsidTooLong { .. } => "SSID is longer than 32 octets",
-            CredentialError::PasswordTooShort { .. } => {
+            CredentialError::SsidTooLong => "SSID is longer than 32 octets",
+            CredentialError::PasswordTooShort => {
                 "WPA passphrase is shorter than 8 octets (use 8-63, or leave blank for open)"
             }
-            CredentialError::PasswordTooLong { .. } => "WPA passphrase is longer than 63 octets",
+            CredentialError::PasswordTooLong => "WPA passphrase is longer than 63 octets",
         }
     }
 }
@@ -137,7 +127,7 @@ impl Credentials<'_> {
             return Err(CredentialError::SsidEmpty);
         }
         if ssid_len > SSID_MAX_LEN {
-            return Err(CredentialError::SsidTooLong { len: ssid_len });
+            return Err(CredentialError::SsidTooLong);
         }
 
         let pw_len = self.password.len();
@@ -146,10 +136,10 @@ impl Credentials<'_> {
             return Ok(Security::Open);
         }
         if pw_len < PSK_MIN_LEN {
-            return Err(CredentialError::PasswordTooShort { len: pw_len });
+            return Err(CredentialError::PasswordTooShort);
         }
         if pw_len > PSK_MAX_LEN {
-            return Err(CredentialError::PasswordTooLong { len: pw_len });
+            return Err(CredentialError::PasswordTooLong);
         }
         Ok(Security::Protected)
     }

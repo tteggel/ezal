@@ -52,7 +52,6 @@ pub struct ExecutionClock {
     policy: TimingPolicy,
     through_ms: u64,
     allowance_ms: f64,
-    sky_rate_deg_per_s: f64,
 }
 
 impl ExecutionClock {
@@ -105,7 +104,6 @@ impl ExecutionClock {
             policy,
             through_ms,
             allowance_ms: 1000.0 * reserve / rate,
-            sky_rate_deg_per_s: rate,
         };
         clock.check_anchor(anchor, now_ms)?;
         if clock.error_ms(anchor, through_ms)? > clock.allowance_ms {
@@ -135,11 +133,6 @@ impl ExecutionClock {
             .unix_ms(now_ms)
             .map(|ms| ms as f64 / 1000.0)
             .ok_or(TimingError::ClockOrder)
-    }
-
-    /// Timing contribution alone, not a claim about total physical pointing.
-    pub fn uncertainty_deg(self, now_ms: u64) -> Result<f64, TimingError> {
-        Ok(self.error_ms(self.anchor, now_ms)? * self.sky_rate_deg_per_s / 1000.0)
     }
 
     /// Check the latest live sample without rebasing. Its error interval must

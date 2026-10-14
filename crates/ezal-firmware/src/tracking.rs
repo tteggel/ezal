@@ -67,9 +67,6 @@ pub fn refresh_inputs(state: &SharedState) {
         s.tracking_operation(Instant::now().as_millis(), |runtime, observation| {
             let revisions = PlanRevisions {
                 orbit: source.publication().revision,
-                observer: 1,
-                calibration: 1,
-                motion: 1,
                 clock: observation.clock.anchor().map_or(0, |a| a.revision()),
                 start,
             };

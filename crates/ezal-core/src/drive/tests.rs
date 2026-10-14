@@ -1,8 +1,8 @@
 //! Tests for private lease enforcement and two-axis relay timing.
 
 use super::{
-    ActuatorGuard, AzimuthDirection, Command, DriveCommand, ElevationDirection, RelayTiming,
-    MOVEMENT_LEASE_MS, OUTPUT_MIN_ACTIVE_MS, OUTPUT_MIN_INACTIVE_MS,
+    ActuatorGuard, AzimuthDirection, Command, DriveCommand, ElevationDirection, RelayConfig,
+    RelayTiming, MOVEMENT_LEASE_MS, OUTPUT_MIN_ACTIVE_MS, OUTPUT_MIN_INACTIVE_MS,
 };
 
 #[test]
@@ -11,7 +11,7 @@ fn delivery_delay_does_not_renew_an_absolute_command_expiry() {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
     };
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     guard.command_until(Command::Jog(drive), 100, 700);
     assert_eq!(guard.actual(), drive);
     assert_eq!(guard.lease_deadline_ms(), Some(700));
@@ -32,7 +32,7 @@ fn late_movement_is_refused_even_if_it_was_valid_when_queued() {
         elevation: None,
     };
     for now_ms in [700, 800] {
-        let mut guard = ActuatorGuard::new();
+        let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
         guard.command_until(Command::Jog(drive), now_ms, 700);
         assert_eq!(guard.actual(), DriveCommand::IDLE);
         assert_eq!(guard.target(), DriveCommand::IDLE);
@@ -46,7 +46,7 @@ fn remaining_absolute_lifetime_must_cover_the_minimum_on_time() {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
     };
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     guard.command_until(Command::Drive(drive), 300, 700);
     assert_eq!(guard.actual(), DriveCommand::IDLE);
     assert_eq!(guard.target(), drive);
@@ -58,7 +58,7 @@ fn remaining_absolute_lifetime_must_cover_the_minimum_on_time() {
 
 #[test]
 fn relay_timing_holds_active_outputs_for_the_minimum_time() {
-    let mut relay_timing = RelayTiming::new();
+    let mut relay_timing = RelayTiming::new(RelayConfig::DEFAULT);
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -70,19 +70,19 @@ fn relay_timing_holds_active_outputs_for_the_minimum_time() {
 
     assert!(!relay_timing.set_target(Command::Drive(DriveCommand::IDLE), 100));
     assert_eq!(relay_timing.actual(), cw);
-    assert_eq!(relay_timing.next_transition_ms(100), Some(510));
+    assert_eq!(relay_timing.next_transition_until(100, u64::MAX), Some(510));
 
-    assert!(!relay_timing.update(509));
+    assert!(!relay_timing.update_until(509, u64::MAX));
     assert_eq!(relay_timing.actual(), cw);
 
-    assert!(relay_timing.update(510));
+    assert!(relay_timing.update_until(510, u64::MAX));
     assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
-    assert_eq!(relay_timing.next_transition_ms(510), None);
+    assert_eq!(relay_timing.next_transition_until(510, u64::MAX), None);
 }
 
 #[test]
 fn relay_timing_delays_reversals_without_conflicting_outputs() {
-    let mut relay_timing = RelayTiming::new();
+    let mut relay_timing = RelayTiming::new(RelayConfig::DEFAULT);
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -97,24 +97,24 @@ fn relay_timing_delays_reversals_without_conflicting_outputs() {
     assert_eq!(relay_timing.target(), ccw);
     assert_eq!(relay_timing.actual(), cw);
     assert_eq!(
-        relay_timing.next_transition_ms(125),
+        relay_timing.next_transition_until(125, u64::MAX),
         Some(OUTPUT_MIN_ACTIVE_MS)
     );
 
-    assert!(relay_timing.update(OUTPUT_MIN_ACTIVE_MS));
+    assert!(relay_timing.update_until(OUTPUT_MIN_ACTIVE_MS, u64::MAX));
     assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
     assert_eq!(
-        relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS),
+        relay_timing.next_transition_until(OUTPUT_MIN_ACTIVE_MS, u64::MAX),
         Some(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS)
     );
 
-    assert!(!relay_timing.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1));
+    assert!(!relay_timing.update_until(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1, u64::MAX));
     assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
 
-    assert!(relay_timing.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS));
+    assert!(relay_timing.update_until(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS, u64::MAX));
     assert_eq!(relay_timing.actual(), ccw);
     assert_eq!(
-        relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS),
+        relay_timing.next_transition_until(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS, u64::MAX),
         None
     );
 
@@ -124,14 +124,15 @@ fn relay_timing_delays_reversals_without_conflicting_outputs() {
     ));
     assert_eq!(relay_timing.actual(), ccw);
     assert_eq!(
-        relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS + 1),
+        relay_timing
+            .next_transition_until(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS + 1, u64::MAX),
         Some(OUTPUT_MIN_ACTIVE_MS * 2 + OUTPUT_MIN_INACTIVE_MS)
     );
 }
 
 #[test]
 fn relay_timing_holds_inactive_outputs_for_the_minimum_time() {
-    let mut relay_timing = RelayTiming::new();
+    let mut relay_timing = RelayTiming::new(RelayConfig::DEFAULT);
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -144,20 +145,20 @@ fn relay_timing_holds_inactive_outputs_for_the_minimum_time() {
     assert!(!relay_timing.set_target(Command::Drive(cw), OUTPUT_MIN_ACTIVE_MS + 100));
     assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
     assert_eq!(
-        relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS + 100),
+        relay_timing.next_transition_until(OUTPUT_MIN_ACTIVE_MS + 100, u64::MAX),
         Some(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS)
     );
 
-    assert!(!relay_timing.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1));
+    assert!(!relay_timing.update_until(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS - 1, u64::MAX));
     assert_eq!(relay_timing.actual(), DriveCommand::IDLE);
 
-    assert!(relay_timing.update(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS));
+    assert!(relay_timing.update_until(OUTPUT_MIN_ACTIVE_MS + OUTPUT_MIN_INACTIVE_MS, u64::MAX));
     assert_eq!(relay_timing.actual(), cw);
 }
 
 #[test]
 fn relay_timing_keeps_axis_timing_independent() {
-    let mut relay_timing = RelayTiming::new();
+    let mut relay_timing = RelayTiming::new(RelayConfig::DEFAULT);
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -178,18 +179,21 @@ fn relay_timing_keeps_axis_timing_independent() {
     assert!(!relay_timing.set_target(Command::Drive(up), 200));
     assert_eq!(relay_timing.actual(), cw_up);
     assert_eq!(
-        relay_timing.next_transition_ms(200),
+        relay_timing.next_transition_until(200, u64::MAX),
         Some(OUTPUT_MIN_ACTIVE_MS)
     );
 
-    assert!(relay_timing.update(OUTPUT_MIN_ACTIVE_MS));
+    assert!(relay_timing.update_until(OUTPUT_MIN_ACTIVE_MS, u64::MAX));
     assert_eq!(relay_timing.actual(), up);
-    assert_eq!(relay_timing.next_transition_ms(OUTPUT_MIN_ACTIVE_MS), None);
+    assert_eq!(
+        relay_timing.next_transition_until(OUTPUT_MIN_ACTIVE_MS, u64::MAX),
+        None
+    );
 }
 
 #[test]
 fn actuator_guard_stops_an_unrefreshed_movement_lease() {
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     let drive = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: Some(ElevationDirection::Up),
@@ -209,7 +213,7 @@ fn actuator_guard_stops_an_unrefreshed_movement_lease() {
 
 #[test]
 fn actuator_guard_refreshes_lease_without_changing_outputs() {
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     let drive = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
@@ -230,7 +234,7 @@ fn clockwise() -> Command {
 
 #[test]
 fn a_delayed_activation_waits_until_its_lease_covers_the_minimum_on_time() {
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     guard.command(clockwise(), 0);
     guard.command(Command::Drive(DriveCommand::IDLE), 500);
     // The off-hold ends at 2500, but this lease ends at 2750: starting then
@@ -264,7 +268,7 @@ fn a_stalled_refresh_stream_never_pulses_the_relay_briefly() {
         azimuth: Some(AzimuthDirection::CounterClockwise),
         elevation: None,
     });
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     guard.command(ccw, 0);
     guard.command(Command::Inhibit, 0);
     // The last refresh lands during the off-hold, then the network stalls.
@@ -284,7 +288,7 @@ fn a_stalled_refresh_stream_never_pulses_the_relay_briefly() {
 
 #[test]
 fn safety_inhibition_bypasses_minimum_on_and_cancels_pending_reversal() {
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     guard.command(clockwise(), 0);
     let reverse = Command::Drive(DriveCommand {
         azimuth: Some(AzimuthDirection::CounterClockwise),
@@ -301,7 +305,7 @@ fn safety_inhibition_bypasses_minimum_on_and_cancels_pending_reversal() {
 
 #[test]
 fn a_late_refresh_cannot_extend_an_already_expired_lease() {
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     guard.command(clockwise(), 0);
     assert!(guard.command(clockwise(), MOVEMENT_LEASE_MS));
     assert_eq!(guard.actual(), DriveCommand::IDLE);
@@ -314,7 +318,7 @@ fn a_late_refresh_cannot_extend_an_already_expired_lease() {
 
 #[test]
 fn ordinary_release_at_a_pending_activation_deadline_never_energises_the_output() {
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     guard.command(clockwise(), 0);
     guard.command(Command::Drive(DriveCommand::IDLE), 500);
     guard.command(clockwise(), 2_000);
@@ -329,7 +333,7 @@ fn ordinary_release_at_a_pending_activation_deadline_never_energises_the_output(
 
 #[test]
 fn ordinary_release_of_a_leased_activation_ends_at_its_minimum_on_time() {
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     guard.command(clockwise(), 0);
     guard.command(Command::Drive(DriveCommand::IDLE), 500);
     guard.command(clockwise(), 2_000);
@@ -367,13 +371,13 @@ fn jog_release_or_reversal_stops_that_axis_immediately() {
     };
 
     // A controller release keeps the relay's minimum on-time.
-    let mut controller = ActuatorGuard::new();
+    let mut controller = ActuatorGuard::new(RelayConfig::DEFAULT);
     controller.command(Command::Drive(cw_up), 0);
     assert!(!controller.command(Command::Drive(up), 100));
     assert_eq!(controller.actual(), cw_up);
 
     // Releasing one held browser control cuts only that axis, at once.
-    let mut operator = ActuatorGuard::new();
+    let mut operator = ActuatorGuard::new(RelayConfig::DEFAULT);
     operator.command(Command::Jog(cw_up), 0);
     assert!(operator.command(Command::Jog(up), 100));
     assert_eq!(operator.actual(), up);
@@ -396,7 +400,7 @@ fn jog_release_or_reversal_stops_that_axis_immediately() {
 
 #[test]
 fn inhibiting_one_axis_keeps_the_other_axis_and_does_not_extend_the_off_hold() {
-    let mut guard = ActuatorGuard::new();
+    let mut guard = ActuatorGuard::new(RelayConfig::DEFAULT);
     let both = Command::Drive(DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: Some(ElevationDirection::Up),
