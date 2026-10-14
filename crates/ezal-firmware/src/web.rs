@@ -28,10 +28,7 @@ use ezal_core::protocol::{
 use ezal_core::session::{CommandFreshness, LeaseHeartbeat, TELEMETRY_PERIOD_MS};
 
 use crate::state::{SharedState, STATE};
-
-#[path = "ws_receive.rs"]
-mod ws_receive;
-use ws_receive::{ReceiveError, ReceiveEvent};
+use crate::ws_receive::{self, ReceiveError, ReceiveEvent};
 
 /// picoserve server configuration.
 ///
@@ -128,7 +125,7 @@ impl Content for ForecastJson<'_> {
     }
 
     fn content_length(&self) -> usize {
-        self.0.borrow().as_ref().map_or(0, Report::json_len)
+        format_args!("{self}").content_length()
     }
 
     async fn write_content<W: PicoserveWrite>(self, mut writer: W) -> Result<(), W::Error> {

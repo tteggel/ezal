@@ -2,11 +2,11 @@
 
 ezal separates deterministic control policy from the RP2350 peripherals that
 observe and apply it. Firmware boots idle. Manual movement and explicitly armed
-tracking use one device owner and physical output boundary. The tracking executor
-and its selection/arming dashboard API are integrated. Board timing and
-installation commissioning remain separate validation.
+tracking use one device owner and physical output boundary. Host tests validate
+the policy; board timing and the installation are validated by the
+[bench verification](CALIBRATION.md#bench-verification).
 
-The [manual control contract](CONTROL_CONTRACT.md) defines the safeguard owner,
+The [control contract](CONTROL_CONTRACT.md) defines the safeguard owner,
 effect, recovery condition and timing boundaries. It is the reference for
 changes to the control path.
 
@@ -52,8 +52,8 @@ energized/rest accounting, and private timing helpers
 in `drive`. These helpers do not provide alternative firmware actuation paths.
 The per-axis relay state machine is shared by azimuth and elevation. The
 `network` gate is a timestamped permission with a recovery generation, not a
-cached connection boolean. Private ownership bookkeeping and a mailbox support
-coordination; the mailbox stores each command together with its source deadline.
+cached connection boolean. `TrackingLifecycle`'s private mailbox stores each
+command together with its source deadline.
 
 Other core modules remain independent: `ads1015` models registers and decoding;
 `wifi` validates credentials and selects retry delays; `ntp` validates packets
@@ -67,8 +67,8 @@ the selected run. `operator::OperatorLease` enforces exclusive, expiring grants;
 executor generations and pending output. Releasing a browser grant does not
 release an armed run. The planner and lifecycle both use the existing actuator
 policy, so simulation, preparation and later following share duty and relay
-constraints. See the [lifecycle milestone](PASS_PREDICTION.md#current-lifecycle-milestone)
-for the transition contract. `CoordinationState` owns one `TrackingRuntime`;
+constraints. See [TRACKING.md](TRACKING.md#lifecycle-events) for the transition
+contract. `CoordinationState` owns one `TrackingRuntime`;
 manual admission uses that runtime's exclusive lease and mailbox too.
 
 `tracking::TrackingRuntime` wraps that lifecycle with the execution-input gate.
@@ -87,13 +87,13 @@ borrows the frozen route/source and simulates the remaining pass from a copy of
 the serviced actuator, preserving duty and relay history. Recovery commands
 come only from the validated intercept and existing feedback follower; ordinary
 following commands are refused during recovery. Late work, stale feedback,
-faults and cancellation cannot revive an old intercept. See the
-[reacquisition milestone](PASS_PREDICTION.md#current-reacquisition-milestone)
-for the output cadence and integration contract.
+faults and cancellation cannot revive an old intercept. See
+[TRACKING.md](TRACKING.md#firmware-execution) for the output cadence and
+integration contract.
 
 `ezal-firmware` owns the asynchronous shell:
 
-| Module | Resources and effects |
+| Firmware module | Owned resources and effects |
 |---|---|
 | `main` | Peripheral wiring, startup checks and task spawning |
 | `feedback` | ADC reader, cancellation latch and acquisition cadence |
@@ -109,17 +109,21 @@ for the output cadence and integration contract.
 ## Feedback lifecycle
 
 The resource-owning reader timestamps before A0 elevation, then reads A1 azimuth
-under one 500 ms transaction deadline. Cancelling that transaction permanently
-disables reads on that owned bus until reset. An uncancelled I²C error may retry.
-The monitor does not own or reset hardware-resource state.
+under one transaction deadline,
+[`FEEDBACK_READ_TIMEOUT_MS`](CONTROL_CONTRACT.md#ownership-and-recovery).
+Cancelling that transaction permanently disables reads on that owned bus until
+reset. An uncancelled I²C error may retry. The monitor does not own or reset
+hardware-resource state.
 
 `InstalledCalibration` checks that the full accepted calibration band is
 observable at the ADC's configured range and supply ceiling. Every raw pair
 still receives rail and range checks. `FeedbackSample` can only be constructed
 through calibrated conversion and retains the original acquisition timestamp.
-A completed read taking more than 150 ms, or a future timestamp, cannot publish
-a usable sample. There is a 100 ms delay after each acquisition, rather than a
-fixed-frequency sampling promise.
+A completed read slower than
+[`FEEDBACK_MAX_LATENCY_MS`](CONTROL_CONTRACT.md#ownership-and-recovery), or a
+future timestamp, cannot publish a usable sample.
+[`FEEDBACK_PERIOD_MS`](../crates/ezal-core/src/feedback.rs) separates
+acquisitions; there is no fixed-frequency sampling promise.
 
 One publication contains the domain feedback snapshot and the interlock built
 from the same installation. Raw readings and the last valid position remain
@@ -145,12 +149,13 @@ snapshot getters do not expire permission, revoke ownership or consume commands.
 Admission and actuator polling apply time-dependent transitions.
 
 The first connected client receives unclaimed control while networking is ready.
-A viewer cannot displace its five-second exclusive lease. Fresh single-use
-WebSocket Ping/Pong challenges renew the original grant; reading telemetry and
-repeated claims do not. Disconnect or expiry inhibits manual movement while an
-armed pass retains device authority. A viewer must claim vacant control explicitly.
-Network loss revokes browser ownership and stops tracking; recovery cannot resume
-an old run.
+A viewer cannot displace its exclusive lease,
+[`OPERATOR_LEASE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery). Fresh
+single-use WebSocket Ping/Pong heartbeats renew the original grant; reading
+telemetry and repeated claims do not. Disconnect or expiry inhibits manual
+movement while an armed pass retains device authority. A viewer must claim
+vacant control explicitly. Network loss revokes browser ownership and stops
+tracking; recovery cannot resume an old run.
 
 The signal is only a wake hint. On every iteration, the GPIO task atomically
 drains the mailbox together with the feedback interlock and network permission.
@@ -169,7 +174,9 @@ a pending movement replaces its entire envelope, including the original expiry.
 
 Command lifetime and remaining duty must both cover an activation's minimum on-time.
 Feedback and network deadlines independently revoke movement; shortening the
-activation lease to the 300 ms network deadline would prevent every activation.
+activation lease to the network deadline,
+[`NETWORK_HEALTH_TIMEOUT_MS`](CONTROL_CONTRACT.md#ownership-and-recovery),
+would prevent every activation.
 Tracking `Drive` releases an axis it no longer requests after its minimum on-time;
 manual admission produces only operator-held `Jog` or immediate `Inhibit` requests.
 
@@ -177,20 +184,25 @@ Firmware applies and records the first service result before generating a
 tracking command from that coherent actuator snapshot. It then drains with the
 actual current time and applies/records the second result. Every intermediate
 transition reaches GPIOs and both follower histories. Only then does it feed the
-500 ms watchdog. Idle service is every 100 ms; tracking service aims for 10 ms,
-shortened by physical, preparation, intercept and LOS deadlines. The runtime
-inhibits at the next service if normal execution exceeds the plan's 20 ms maximum
-interval; recovery instead discards late work and holds/retries within its episode. Acquisition and GPIO servicing remain
-separate tasks, so a stuck sensor read cannot suspend output supervision.
+watchdog. The [contract](CONTROL_CONTRACT.md#ordering-and-time) sets the idle
+and tracking service periods; physical, preparation, intercept and LOS deadlines
+shorten them. The runtime inhibits at the next service if normal execution
+exceeds the plan's maximum interval,
+[`PlanningConfig::step_ms`](CONTROL_CONTRACT.md#ownership-and-recovery);
+recovery instead discards late work and holds/retries within its episode.
+Acquisition and GPIO servicing remain separate tasks, so a stuck sensor read
+cannot suspend output supervision.
 
 Motion supervision retains accumulated energized time across short jogs, reversals
-and off-holds, and keeps direction/speed evidence across pulse trains. There is no
-per-activation blind window. Fresh communication or sensor recovery cannot erase
-a latched fault. `ActuatorConfig` supplies one validated set of relay, travel,
-motion and duty settings. Duty is per axis and survives source/owner changes;
-only full continuous rest restores it. Firmware boot uses unknown history and
-requires a full rest. Simulations explicitly provide their known prior usage.
-The detailed timing and recovery rules live in [CONTROL_CONTRACT.md](CONTROL_CONTRACT.md).
+and off-holds, and keeps direction/speed evidence across pulse trains. Direction
+checks apply from a pulse's first sample through its coast; once an axis has
+been driven, its speed stays bounded through startup, coast and idle. Fresh
+communication or sensor recovery cannot erase a latched fault. `ActuatorConfig`
+supplies one validated set of relay, travel, motion and duty settings. Duty is per
+axis and survives source/owner changes; only full continuous rest restores it.
+Firmware boot uses unknown history and requires a full rest. Simulations
+explicitly provide their known prior usage. The detailed timing and recovery
+rules live in [CONTROL_CONTRACT.md](CONTROL_CONTRACT.md).
 
 ## Transport and dashboard
 
@@ -200,19 +212,22 @@ tracking projection and a freshness proof. Tracking includes the selected event,
 revision, lease generation, preview, phase, matched deviation, recovery and final
 summary. It copies no route or orbital source and never propagates while reading.
 The proof is stamped before the state read and socket write, so a slow write
-consumes its one-second lifetime. Encoding uses a fixed 4096-byte buffer; an
-encoding failure closes the session and releases ownership explicitly.
-Control acknowledgements carry no proof and never renew telemetry lifetime.
+consumes its lifetime,
+[`COMMAND_MAX_AGE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery). Encoding
+uses a fixed 4096-byte buffer; an encoding failure closes the session and
+releases ownership explicitly. Control acknowledgements carry no proof and never
+renew telemetry lifetime.
 
 Movement uses `press:<token>:<sequence>:drive:cw` for new input and `hold:…` for
 refreshes; combined axes use `cw+up`. Bare movement messages are rejected.
 Tokens are decimal strings to preserve all `u64` values in JavaScript. Admission
 binds proofs to the connection and network generation, checks increasing input
 sequence, and bounds expiry by the earlier of token expiry and receipt plus
-750 ms. Invalid movement abandons held intent and invalidates issued tokens.
-Manual stops need no freshness proof but still require ownership and Manual mode.
-Tracking actions carry a separate intent sequence, the observed lease generation
-and state revision. Select/Arm/Prepare also require the recent telemetry proof;
+[`MOVEMENT_LEASE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery). Invalid
+movement abandons held intent and invalidates issued tokens. Manual stops need
+no freshness proof but still require ownership and Manual mode. Tracking actions
+carry a separate intent sequence, the observed lease generation and state
+revision. Select/Arm/Prepare also require the recent telemetry proof;
 Cancel/Manual can use stale observations while retaining current-lease and
 ordering checks. New selections must match a currently offered device forecast
 row, identified by NORAD and AOS/LOS, never a browser table index.
@@ -258,8 +273,9 @@ The WiFi supervisor owns all retries. A join follows bounded leave/settle cleanu
 the initial join gets 2.75 s, with two prompt timeout retries at 3.5 s. Other
 failures and exhausted prompt retries use 1, 2, 4, …, 30 s backoff. DHCP has a
 30 s deadline. Only a usable link and address reset the retry schedule. Readiness
-is local connectivity, not internet reachability. A 100 ms observation cadence
-renews permission that independently expires after 300 ms at the actuator.
+is local connectivity, not internet reachability. Each observation renews a
+permission that the actuator expires independently; the
+[contract](CONTROL_CONTRACT.md#ownership-and-recovery) gives both periods.
 
 HTTP acceptors are spawned once and survive networking outages. Radio firmware
 initialization precedes supervision; failures involving consumed hardware
@@ -268,15 +284,30 @@ an ADC cancellation latch or physical motion fault.
 
 ## Verification
 
-Host tests exercise the production coordination-to-actuator path, source expiry,
-coalesced commands, permission loss/recovery, pending relay transitions, endpoint
-cuts, motion faults, conversion limits and bounded WebSocket reception. Internal
-relay tests retain focused timing coverage. Dashboard tests execute the served
-JavaScript and Rust-generated configuration with controlled clocks, sockets and
-pointer events. Forecast tests share the firmware's serialized report fixture.
+Integration tests in `crates/ezal-core/tests/` exercise the public API, one
+binary per file. The exception is `ws_receive.rs`, which compiles the firmware's
+private receive adapter through `#[path]` so it runs against the pinned
+picoserve parser. A binary that needs child modules is a directory,
+`tests/<bin>/main.rs`, and those modules belong to that binary alone.
+`tests/common/` holds fixtures that two or more binaries share; the in-crate
+tests reach the same fixtures through the documented splice in `lib.rs`. A unit
+test lives in the crate, in `src/<module>/tests.rs` or a `tests` module at the
+foot of a small file, only when its subject is crate-private. The JSON fixtures
+pin the wire formats that the dashboard tests render, so a server change cannot
+silently break the client.
 
-CI checks formatting, host tests, browser behavior, Clippy and the release
-firmware/UF2 build. [DEVELOPMENT.md](DEVELOPMENT.md) contains commands and board
-acceptance checks. Host tests do not measure physical stopping time: relay release,
-mechanical coast and pad behavior during watchdog reset still require bench
-validation with the installed [hardware](HARDWARE.md).
+CI runs the scripts in [DEVELOPMENT.md](DEVELOPMENT.md). Host tests do not
+measure physical stopping time: relay release, mechanical coast and pad
+behaviour during watchdog reset need the
+[bench verification](CALIBRATION.md#bench-verification) on the installed
+[hardware](HARDWARE.md).
+
+## Conventions
+
+A comment states what the code does or why a value is what it is. It never
+names a milestone, a removed mechanism, a word that dates the text, such as
+"now" or "currently" describing the project, or a future component; status
+words such as "provisional" state a fact and stay. A value that a constant owns
+is linked, not restated. A module doc states what the module owns and where its
+boundary is, links the datasheet or specification instead of teaching the
+technology, and never addresses the reader.

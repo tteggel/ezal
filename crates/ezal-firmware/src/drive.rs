@@ -46,8 +46,8 @@ impl DirectionOutputs {
     /// | UP          | GP20 | DIN 3 | D3  |
     /// | DOWN        | GP21 | DIN 5 | D4  |
     ///
-    /// Their distinct peripheral types mean the compiler rejects a mis-wired
-    /// call, so the positional arguments are safe.
+    /// Each pin parameter has its own type, so the compiler rejects pins passed
+    /// in the wrong order.
     pub fn new(
         cw: Peri<'static, PIN_10>,
         ccw: Peri<'static, PIN_11>,

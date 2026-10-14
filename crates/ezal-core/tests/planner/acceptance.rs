@@ -149,7 +149,7 @@ fn execute(
             )
             .unwrap();
             observed.peak_deg = observed.peak_deg.max(error);
-            if error > plan.config.tolerance_deg - plan.config.uncertainty_deg {
+            if error > plan.config.allocation_deg() {
                 observed.outside_ms += dt;
             }
         }
@@ -224,7 +224,7 @@ fn accept(
         assert!(observed
             .energized_ms
             .iter()
-            .all(|used| *used < scenario.motor.duty_limit_ms));
+            .all(|used| *used < scenario.motor.duty.energized_ms));
         for (actual, predicted) in observed
             .energized_ms
             .iter()

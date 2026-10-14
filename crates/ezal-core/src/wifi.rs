@@ -1,19 +1,12 @@
 //! WiFi station credentials and the reconnect schedule.
 //!
-//! The Pico 2 W joins an access point in **station (STA) mode** using an SSID
-//! and password that [`build.rs`] bakes into the firmware from `.env` at
-//! compile time (there is no filesystem on the chip to read them from at
-//! runtime). This module is the *pure* half of that story: it holds the
-//! [`Credentials`] the build supplies and the rules that decide whether they
-//! are join-able, with no dependency on the radio or the HAL. The bus-facing
-//! half — powering the CYW43439 and issuing the join — lives in the firmware
-//! crate's `wifi` module. Its supervisor validates credentials once and
-//! uses [`ConnectionRetries`] to schedule retries after association or DHCP fails.
-//!
-//! Keeping the rules here means they are checked by `./scripts/test-host.sh`,
-//! and a mistyped `.env` (an empty SSID or five-character password) is caught
-//! with a clear message at boot rather
-//! than as an opaque `JoinError` from deep inside the driver.
+//! [`Credentials`] are the SSID and password that [`build.rs`] bakes into the
+//! firmware from `.env` (`docs/DEVELOPMENT.md` describes provisioning). This
+//! module decides whether they are joinable, with no dependency on the radio or
+//! the HAL. The firmware's `wifi` supervisor validates them once at boot, so a
+//! mistyped `.env` is reported clearly rather than as an opaque driver
+//! `JoinError`, and it uses [`ConnectionRetries`] to schedule retries after
+//! association or DHCP fails.
 //!
 //! ezal accepts these credential lengths:
 //!
@@ -23,9 +16,9 @@
 //! * an empty password selects an **open** (unencrypted) network.
 //!
 //! (The 64-hex-character "raw PSK" form that some stacks accept in place of a
-//! passphrase is deliberately not modelled — ezal takes a passphrase.)
-//! The firmware currently requests WPA3/SAE for protected networks; this
-//! module validates strings and does not negotiate a security protocol.
+//! passphrase is deliberately not modelled — ezal takes a passphrase.) The
+//! firmware requests WPA3/SAE for protected networks; this module validates
+//! strings and does not negotiate a security protocol.
 //!
 //! [`build.rs`]: https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/build.rs
 

@@ -147,10 +147,10 @@ fn publish(
         aos_unix_s: window.aos_unix_s as i64,
         los_unix_s: window.aos_unix_s as i64 + i64::from(window.duration_ms / 1000),
     };
-    let mut session = TrackingLifecycle::new();
-    let owner = session.claim(1, now).unwrap().token;
-    act(&mut session, owner, 1, TrackingAction::Select(event), now).unwrap();
-    session
+    let mut lifecycle = TrackingLifecycle::new();
+    let owner = lifecycle.claim(1, now).unwrap().token;
+    act(&mut lifecycle, owner, 1, TrackingAction::Select(event), now).unwrap();
+    lifecycle
         .refresh(
             &[event],
             PlanRevisions {
@@ -160,30 +160,30 @@ fn publish(
             now,
         )
         .unwrap();
-    session
+    lifecycle
         .publish_plan(
-            session.planning_ticket().unwrap(),
+            lifecycle.planning_ticket().unwrap(),
             Ok(report),
             "frozen source",
             u64::MAX,
             now,
         )
         .unwrap();
-    (session, owner)
+    (lifecycle, owner)
 }
 
 fn act(
-    session: &mut TrackingLifecycle<&'static str>,
+    lifecycle: &mut TrackingLifecycle<&'static str>,
     owner: ezal_core::operator::OperatorToken,
     sequence: u64,
     action: TrackingAction,
     at: u64,
 ) -> Result<u64, LifecycleError> {
-    session.request(
+    lifecycle.request(
         TrackingRequest {
             operator: owner,
             sequence,
-            expected_revision: session.snapshot().revision,
+            expected_revision: lifecycle.snapshot().revision,
             action,
         },
         at,
@@ -215,29 +215,29 @@ fn late_preview_requires_explicit_arming_and_freezes_at_its_fixed_entry() {
         TrackingStop::LatePreparation
     );
 
-    let (mut session, owner) = publish(report, 2000);
-    let original = session.snapshot().selection.unwrap();
-    act(&mut session, owner, 2, TrackingAction::Arm, 2000).unwrap();
-    session.tick(gap.recovery_at_ms - 1).unwrap();
-    assert_eq!(session.snapshot().phase, TrackingPhase::Armed);
-    assert!(session.snapshot().run.is_none());
-    session.tick(gap.recovery_at_ms).unwrap();
-    let recovery = session.snapshot().recovery.unwrap();
-    assert_eq!(session.snapshot().selection, Some(original));
-    assert_eq!(session.snapshot().plan, PlanStatus::Frozen);
-    assert_eq!(session.snapshot().phase, TrackingPhase::Reacquiring);
+    let (mut lifecycle, owner) = publish(report, 2000);
+    let original = lifecycle.snapshot().selection.unwrap();
+    act(&mut lifecycle, owner, 2, TrackingAction::Arm, 2000).unwrap();
+    lifecycle.tick(gap.recovery_at_ms - 1).unwrap();
+    assert_eq!(lifecycle.snapshot().phase, TrackingPhase::Armed);
+    assert!(lifecycle.snapshot().run.is_none());
+    lifecycle.tick(gap.recovery_at_ms).unwrap();
+    let recovery = lifecycle.snapshot().recovery.unwrap();
+    assert_eq!(lifecycle.snapshot().selection, Some(original));
+    assert_eq!(lifecycle.snapshot().plan, PlanStatus::Frozen);
+    assert_eq!(lifecycle.snapshot().phase, TrackingPhase::Reacquiring);
     assert_eq!(recovery.cause(), RecoveryCause::LateAcquisition);
     assert_eq!(recovery.started_at_ms(), gap.recovery_at_ms);
     assert_eq!(recovery.deadline_ms(), gap.deadline_ms);
-    session.tick(gap.recovery_at_ms + 1000).unwrap();
-    assert_eq!(session.snapshot().recovery, Some(recovery));
-    session.tick(gap.deadline_ms).unwrap();
+    lifecycle.tick(gap.recovery_at_ms + 1000).unwrap();
+    assert_eq!(lifecycle.snapshot().recovery, Some(recovery));
+    lifecycle.tick(gap.deadline_ms).unwrap();
     assert_eq!(
-        session.snapshot().termination.unwrap().reason,
+        lifecycle.snapshot().termination.unwrap().reason,
         TrackingStop::ReacquisitionTimeout
     );
     assert_eq!(
-        session.take_command(gap.deadline_ms),
+        lifecycle.take_command(gap.deadline_ms),
         Some(CommandEnvelope::INHIBIT)
     );
 }
@@ -249,14 +249,14 @@ fn planned_gap_interrupts_queued_following_and_only_the_current_controller_can_c
     let gap = plan.reception().gap().unwrap();
     let prep = plan.assessment.prepare_at_ms;
     let aos = plan.window.aos_at_ms;
-    let (mut session, owner) = publish(report, 2000);
-    act(&mut session, owner, 2, TrackingAction::Arm, 2000).unwrap();
-    session.take_command(2000);
-    session.tick(prep).unwrap();
-    let run = session.snapshot().run.unwrap();
-    assert!(session.preparation_ready(run, prep + 2000).unwrap());
-    session.tick(aos).unwrap();
-    assert_eq!(session.snapshot().phase, TrackingPhase::Following);
+    let (mut lifecycle, owner) = publish(report, 2000);
+    act(&mut lifecycle, owner, 2, TrackingAction::Arm, 2000).unwrap();
+    lifecycle.take_command(2000);
+    lifecycle.tick(prep).unwrap();
+    let run = lifecycle.snapshot().run.unwrap();
+    assert!(lifecycle.preparation_ready(run, prep + 2000).unwrap());
+    lifecycle.tick(aos).unwrap();
+    assert_eq!(lifecycle.snapshot().phase, TrackingPhase::Following);
     let drive = CommandEnvelope {
         command: Command::Drive(DriveCommand {
             azimuth: Some(AzimuthDirection::Clockwise),
@@ -264,27 +264,27 @@ fn planned_gap_interrupts_queued_following_and_only_the_current_controller_can_c
         }),
         valid_until_ms: gap.recovery_at_ms + 700,
     };
-    assert!(session.tracking_command(run, drive, gap.recovery_at_ms - 1));
+    assert!(lifecycle.tracking_command(run, drive, gap.recovery_at_ms - 1));
     assert_eq!(
-        session.take_command(gap.recovery_at_ms),
+        lifecycle.take_command(gap.recovery_at_ms),
         Some(CommandEnvelope::INHIBIT)
     );
-    let episode = session.snapshot().recovery.unwrap();
+    let episode = lifecycle.snapshot().recovery.unwrap();
     assert_eq!(episode.cause(), RecoveryCause::PlannedGap);
     assert_eq!(episode.started_at_ms(), gap.recovery_at_ms);
     assert_eq!(episode.deadline_ms(), gap.deadline_ms);
-    assert!(!session.tracking_command(run, drive, gap.recovery_at_ms));
+    assert!(!lifecycle.tracking_command(run, drive, gap.recovery_at_ms));
     assert!(act(
-        &mut session,
+        &mut lifecycle,
         owner,
         3,
         TrackingAction::Cancel,
         gap.recovery_at_ms
     )
     .is_err());
-    let controller = session.claim(2, gap.recovery_at_ms).unwrap().token;
+    let controller = lifecycle.claim(2, gap.recovery_at_ms).unwrap().token;
     act(
-        &mut session,
+        &mut lifecycle,
         controller,
         1,
         TrackingAction::Cancel,
@@ -292,11 +292,11 @@ fn planned_gap_interrupts_queued_following_and_only_the_current_controller_can_c
     )
     .unwrap();
     assert_eq!(
-        session.snapshot().termination.unwrap().reason,
+        lifecycle.snapshot().termination.unwrap().reason,
         TrackingStop::Cancelled
     );
     assert_eq!(
-        session.take_command(gap.recovery_at_ms),
+        lifecycle.take_command(gap.recovery_at_ms),
         Some(CommandEnvelope::INHIBIT)
     );
 }
@@ -318,9 +318,9 @@ fn late_publication_and_inconsistent_partial_claims_are_rejected() {
     ] {
         let mut invalid = report.clone();
         mutate(invalid.plan.as_mut().unwrap());
-        let (session, _) = publish(invalid, 2000);
+        let (lifecycle, _) = publish(invalid, 2000);
         assert_eq!(
-            session.snapshot().plan,
+            lifecycle.snapshot().plan,
             PlanStatus::Blocked(PlanProblem::InvalidResult)
         );
     }
@@ -372,19 +372,19 @@ fn a_planned_gap_cannot_extend_an_earlier_recovery_episode() {
     let gap = plan.reception().gap().unwrap();
     let prep = plan.assessment.prepare_at_ms;
     let aos = plan.window.aos_at_ms;
-    let (mut session, owner) = publish(report, 2000);
-    act(&mut session, owner, 2, TrackingAction::Arm, 2000).unwrap();
-    session.tick(prep).unwrap();
+    let (mut lifecycle, owner) = publish(report, 2000);
+    act(&mut lifecycle, owner, 2, TrackingAction::Arm, 2000).unwrap();
+    lifecycle.tick(prep).unwrap();
     // Deliberately omit the executor's measured preparation-ready callback.
-    session.tick(aos).unwrap();
-    let earlier = session.snapshot().recovery.unwrap();
+    lifecycle.tick(aos).unwrap();
+    let earlier = lifecycle.snapshot().recovery.unwrap();
     assert_eq!(earlier.cause(), RecoveryCause::LatePreparation);
     assert!(gap.recovery_at_ms < earlier.deadline_ms());
-    session.tick(gap.recovery_at_ms).unwrap();
-    assert_eq!(session.snapshot().recovery, Some(earlier));
-    session.tick(earlier.deadline_ms()).unwrap();
+    lifecycle.tick(gap.recovery_at_ms).unwrap();
+    assert_eq!(lifecycle.snapshot().recovery, Some(earlier));
+    lifecycle.tick(earlier.deadline_ms()).unwrap();
     assert_eq!(
-        session.snapshot().termination.unwrap().reason,
+        lifecycle.snapshot().termination.unwrap().reason,
         TrackingStop::ReacquisitionTimeout
     );
 }

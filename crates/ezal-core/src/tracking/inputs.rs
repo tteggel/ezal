@@ -95,7 +95,7 @@ impl ExecutionInputs {
             || config.preparation_timing != ticket.preparation_timing()
             || !window.aos_unix_s.is_finite()
             || aos_utc != window.aos_unix_s
-            || !(1..=1_800_000).contains(&window.duration_ms)
+            || !(1..=PlanningWindow::MAX_DURATION_MS).contains(&window.duration_ms)
             || (window.aos_unix_s - ticket.pass().aos_unix_s as f64).abs() > 1.0
             || (window.aos_unix_s + f64::from(window.duration_ms) / 1000.0
                 - ticket.pass().los_unix_s as f64)

@@ -16,8 +16,8 @@
 # Every check is a script contributors run locally. The four jobs run in
 # parallel:
 #
-#   fmt            — scripts/lint.sh (formatting, clippy for both crates,
-#                    rustdoc) and scripts/test-build-tools.sh
+#   fmt            — shown as "Format": scripts/lint.sh (formatting, clippy
+#                    for both crates, rustdoc) and scripts/test-build-tools.sh
 #   test-host      — scripts/test-host.sh: ezal-core's tests on the host
 #   test-dashboard — scripts/test-dashboard.sh: the served dashboard JS
 #                    under Node's test runner

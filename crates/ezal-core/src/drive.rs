@@ -34,14 +34,15 @@ pub struct RelayConfig {
 }
 
 impl RelayConfig {
-    /// Existing installed timing, retained until commissioning validates changes.
+    /// Installed relay timing, which the firmware runs. Commissioning must
+    /// validate any change.
     pub const DEFAULT: Self = Self {
         min_active_ms: OUTPUT_MIN_ACTIVE_MS,
         same_direction_off_ms: OUTPUT_MIN_INACTIVE_MS,
         reversal_off_ms: OUTPUT_MIN_INACTIVE_MS,
     };
 
-    /// Proposed tracking timing for simulation and commissioning only.
+    /// Shorter tracking timing, used only in simulation and commissioning.
     pub const TRACKING_CANDIDATE: Self = Self {
         min_active_ms: 500,
         same_direction_off_ms: 500,

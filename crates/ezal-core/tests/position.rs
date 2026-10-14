@@ -295,8 +295,8 @@ fn adc_range_validation_covers_both_axes_and_both_limits() {
 
 #[test]
 fn adc_and_supply_rails_are_rejected_before_endpoint_noise_clamping() {
-    // This was the failure: the purely mathematical endpoint clamp accepts a
-    // saturation code as a valid mechanical limit.
+    // The mathematical endpoint clamp alone would accept a saturation code as
+    // a valid mechanical limit.
     let mut near_full_scale = TEST_CALIBRATION;
     near_full_scale.azimuth.voltage_max_mv = 2_030;
     let saturated = FeedbackVoltages {

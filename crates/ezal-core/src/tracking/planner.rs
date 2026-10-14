@@ -19,9 +19,10 @@ pub const MAX_SCENARIOS: usize = 9;
 pub const MAX_GAPS: usize = 16;
 /// Hard work bound, including geometry, preparation probes and pass evaluation.
 pub const MAX_PLANNING_STEPS: u64 = 20_000_000;
-const MAX_PASS_MS: u32 = 1_800_000;
 const MAX_PREPARATION_MS: u64 = 300_000;
 const READY_DWELL_MS: u64 = 2_000;
+/// Numeric allowance added to every sampled pointing bound and sky-rate check.
+pub(super) const DEVIATION_SLACK_DEG: f32 = 0.002;
 
 /// The execution owner supplies the UTC/monotonic mapping; planning never reads
 /// or changes a clock. Source provenance/expiry belongs to that owner.
@@ -31,8 +32,13 @@ pub struct PlanningWindow {
     pub aos_unix_s: f64,
     /// Acquisition in the output owner's monotonic time domain.
     pub aos_at_ms: u64,
-    /// Complete reception duration, at most 30 minutes.
+    /// Complete reception duration, at most [`Self::MAX_DURATION_MS`].
     pub duration_ms: u32,
+}
+
+impl PlanningWindow {
+    /// Longest reception window planned or executed: 30 minutes.
+    pub const MAX_DURATION_MS: u32 = 1_800_000;
 }
 
 /// Preparation schedule that must be included in the complete simulation.
@@ -155,6 +161,13 @@ impl Default for PlanningConfig {
     }
 }
 
+impl PlanningConfig {
+    /// Pointing error the modeled route may use: the target less reserved uncertainty.
+    pub fn allocation_deg(&self) -> f32 {
+        self.tolerance_deg - self.uncertainty_deg
+    }
+}
+
 /// A failure of the planning job itself, distinct from an unsupported route.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanningError {
@@ -205,7 +218,8 @@ pub enum EvaluationPhase {
 pub struct PlannedGap {
     /// First possibly out-of-budget instant.
     pub start_ms: u32,
-    /// Last possibly out-of-budget instant; LOS if there is no recovery in the window.
+    /// Exclusive end: the first instant back within budget, the last sample of a failed
+    /// evaluation, or LOS.
     pub end_ms: u32,
 }
 
@@ -393,7 +407,7 @@ impl<E: Ephemeris> Planner<E> {
     ) -> Result<Self, PlanningError> {
         let output = start.actuator.configuration();
         if window.duration_ms == 0
-            || window.duration_ms > MAX_PASS_MS
+            || window.duration_ms > PlanningWindow::MAX_DURATION_MS
             || !window.aos_unix_s.is_finite()
             || window.aos_unix_s.abs() > 1.0e11
             || window
@@ -574,7 +588,9 @@ impl<E: Ephemeris> Planner<E> {
             let dt = at_ms - previous.at_ms;
             let previous_sky = Pointing::new(route::wrap(previous.az), previous.el);
             let angle = pointing_deviation_deg(previous_sky, sky).ok_or(PlanningError::Source)?;
-            if angle > self.config.sky_rate_bound_deg_per_s * dt as f32 / 1000.0 + 0.002 {
+            if angle
+                > self.config.sky_rate_bound_deg_per_s * dt as f32 / 1000.0 + DEVIATION_SLACK_DEG
+            {
                 return Err(PlanningError::SkyRateBound);
             }
             if dt > 20 && ((az - previous.az).abs() > 5.0 || angle > 1.0) {
@@ -901,30 +917,14 @@ impl<E: Ephemeris> Planner<E> {
     }
 
     fn observe_error(&mut self, now: u64, error: f32, sky: Pointing) -> Result<(), PlanningError> {
-        let case = self.config.scenarios[self.scenario];
-        let az_rate = case.motor.azimuth.rate_deg_per_s;
-        let el_rate = case.motor.elevation.rate_deg_per_s;
-        let motor_rate = libm::sqrtf(az_rate * az_rate + el_rate * el_rate);
-        let mut bound = error + 0.002;
-        let mut begin = now;
-        if let Some((previous_ms, previous_error, previous_sky)) = self.metrics.previous {
-            let dt = (now - previous_ms) as f32 / 1000.0;
-            if pointing_deviation_deg(previous_sky, sky).ok_or(PlanningError::Source)?
-                > self.config.sky_rate_bound_deg_per_s * dt + 0.002
-            {
-                return Err(PlanningError::SkyRateBound);
-            }
-            // Every instant lies within dt/2 of an endpoint. Mechanical sky
-            // speed <= sqrt(az_rate² + el_rate²), including startup/coast.
-            bound = error.max(previous_error)
-                + (motor_rate + self.config.sky_rate_bound_deg_per_s) * dt / 2.0
-                + 0.002;
-            begin = previous_ms;
-        }
+        let motor = self.config.scenarios[self.scenario].motor;
+        let previous = self.metrics.previous;
+        let bound = intersample_bound(&self.config, motor, previous, now, error, sky)?;
+        let begin = previous.map_or(now, |(previous_ms, ..)| previous_ms);
         self.metrics.peak = self.metrics.peak.max(error);
         self.metrics.bound = self.metrics.bound.max(bound);
         let relative = (now - self.window.aos_at_ms) as u32;
-        if bound > self.config.tolerance_deg - self.config.uncertainty_deg {
+        if bound > self.config.allocation_deg() {
             let cut = (begin - self.window.aos_at_ms) as u32;
             self.partial_cut = Some(self.partial_cut.map_or(cut, |previous| previous.min(cut)));
             self.metrics
@@ -958,9 +958,7 @@ impl<E: Ephemeris> Planner<E> {
         let summary = self.sim.as_ref().unwrap().summary();
         self.assessment.sampled_peak_deg = self.assessment.sampled_peak_deg.max(self.metrics.peak);
         self.assessment.bounded_peak_deg = self.assessment.bounded_peak_deg.max(self.metrics.bound);
-        if self.assessment.failure.is_none()
-            && self.metrics.bound > self.config.tolerance_deg - self.config.uncertainty_deg
-        {
+        if self.assessment.failure.is_none() && self.metrics.bound > self.config.allocation_deg() {
             self.assessment.failure = Some(CandidateFailure::PointingBudget);
             self.assessment.failure_scenario = Some(self.scenario);
             self.assessment.failure_phase = Some(EvaluationPhase::Following);
@@ -1049,4 +1047,31 @@ impl<E: Ephemeris> Planner<E> {
         }
         self.next_candidate();
     }
+}
+
+/// Pointing-error bound over the interval from `previous` to this sample, or of
+/// the sample alone; sky motion beyond the configured rate bound rejects the source.
+pub(super) fn intersample_bound(
+    config: &PlanningConfig,
+    motor: MotorProfile,
+    previous: Option<(u64, f32, Pointing)>,
+    now: u64,
+    error: f32,
+    sky: Pointing,
+) -> Result<f32, PlanningError> {
+    let Some((previous_ms, previous_error, previous_sky)) = previous else {
+        return Ok(error + DEVIATION_SLACK_DEG);
+    };
+    let dt = (now - previous_ms) as f32 / 1000.0;
+    if pointing_deviation_deg(previous_sky, sky).ok_or(PlanningError::Source)?
+        > config.sky_rate_bound_deg_per_s * dt + DEVIATION_SLACK_DEG
+    {
+        return Err(PlanningError::SkyRateBound);
+    }
+    // Every instant lies within dt/2 of an endpoint. Mechanical sky
+    // speed <= sqrt(az² + el²) of the axis rates, including startup/coast.
+    let (az, el) = (motor.azimuth.rate_deg_per_s, motor.elevation.rate_deg_per_s);
+    Ok(error.max(previous_error)
+        + (libm::sqrtf(az * az + el * el) + config.sky_rate_bound_deg_per_s) * dt / 2.0
+        + DEVIATION_SLACK_DEG)
 }

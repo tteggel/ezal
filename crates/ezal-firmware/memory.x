@@ -14,7 +14,8 @@
  * 2nd-stage bootloader at the start of flash. Instead the boot ROM scans
  * the *first 4 KiB* of flash for an "image definition" block, which
  * `embassy-rp` provides for us (the `imagedef-secure-exe` feature emits a
- * `static IMAGE_DEF` into the `.start_block` section — see `src/main.rs`).
+ * `static IMAGE_DEF` into the `.start_block` section; the workspace
+ * `Cargo.toml` enables it).
  *
  * The catch: cortex-m-rt's `link.x` knows nothing about `.start_block`.
  * On its own the linker treats `.start_block` as an orphan and dumps it

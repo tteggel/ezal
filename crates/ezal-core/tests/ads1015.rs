@@ -1,11 +1,6 @@
-//! Host unit tests for the pure ADS1015 register logic.
-//!
-//! These run on the host with a plain `cargo test` (see
-//! `scripts/test-host.sh`). They lock down the parts of an ADC bring-up that
-//! are easy to get subtly wrong — field positions in the Config register, the
-//! self-clearing OS bit, and the sign-extension of a left-justified 12-bit
-//! conversion result — so a mistake shows up here, in seconds, rather than as
-//! a puzzling voltage on the bench.
+//! Host tests for the pure ADS1015 register logic: Config field positions, the
+//! self-clearing OS bit, and sign extension of the left-justified 12-bit
+//! conversion result.
 
 use ezal_core::ads1015::*;
 

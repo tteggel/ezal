@@ -1,8 +1,11 @@
 //! Bounded tracking wire projections. No route/source clones, propagation, I/O,
 //! lease renewal or lifecycle transitions occur while reading telemetry.
-//! Reasons are written in their `Debug` form, so every reason type nests closed
-//! enums down to fieldless leaves (`Rejected(Lifecycle(StateRevision))`), which the
-//! dashboard explains by innermost variant.
+//! Reasons are written in their `Debug` form, so every reason type must nest
+//! closed enums down to fieldless leaves (`Rejected(Lifecycle(StateRevision))`):
+//! that text needs no JSON escaping, and the dashboard explains it by its
+//! innermost variant.
+//!
+//! See `docs/TRACKING.md#wire-contract` for the message formats.
 
 use core::fmt;
 
@@ -11,7 +14,12 @@ use crate::coordination::CoordinationState;
 use crate::feedback::{FeedbackHealth, FeedbackSnapshot, FEEDBACK_MAX_AGE_MS};
 use crate::operator::OperatorGrant;
 use crate::session::CommandFreshness;
-use crate::tracking::*;
+use crate::tracking::{
+    DeviationStatus, EventId, PassEvent, PlanStatus, PlanningWindow, ReceptionCoverage,
+    RecoveryStatus, RouteChoice, RouteKind, RunToken, RuntimeError, TrackingAction, TrackingMode,
+    TrackingPhase, TrackingRequest, TrackingRuntime, TrackingSnapshot, TrackingSummary,
+    TrackingTermination,
+};
 
 // Representation adapters use the owner's public serialized boundary; the
 // coordination domain remains independent of the browser wire format.
@@ -39,7 +47,7 @@ impl CoordinationState {
         let result = self.tracking_operation(now_ms, |runtime, observation| {
             let grant = runtime
                 .operator(now_ms)
-                .filter(|g| g.token.client_id() == u64::from(client_id));
+                .filter(|g| g.token.client_id() == client_id);
             let request = intent.authorize(grant, freshness, now_ms)?;
             if let TrackingAction::Select(pass) = intent.action {
                 if !offered(pass) {
@@ -61,7 +69,7 @@ impl CoordinationState {
 /// Identifiers are decimal strings on the wire to preserve all 64 bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrackingIntent {
-    /// Recent server telemetry challenge; never a browser timestamp.
+    /// Recent telemetry freshness token; never a browser timestamp.
     pub proof: u64,
     /// Generation of the grant observed by this connection.
     pub lease: u64,

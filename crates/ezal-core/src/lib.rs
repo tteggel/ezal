@@ -11,8 +11,8 @@
 //!   [`tracking::TrackingLifecycle`] owns the Manual/Tracking mode, operator lease and mailbox.
 //! * [`actuator::Actuator::step`] is the complete physical-output decision.
 //!
-//! [`interlock`], [`motion`], [`network`] and private [`drive`] timing helpers
-//! support that boundary. [`drive::CommandEnvelope`] preserves a source's
+//! [`interlock`], [`motion`], [`duty`], [`network`] and private [`drive`] timing
+//! helpers support that boundary. [`drive::CommandEnvelope`] preserves a source's
 //! absolute deadline. [`protocol`] supplies wire parsing and telemetry encoding;
 //! [`dashboard`] supplies the page and firmware-owned client configuration.
 //!

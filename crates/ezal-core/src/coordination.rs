@@ -166,7 +166,7 @@ impl CoordinationState {
         };
         self.next_client_id = id;
         if self.network.ready(now_ms) {
-            let _ = self.tracking.claim(u64::from(id), self.observation(now_ms));
+            let _ = self.tracking.claim(id, self.observation(now_ms));
         }
         id
     }
@@ -175,7 +175,7 @@ impl CoordinationState {
     pub fn operator(&self, client_id: u32, now_ms: u64) -> Option<OperatorGrant> {
         self.tracking
             .operator(now_ms)
-            .filter(|g| g.token.client_id() == u64::from(client_id))
+            .filter(|g| g.token.client_id() == client_id)
     }
 
     /// Renew only a still-current grant after a fresh transport round trip.
@@ -206,7 +206,7 @@ impl CoordinationState {
         self.network.ready(now_ms)
             && self
                 .tracking
-                .claim(u64::from(client_id), self.observation(now_ms))
+                .claim(client_id, self.observation(now_ms))
                 .is_ok()
     }
 

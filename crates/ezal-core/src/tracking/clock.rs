@@ -212,7 +212,7 @@ pub fn execution_window(
     let duration = los_unix_ms
         .checked_sub(aos_unix_ms)
         .ok_or(TimingError::Configuration)?;
-    if !(1..=1_800_000).contains(&duration) {
+    if !(1..=u64::from(PlanningWindow::MAX_DURATION_MS)).contains(&duration) {
         return Err(TimingError::Configuration);
     }
     let aos_at_ms = anchor

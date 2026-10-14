@@ -148,7 +148,9 @@ The firmware POSTs the ADS1015 and starts with all direction outputs idle.
 Movement requires explicit dashboard input and current feedback and network
 permission. Real orbital predictions remain advisory.
 
-Complete [CALIBRATION.md](CALIBRATION.md) before commanding a connected rotator.
+Complete [CALIBRATION.md](CALIBRATION.md), including its
+[bench verification](CALIBRATION.md#bench-verification), before commanding a
+connected rotator.
 
 The output lands at:
 
@@ -177,7 +179,7 @@ This is the *one command you'll run most*. It:
 Illustrative logs (timings and the ADC config's conversion-ready bit vary):
 
 ```
-0.000123 INFO  ezal adc-bringup: POSTing ADS1015 at 0x48
+0.000123 INFO  ezal: POSTing ADS1015 at 0x48
 0.002456 INFO  ADS1015 POST OK: config=0xc383, A0=1280 mV, A1=114 mV
 0.003234 INFO  ezal: manual control; outputs idle until operator input
 2.310456 INFO  WiFi associated (secured); waiting for DHCP
@@ -198,23 +200,24 @@ Movement requires fresh, valid calibrated feedback at the final GPIO boundary.
 Initial calibration uses the G-5500 front-panel controls with the Pico's
 direction leads disconnected; see [CALIBRATION.md](CALIBRATION.md).
 
-The output task arms a 500 ms hardware watchdog, serviced every 100 ms while
-idle and aiming for 10 ms while tracking, with earlier policy deadlines taking
-precedence. It continues counting during a
-debugger halt. A timeout resets the output hardware and boot then inhibits
-motion before ADC or network startup. Inspect the fault before clearing that
-state with a board reset, debugger reset, or power cycle. A UF2 or `picotool`
-reboot also goes through the watchdog; boot distinguishes it from a
-firmware-armed timeout. A freshly flashed board starts idle and waits for
-manual input or explicit tracking arming.
+The output task arms the hardware watchdog and services it on the periods the
+[control contract](CONTROL_CONTRACT.md#ordering-and-time) sets. It continues
+counting during a debugger halt. A timeout resets the output hardware and boot
+then inhibits motion before ADC or network startup; the contract's
+[executor-failure row](CONTROL_CONTRACT.md#ownership-and-recovery) says which
+reboots count as a timeout. Inspect the fault before clearing that state with a
+board reset, debugger reset, or power cycle. A freshly flashed board starts
+idle and waits for manual input or explicit tracking arming.
 
 Network supervision retries association and 30-second DHCP attempts with
 exponential backoff capped at 30 seconds. HTTP acceptors are started without
 waiting for the first address, so a late AP or DHCP recovery exposes the
 dashboard without resetting the board. Successful link/address observations
-renew a 300 ms motion permit every 100 ms; the output task expires that permit
-independently if supervision stalls. Manual control does not require Internet access; tracking needs valid cached
-orbital data and a quantified clock.
+renew a short motion permit,
+[`NETWORK_HEALTH_TIMEOUT_MS`](CONTROL_CONTRACT.md#ownership-and-recovery); the
+output task expires that permit independently if supervision stalls. Manual
+control does not require Internet access; tracking needs valid cached orbital
+data and a quantified clock.
 
 ### Build a UF2 for BOOTSEL flashing
 
@@ -262,44 +265,23 @@ straight from the command line.
 ./scripts/test-build-tools.sh
 ```
 
-This is equivalent to `cargo test -p ezal-core` with the right `--target`
-override (since the workspace default target is the Pico's ARM core,
-running tests for the host needs an explicit triple — the script takes it
-from `rustc --print host-tuple`). Host tests cover feedback validation, the
-feedback gate and its travel-aware endpoint band, ownership, the command
-mailbox, and the actuator sequence the firmware itself runs, as well as the
-actual pinned picoserve HTTP upgrade/WebSocket parser with deterministic
-timeouts. Pass prediction tests cover TLE validation, the streamed HTTP
-framing of the element download, forecast coverage, and the `/api/passes`
-JSON. The core's only runtime dependencies are `sgp4` (TLE fields and
-propagation), `libm` and `heapless`; picoserve is test-only, sharing the
-workspace's version pin with the firmware so both exercise one parser.
+- `test-host.sh` runs `cargo test -p ezal-core` for the host tuple
+  (`rustc --print host-tuple`), since the workspace's default target is the
+  Pico's; extra arguments go to `cargo test`.
+- `test-dashboard.sh` exports the production client configuration with Rust,
+  then runs the served JavaScript against a simulated DOM, sockets and timers
+  with Node's built-in runner, without npm packages.
+- `test-build-tools.sh` runs the firmware build script as a host executable
+  with synthetic configuration and substitutes Cargo and picotool to check
+  artifact selection; it never reads local credentials or flashes hardware.
 
-Apart from one sanity test of the installed calibration, the policy tests use
-their own fixture in `crates/ezal-core/tests/common/`, so replacing
-`HARD_CODED_CALIBRATION` with your measurements cannot break them.
-
-The dashboard script first exports the production client configuration with
-Rust, then runs the served JavaScript against simulated DOM, sockets and timers
-using Node's built-in runner. Both tools are in the default and `.#dashboard`
-Nix shells. It checks pointer ownership, release/cancellation, command refresh,
-control takeover, reconnect,
-telemetry expiry, fresh-press recovery, and rendered telemetry without
-installing npm packages. Its forecast tests also render
-`crates/ezal-core/tests/fixtures/passes-report.json`, the exact `/api/passes`
-reply that the Rust tests pin, so a server format change cannot silently
-break the client (set `EZAL_UPDATE_FIXTURES=1` when running the host tests
-to regenerate it after an intended change). Rust tests exercise stuck feedback on both axes,
-progress across short jogs/reversals, directional/speed faults, network health
-expiry, stale tokens and replays, and legal control frames inside fragmented
-WebSocket messages without extending their deadline.
-
-The build-tool script tests the build script as a host executable with synthetic
-configuration, including `.env` parsing and that a failing build never prints a
-credential, then substitutes Cargo and picotool to verify artifact selection.
-It needs Rust, a host linker, Bash, and jq. It never reads local credentials or
-flashes hardware. CI runs it alongside formatting. The workspace's supported
-minimum Rust version matches the tested pin in `rust-toolchain.toml`.
+The tests under `crates/ezal-core/tests/` and the in-crate `tests` modules are
+the inventory; [ARCHITECTURE.md](ARCHITECTURE.md#verification) gives the rule
+for where a new test goes. The JSON fixtures in `crates/ezal-core/tests/fixtures/`
+pin the wire formats that the dashboard tests render; set
+`EZAL_UPDATE_FIXTURES=1` when running the host tests to regenerate them after
+an intended change. The core's only runtime dependencies are `sgp4`, `libm` and
+`heapless`; picoserve is test-only (see `crates/ezal-core/Cargo.toml`).
 
 ### Format and lint
 
@@ -372,10 +354,12 @@ probe-rs gdb --chip RP235x \
 and a debugger is overkill, but breakpoints can save you when you're
 hunting a startup-time issue.
 
-The watchdog remains active during breakpoints once the output task starts;
-the board resets after 500 ms without output service. Disconnect motor power
-for interactive debugging, and expect the next boot to inhibit motion after a
-watchdog timeout. A debugger reset clears that inhibition.
+The watchdog remains active during breakpoints once the output task starts; the
+board resets once
+[`WATCHDOG_TIMEOUT`](CONTROL_CONTRACT.md#ownership-and-recovery) passes without
+output service. Disconnect motor power for interactive debugging, and expect
+the next boot to inhibit motion after a watchdog timeout. A debugger reset
+clears that inhibition.
 
 ## Debugging tips
 
@@ -409,43 +393,6 @@ watchdog timeout. A debugger reset clears that inhibition.
   direction outputs low or still in their reset state, so every switch stays
   off.
 
-### Hardware verification after safety changes
-
-Cross-compilation and host tests cannot verify GPIO reset behavior or motor
-coasting. Start with motor power disconnected and a logic analyzer on the
-direction outputs.
-
-Allow the boot duty countdown to complete before motion checks: unknown prior
-usage requires 15 minutes continuously idle. Confirm both axis countdowns are
-visible and that a command attempted during rest does not run when rest ends.
-Then verify:
-
-1. Holding the CPU at a breakpoint while a direction output is active causes
-   watchdog reset and output removal within the configured 500 ms interval
-   (allow for oscillator tolerance); the next boot stays inhibited. Capture
-   the pin *through* the reset, not only after the reboot: an RP2350 pad
-   isolation latch can hold the last output state until boot claims the pin,
-   which is how long the base pull-downs take to win.
-2. Loss of command refresh removes output at the 750 ms lease deadline. When
-   activation is delayed by the 2-second off interval, a lease with less than
-   500 ms left leaves the relay alone entirely — check that no brief click
-   occurs, and that a refreshed lease then starts the output normally.
-3. Invalid, missing, or stalled ADC feedback inhibits movement;
-   a cancelled read is not retried until reset. A read slower than 150 ms
-   reports `feedback-stale` without latching.
-4. At each measured endpoint, an outward jog is inhibited and an inward jog
-   is permitted. Approaching an endpoint under power, the output is cut
-   before reaching it rather than at the next sample. Check intermediate
-   positions after the change to 2 mV ADC resolution, then measure
-   coast/brake distance with motor power restored.
-5. Flashing a CI UF2 by BOOTSEL boots into normal operation: the boot ROM's
-   own watchdog reboot is not reported as a firmware watchdog fault. The normal
-   unknown-history duty rest still applies.
-6. Duty is charged only while each physical output is active, survives ownership
-   transfer and short pulse gaps, and replenishes only after continuous rest.
-   Exhausting one axis leaves the other usable and clears the exhausted axis's
-   pending request. A power cycle starts a full rest again.
-
 ## Editor setup
 
 `rust-analyzer` works out of the box, but for the firmware crate it
@@ -464,65 +411,3 @@ to `thumbv8m.main-none-eabihf` in `.vscode/settings.json`:
 ```
 
 (Not committed to keep editor preferences out of the repo.)
-
-### Tracking execution load check
-
-T7/T8 software integration and T9 host acceptance do not establish board timing. The
-dashboard now supplies selection and arming. Perform this check with the direction
-leads disconnected and suitable feedback simulation first; use the existing
-commissioning procedure before powered movement. The installed calibration
-still limits azimuth/elevation to 360°/90° until measured replacements are made.
-
-1. Build the release image and inspect RAM and the stack frames:
-
-   ```bash
-   cargo size -p ezal-firmware --release -- -A
-   cargo objdump -p ezal-firmware --release -- -d --demangle
-   ```
-
-   Include `.data`, `.bss` and `.uninit`; Embassy task pools include all eight
-   web acceptors and the planner. The linker reserves at least 192 KiB of free
-   stack capacity. Inspect the tracking poll and plan-publication stack frames
-   after compiler/structure changes, then measure high-water use on the board.
-   The assembly check alone does not bound nested calls plus interrupt use.
-
-2. Select one predicted pass in the dashboard, inspect its feasibility and
-   reception windows, then use Enter Tracking. Confirm selection alone does not
-   move, scheduled preparation starts at the displayed time, and Prepare now
-   evaluates its own schedule before moving. Test full and partial support.
-   Open eight viewers and exercise forecast computation and a TLE download while
-   preparing/following an armed pass. Close/reopen the controller and pause a
-   slow viewer. Confirm the pass continues and only a currently leased controller
-   can cancel it. Confirm manual input cannot interrupt Tracking mode. No viewer
-   read or failed takeover should extend ownership.
-
-3. Record the once-per-minute `tracking timing maxima` diagnostic. It reports
-   output service time, active service gap, planner/recovery step time, complete
-   worker poll time and number of planner steps. Active control must fit the
-   frozen plan's 20 ms maximum interval with headroom; the task aims for 10 ms.
-   Test both full-window and late/partial passes. Measure total planning time:
-   recovery must finish before its fixed two-second launch lead, and a late
-   admission must finish before its five-second entry lead. Longer jobs must
-   hold/fail visibly rather than run an unchecked late trajectory.
-
-   Include a full recorded pass with a long remaining suffix, not only a short
-   acquisition segment. [T9 acceptance](PASS_PREDICTION.md#complete-pass-acceptance-t9)
-   observed 398,964 work units in a successful nominal METOP-B recovery search;
-   a low-throughput worker missed all usable launches. Measure whole-search
-   elapsed time under concurrent load against the two-second lead. If it does
-   not fit, recovery needs optimization or a revised prevalidated schedule before
-   partial-pass operation is commissioned. Record actual recovery duration and
-   pointing error alongside the preview: the host replay's 12.50 s predicted gap
-   became 22.46 s at execution cadence.
-
-4. Suspend background planning alone; GPIO/watchdog service must continue,
-   holding during an unresolved intercept. Delay a normal control step beyond
-   20 ms and check inhibition with `ExecutionDeadline`, including a relay waiting
-   to activate. Delay a recovery launch/control step and check bounded hold/retry.
-   Drop link/address permission and confirm no automatic restart on recovery.
-
-5. Repeat the watchdog fault-injection checks above with tracking active. Only
-   the GPIO task feeds it. Measure actual pad release and the watchdog-fault
-   boot inhibition; a planned 20 ms service interval is not a guarantee of
-   20 ms output release during a whole-executor stall. Save timing, stack and
-   logic-analyzer evidence with the hardware/profile identity before closing T7.

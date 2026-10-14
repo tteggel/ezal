@@ -3,9 +3,9 @@
 use crate::drive::{DriveCommand, MOVEMENT_LEASE_MS, OUTPUT_MIN_ACTIVE_MS};
 use crate::operator::OperatorToken;
 
-/// Bounded round-trip challenges for automatic WebSocket Ping/Pong ownership
-/// heartbeats. Each challenge is single-use and bound to its original grant;
-/// telemetry reads, replayed pongs and expired grants cannot renew ownership.
+/// Bounded, single-use Ping payloads for automatic WebSocket Ping/Pong
+/// ownership heartbeats. Each ping is bound to its original grant; telemetry
+/// reads, replayed pongs and expired grants cannot renew ownership.
 #[derive(Default)]
 pub struct LeaseHeartbeat {
     serial: u64,
@@ -17,11 +17,11 @@ impl LeaseHeartbeat {
     /// Issue a ping payload for the currently leased connection only.
     pub fn issue(&mut self, grant: OperatorToken, now_ms: u64) -> Option<[u8; 8]> {
         self.serial = self.serial.checked_add(1)?;
-        let challenge = CommandToken {
+        let ping = CommandToken {
             token: self.serial,
             expires_ms: now_ms.checked_add(COMMAND_MAX_AGE_MS)?,
         };
-        self.pending[self.slot] = Some((challenge, grant));
+        self.pending[self.slot] = Some((ping, grant));
         self.slot = (self.slot + 1) % self.pending.len();
         Some(self.serial.to_be_bytes())
     }
@@ -34,8 +34,8 @@ impl LeaseHeartbeat {
             .pending
             .iter_mut()
             .find(|slot| slot.is_some_and(|(t, _)| t.token == serial))?;
-        let (challenge, grant) = slot.take()?;
-        (now_ms < challenge.expires_ms).then_some(grant)
+        let (ping, grant) = slot.take()?;
+        (now_ms < ping.expires_ms).then_some(grant)
     }
 }
 
@@ -74,8 +74,8 @@ pub struct MovementRequest {
     pub drive: DriveCommand,
 }
 
-/// One short-lived server challenge. Tokens are strings on the wire because
-/// JavaScript numbers cannot represent every `u64` exactly.
+/// One short-lived server-issued freshness token. Tokens are strings on the
+/// wire because JavaScript numbers cannot represent every `u64` exactly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandToken {
     /// Server-generated session id and serial number, represented as a string

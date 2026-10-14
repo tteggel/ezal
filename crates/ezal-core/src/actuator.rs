@@ -35,7 +35,7 @@ impl ActuatorConfig {
     };
 
     /// Reversal must allow old-direction coast and old feedback to finish before
-    /// establishing the new direction's baseline. No per-pulse blind window is used.
+    /// establishing the new direction's baseline.
     pub const fn is_valid(self) -> bool {
         let Some(reversal_settle_ms) = self
             .travel

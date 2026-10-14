@@ -1,4 +1,4 @@
-//! T7 runs the production coordination/execution path with a separate motor.
+//! The production coordination/execution path, driven with a separate motor.
 use super::*;
 use ezal_core::coordination::CoordinationState;
 use ezal_core::feedback::{FeedbackHealth, FeedbackSnapshot};
@@ -286,18 +286,11 @@ fn only_the_current_lease_can_cancel_and_old_device_commands_cannot_restore_moti
     assert!(!device
         .state
         .accept_command(viewer, CommandEnvelope::INHIBIT, device.now));
-    let run = device.state.tracking().snapshot().run.unwrap();
     device.owner = viewer;
     device.request(1, TrackingAction::Cancel);
     device.apply(device.now);
-    let now = device.now;
-    assert!(!device
-        .state
-        .tracking_operation(now, |runtime, obs| runtime.tracking_command(
-            run,
-            command(now),
-            obs
-        )));
+    device.state.execute_tracking(device.now);
+    assert_eq!(device.state.take_actuator_input(device.now).command, None);
     assert_eq!(
         device.state.tracking().snapshot().phase,
         TrackingPhase::Cancelled

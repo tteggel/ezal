@@ -2,7 +2,7 @@ use crate::position::Pointing;
 use heapless::Vec;
 
 /// Fixed storage bound. A route that needs more refinement is rejected.
-pub const MAX_ROUTE_POINTS: usize = 2_048;
+pub(super) const MAX_ROUTE_POINTS: usize = 2_048;
 
 /// Families searched by the bounded planner, including their azimuth overlaps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

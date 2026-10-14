@@ -30,7 +30,7 @@ use crate::orbit::{
     fresh_epoch, within, GroundStation, LookAngle, Observer, ObserverError, Orbit, Satellite,
     SATELLITES, SATELLITE_COUNT,
 };
-use core::fmt::{self, Write};
+use core::fmt;
 use heapless::Vec;
 
 /// The dashboard lists passes acquired within the next six hours.
@@ -679,15 +679,6 @@ pub struct Report {
 }
 
 impl Report {
-    /// Only a current device-offered row can become a new tracking selection.
-    pub fn offers(&self, event: crate::tracking::PassEvent) -> bool {
-        self.status == Status::Ready
-            && self
-                .passes
-                .iter()
-                .any(|pass| crate::tracking::PassEvent::from_pass(*pass) == event)
-    }
-
     /// Select what may be shown at `now`. A candidate is available when its
     /// elements are fresh for the next window, independently of whether a
     /// forecast is current. Rows are served only when the forecast covers
@@ -756,21 +747,6 @@ impl Report {
     /// Rows served, sorted by acquisition.
     pub fn passes(&self) -> &[Pass] {
         &self.passes
-    }
-
-    /// Serialized length, for a `Content-Length` header.
-    pub fn json_len(&self) -> usize {
-        struct Count(usize);
-        impl Write for Count {
-            fn write_str(&mut self, text: &str) -> fmt::Result {
-                self.0 += text.len();
-                Ok(())
-            }
-        }
-        let mut count = Count(0);
-        // Formatting a report cannot fail; it writes only numbers and constants.
-        let _ = write!(count, "{self}");
-        count.0
     }
 }
 

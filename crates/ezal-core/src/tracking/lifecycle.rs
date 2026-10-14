@@ -45,6 +45,8 @@ pub struct Selection {
 /// One planning job's immutable identity. Only the latest job can publish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanTicket {
+    /// Never reused. Only the derived `PartialEq` compares it, so an older
+    /// job's ticket never matches its replacement.
     serial: u64,
     pass: PassEvent,
     revisions: PlanRevisions,
@@ -120,7 +122,8 @@ impl RecoveryToken {
     }
 }
 
-/// Mode controls command-source admission as well as eventual UI visibility.
+/// Mode controls command-source admission and whether the dashboard offers
+/// manual controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackingMode {
     /// Leased manual commands may be admitted; selection alone does not track.
@@ -207,8 +210,8 @@ pub enum TrackingStop {
     NetworkUnavailable,
     /// Frozen plan data could not be evaluated.
     SourceInvalid,
-    /// Frozen orbital or clock input failed its execution validity checks, including
-    /// timing uncertainty, sample age and a new correction.
+    /// Frozen orbital or clock input failed its execution validity checks;
+    /// [`InputError`] names the check.
     Inputs(InputError),
     /// A physical output fault, independently enforced by the actuator.
     Motion(MotionFault),
@@ -416,7 +419,7 @@ impl<S> TrackingLifecycle<S> {
     }
 
     /// Claim unowned control without taking over a current lease or stopping tracking.
-    pub fn claim(&mut self, client_id: u64, now_ms: u64) -> Result<OperatorGrant, LifecycleError> {
+    pub fn claim(&mut self, client_id: u32, now_ms: u64) -> Result<OperatorGrant, LifecycleError> {
         self.advance(now_ms)?;
         let previous = self.operator.current(now_ms);
         let grant = self
@@ -476,7 +479,7 @@ impl<S> TrackingLifecycle<S> {
 
     fn fail_clock(&mut self, now_ms: u64) {
         if !self.failed {
-            self.stop(TrackingStop::ClockOrCounter, TrackingPhase::Stopped, now_ms);
+            self.stop(TrackingStop::ClockOrCounter, now_ms);
             self.failed = true;
         }
         self.commands.submit(CommandEnvelope::INHIBIT);
@@ -505,7 +508,7 @@ impl<S> TrackingLifecycle<S> {
         Ok(serial)
     }
 
-    fn stop(&mut self, reason: TrackingStop, phase: TrackingPhase, now_ms: u64) {
+    fn stop(&mut self, reason: TrackingStop, now_ms: u64) {
         self.termination = Some(TrackingTermination {
             event: self.selection.map(|s| s.id),
             run: self.run,
@@ -513,7 +516,7 @@ impl<S> TrackingLifecycle<S> {
             at_ms: now_ms,
         });
         self.mode = TrackingMode::Manual;
-        self.phase = phase;
+        self.phase = terminal_phase(reason);
         self.run = None;
         self.recovery = None;
         self.planned_recovery_handled = false;
@@ -572,7 +575,7 @@ impl<S> TrackingLifecycle<S> {
                 self.bump(now_ms)?;
                 let previous_termination = self.termination;
                 let replacing_run = self.mode == TrackingMode::Tracking;
-                self.stop(TrackingStop::Replaced, TrackingPhase::Idle, now_ms);
+                self.stop(TrackingStop::Replaced, now_ms);
                 if !replacing_run {
                     self.termination = previous_termination;
                 }
@@ -616,7 +619,6 @@ impl<S> TrackingLifecycle<S> {
                     } else {
                         TrackingStop::ManualMode
                     },
-                    TrackingPhase::Cancelled,
                     now_ms,
                 );
             }
@@ -677,7 +679,10 @@ impl<S> TrackingLifecycle<S> {
         };
         match reconcile_event(selection.original, forecast) {
             Ok(pass) => {
-                self.selection.as_mut().unwrap().current = Some(pass);
+                self.selection = Some(Selection {
+                    current: Some(pass),
+                    ..selection
+                });
                 if changed || selection.current != Some(pass) || self.ticket.is_none() {
                     self.start_job(now_ms)?;
                 }
@@ -686,7 +691,10 @@ impl<S> TrackingLifecycle<S> {
                 let status = PlanStatus::Blocked(PlanProblem::Event(error));
                 if self.plan_status != status || changed {
                     self.bump(now_ms)?;
-                    self.selection.as_mut().unwrap().current = None;
+                    self.selection = Some(Selection {
+                        current: None,
+                        ..selection
+                    });
                     self.ticket = None;
                     self.plan = None;
                     self.plan_status = status;
@@ -796,11 +804,7 @@ impl<S> TrackingLifecycle<S> {
                 .is_some_and(|deadline| now_ms >= deadline)
         {
             self.bump(now_ms)?;
-            self.stop(
-                TrackingStop::LatePreparation,
-                TrackingPhase::Stopped,
-                now_ms,
-            );
+            self.stop(TrackingStop::LatePreparation, now_ms);
             return Ok(());
         }
         if self.run.is_some() {
@@ -836,22 +840,15 @@ impl<S> TrackingLifecycle<S> {
                     } else {
                         TrackingStop::ReacquisitionTimeout
                     },
-                    TrackingPhase::Stopped,
                     now_ms,
                 );
             } else if now_ms >= los {
                 self.bump(now_ms)?;
-                let complete = self.phase == TrackingPhase::Following;
                 self.stop(
-                    if complete {
+                    if self.phase == TrackingPhase::Following {
                         TrackingStop::LossOfSignal
                     } else {
                         TrackingStop::LatePreparation
-                    },
-                    if complete {
-                        TrackingPhase::Complete
-                    } else {
-                        TrackingPhase::Stopped
                     },
                     now_ms,
                 );
@@ -1003,10 +1000,11 @@ impl<S> TrackingLifecycle<S> {
     }
 
     /// Physical/network/source interruption is independent of operator authority.
+    /// Callers pass fault reasons only, so the run ends `Stopped` (see `terminal_phase`).
     pub fn interrupt(&mut self, reason: TrackingStop, now_ms: u64) -> Result<(), LifecycleError> {
         self.advance(now_ms)?;
         self.bump(now_ms)?;
-        self.stop(reason, TrackingPhase::Stopped, now_ms);
+        self.stop(reason, now_ms);
         Ok(())
     }
 
@@ -1074,6 +1072,18 @@ impl<S> TrackingLifecycle<S> {
     }
 }
 
+/// The phase a stop leaves is a function of its reason: LOS completes the run,
+/// the operator's cancel or switch to Manual cancels it, a replacement selection
+/// returns to Idle, and every other reason is a fault that stops it.
+const fn terminal_phase(reason: TrackingStop) -> TrackingPhase {
+    match reason {
+        TrackingStop::LossOfSignal => TrackingPhase::Complete,
+        TrackingStop::Cancelled | TrackingStop::ManualMode => TrackingPhase::Cancelled,
+        TrackingStop::Replaced => TrackingPhase::Idle,
+        _ => TrackingPhase::Stopped,
+    }
+}
+
 fn fresh(command: CommandEnvelope, now_ms: u64) -> bool {
     command.command == Command::Inhibit
         || (command.valid_until_ms > now_ms && command.valid_until_ms - now_ms <= MOVEMENT_LEASE_MS)
@@ -1101,7 +1111,7 @@ fn has_preparation_time(plan: &TrackingPlan, now_ms: u64) -> bool {
 fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
     let window = plan.window;
     let assessment = &plan.assessment;
-    let allocation = plan.config.tolerance_deg - plan.config.uncertainty_deg;
+    let allocation = plan.config.allocation_deg();
     window.aos_unix_s.is_finite()
         && (window.aos_unix_s - ticket.pass.aos_unix_s as f64).abs() <= 1.0
         && (window.aos_unix_s + f64::from(window.duration_ms) / 1000.0
@@ -1109,7 +1119,7 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
             .abs()
             <= 1.0
         && window.duration_ms > 0
-        && window.duration_ms <= 1_800_000
+        && window.duration_ms <= super::PlanningWindow::MAX_DURATION_MS
         && window
             .aos_at_ms
             .checked_add(u64::from(window.duration_ms))

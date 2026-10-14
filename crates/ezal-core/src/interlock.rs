@@ -49,7 +49,7 @@ pub struct TravelProfile {
 }
 
 impl TravelProfile {
-    /// Existing AC rate assumptions plus the provisional 500 ms coast allowance.
+    /// AC upper rates with margin, plus the provisional coast allowance.
     pub const DEFAULT: Self = Self {
         azimuth: AxisTravel {
             // The G-5500 manual's 58 s per 360° at 60 Hz (6.2°/s), plus margin.

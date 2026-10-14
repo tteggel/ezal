@@ -263,30 +263,30 @@ fn start_proof_rejects_changed_pose_and_hidden_relay_history() {
 
 #[test]
 fn recovery_episode_has_one_deadline_and_old_sources_cannot_resume() {
-    let mut session = TrackingLifecycle::new();
-    let owner = session.claim(1, 2000).unwrap().token;
+    let mut lifecycle = TrackingLifecycle::new();
+    let owner = lifecycle.claim(1, 2000).unwrap().token;
     let pass = PassEvent {
         norad_id: 39260,
         aos_unix_s: 1000,
         los_unix_s: 1090,
     };
-    session
+    lifecycle
         .request(
             TrackingRequest {
                 operator: owner,
                 sequence: 1,
-                expected_revision: session.snapshot().revision,
+                expected_revision: lifecycle.snapshot().revision,
                 action: TrackingAction::Select(pass),
             },
             2000,
         )
         .unwrap();
-    session
+    lifecycle
         .refresh(&[pass], PlanRevisions::default(), 2000)
         .unwrap();
-    session
+    lifecycle
         .publish_plan(
-            session.planning_ticket().unwrap(),
+            lifecycle.planning_ticket().unwrap(),
             Ok(PlanningReport {
                 plan: Some(plan()),
                 closest_attempt: None,
@@ -299,51 +299,51 @@ fn recovery_episode_has_one_deadline_and_old_sources_cannot_resume() {
             2000,
         )
         .unwrap();
-    session
+    lifecycle
         .request(
             TrackingRequest {
                 operator: owner,
                 sequence: 2,
-                expected_revision: session.snapshot().revision,
+                expected_revision: lifecycle.snapshot().revision,
                 action: TrackingAction::Arm,
             },
             2000,
         )
         .unwrap();
-    session.tick(60000).unwrap();
-    let run = session.snapshot().run.unwrap();
-    session.preparation_ready(run, 62000).unwrap();
-    session.tick(AOS).unwrap();
-    session.take_command(AOS);
-    let first = session
+    lifecycle.tick(60000).unwrap();
+    let run = lifecycle.snapshot().run.unwrap();
+    lifecycle.preparation_ready(run, 62000).unwrap();
+    lifecycle.tick(AOS).unwrap();
+    lifecycle.take_command(AOS);
+    let first = lifecycle
         .begin_reacquisition(run, AOS + 1000)
         .unwrap()
         .unwrap();
     assert_eq!(first.deadline_ms(), AOS + 31000);
     assert_eq!(
-        session.begin_reacquisition(run, AOS + 20000).unwrap(),
+        lifecycle.begin_reacquisition(run, AOS + 20000).unwrap(),
         Some(first)
     );
-    assert!(!session.tracking_command(run, CommandEnvelope::INHIBIT, AOS + 20000));
+    assert!(!lifecycle.tracking_command(run, CommandEnvelope::INHIBIT, AOS + 20000));
     assert_eq!(
-        session.take_command(AOS + 20000),
+        lifecycle.take_command(AOS + 20000),
         Some(CommandEnvelope::INHIBIT)
     );
-    assert!(session.finish_reacquisition(first, AOS + 20000).unwrap());
-    let second = session
+    assert!(lifecycle.finish_reacquisition(first, AOS + 20000).unwrap());
+    let second = lifecycle
         .begin_reacquisition(run, AOS + 21000)
         .unwrap()
         .unwrap();
     assert_ne!(first, second);
-    assert!(!session.recovery_command(first, CommandEnvelope::INHIBIT, AOS + 22000));
-    assert!(!session.finish_reacquisition(first, AOS + 22000).unwrap());
-    session.tick(second.deadline_ms()).unwrap();
+    assert!(!lifecycle.recovery_command(first, CommandEnvelope::INHIBIT, AOS + 22000));
+    assert!(!lifecycle.finish_reacquisition(first, AOS + 22000).unwrap());
+    lifecycle.tick(second.deadline_ms()).unwrap();
     assert_eq!(
-        session.snapshot().termination.unwrap().reason,
+        lifecycle.snapshot().termination.unwrap().reason,
         TrackingStop::ReacquisitionTimeout
     );
-    assert_eq!(session.snapshot().mode, TrackingMode::Manual);
-    assert!(!session
+    assert_eq!(lifecycle.snapshot().mode, TrackingMode::Manual);
+    assert!(!lifecycle
         .finish_reacquisition(second, second.deadline_ms())
         .unwrap());
 }
