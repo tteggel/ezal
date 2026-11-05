@@ -66,6 +66,10 @@ for, so the firmware emulates it on a **PIO** state machine (`PIO0`) fed by
 one DMA channel — that's what the `PIO0_IRQ_0` / `DMA_IRQ_0` bindings and the
 `cyw43-pio` dependency are for.
 
+The firmware flashes the onboard LED three times, once per boot, when startup
+completes: the ADS1015 has passed its POST and the board has a WiFi link and
+DHCP address.
+
 ### Pinout reference (for the curious)
 
 | signal          | Pico 2 pin | RP2350 GPIO | notes                        |

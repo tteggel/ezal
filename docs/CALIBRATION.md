@@ -348,8 +348,9 @@ outputs:
    free stack. Inspect the tracking poll and plan-publication frames after
    compiler or structure changes, then measure high-water use on the board;
    the assembly check alone does not bound nested calls plus interrupt use.
-2. Flash a CI UF2 by BOOTSEL. It boots into normal operation, and the boot
-   ROM's own watchdog reboot is not reported as a firmware watchdog fault.
+2. Flash a CI UF2 by BOOTSEL. It boots into normal operation, flashing the
+   onboard LED three times once the network is ready, and the boot ROM's own
+   watchdog reboot is not reported as a firmware watchdog fault.
 3. Let the boot duty countdown finish: unknown prior usage requires 15 minutes
    continuously idle. Both axis countdowns are visible, and a command attempted
    during rest does not run when rest ends. On another boot, with both motors

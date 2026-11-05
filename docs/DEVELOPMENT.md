@@ -253,9 +253,11 @@ explicit lockfile update.
 
 The trade-off versus `cargo run` is that there's no probe attached, so you
 won't see the live defmt log stream — the firmware still emits it over RTT,
-there's just nothing reading it. If you *do* have the Pico 2 attached over
-USB in BOOTSEL mode, `picotool load <file>.uf2` flashes the same image
-straight from the command line.
+there's just nothing reading it. The onboard LED still shows when startup
+completes: it flashes three times where the log prints `network ready`. If you
+*do* have the Pico 2 attached over USB in BOOTSEL mode,
+`picotool load <file>.uf2` flashes the same image straight from the command
+line.
 
 ### Run the host tests
 

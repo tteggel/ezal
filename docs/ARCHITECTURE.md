@@ -102,7 +102,7 @@ integration contract.
 | `drive` | Four direction GPIOs, tracking execution, actuator scheduling and watchdog feeding |
 | `tracking` | Yielding preview/recovery planning and execution timing diagnostics |
 | `watchdog` | Hardware reset configuration and reset-cause detection |
-| `wifi` | Radio initialization, one retry owner, association, DHCP and link observations |
+| `wifi` | Radio initialization, one retry owner, association, DHCP, link observations and the onboard LED |
 | `web`, `ws_receive` | HTTP/WebSocket I/O, bounded message assembly and receive deadlines |
 | `time`, `prediction` | NTP I/O, streamed TLE downloads and cooperative forecast work |
 
@@ -281,6 +281,9 @@ failures and exhausted prompt retries use 1, 2, 4, …, 30 s backoff. DHCP has a
 is local connectivity, not internet reachability. Each observation renews a
 permission that the actuator expires independently; the
 [contract](CONTROL_CONTRACT.md#ownership-and-recovery) gives both periods.
+The first readiness completes startup, since the ADC POST precedes the radio.
+The supervisor marks it by flashing the onboard LED alongside the first permit,
+never ahead of it.
 
 HTTP acceptors are spawned once and survive networking outages. Radio firmware
 initialization precedes supervision; failures involving consumed hardware

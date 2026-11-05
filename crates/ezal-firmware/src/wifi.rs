@@ -7,13 +7,15 @@
 //! `.env`. Initialization runs once; [`supervise`] validates the immutable
 //! credentials once, then owns every retry, DHCP wait, and link/address check.
 //! Motion permission requires both station association and a usable DHCP
-//! address.
+//! address. The radio also drives the onboard LED, which [`supervise`] flashes
+//! when the first ready network completes startup.
 
 use cyw43::aligned_bytes;
 use cyw43::{Control, JoinAuth, JoinError, JoinOptions, NetDriver, PowerManagementMode};
 use cyw43_pio::{PioSpi, RM2_CLOCK_DIVIDER};
 use defmt::{error, info, warn, Format};
 use embassy_executor::Spawner;
+use embassy_futures::join::join;
 use embassy_futures::select::{select3, Either3};
 use embassy_net::{ConfigV4, Stack};
 use embassy_rp::dma::Channel;
@@ -58,6 +60,16 @@ const LEAVE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// A DHCP outage must release the join attempt for another bounded retry.
 const DHCP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The Pico 2 W's onboard LED hangs off the radio's GPIO 0, not an RP2350 pin.
+const LED_GPIO: u8 = 0;
+
+/// On and off time of each startup flash.
+const LED_FLASH: Duration = Duration::from_millis(100);
+
+/// Bound on the whole startup flash, well over its timers. As with leave and
+/// join, a radio that stops answering must not stall supervision.
+const LED_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The CYW43439's long-lived driver task: it owns the PIO/DMA gSPI bus and
 /// pumps the chip's events for the life of the program. Spawned once by
@@ -211,13 +223,30 @@ impl Wifi<'static> {
             .await
             .map_err(|_| AssociationError::LeaveTimeout)
     }
+
+    /// Flash the onboard LED three times. A radio that stops answering
+    /// abandons the flash, possibly leaving the LED lit.
+    async fn flash_led(&mut self) {
+        let flashes = async {
+            for _ in 0..3 {
+                self.control.gpio_set(LED_GPIO, true).await;
+                Timer::after(LED_FLASH).await;
+                self.control.gpio_set(LED_GPIO, false).await;
+                Timer::after(LED_FLASH).await;
+            }
+        };
+        if with_timeout(LED_TIMEOUT, flashes).await.is_err() {
+            warn!("onboard LED flash timed out");
+        }
+    }
 }
 
 /// Maintain station association, DHCP, and the actuator's expiring network
 /// permit for the lifetime of the firmware. HTTP acceptors are already running
 /// when this task starts; late AP/DHCP recovery needs no reboot. This task is
-/// the only writer of network readiness: it grants the permit only inside the
-/// ready loop and revokes it on leaving, so every other path is already offline.
+/// the only writer of network readiness: it grants the permit only while
+/// [`hold_permission`] runs, which revokes it on return, so every other path is
+/// already offline.
 #[embassy_executor::task]
 pub async fn supervise(
     mut wifi: Wifi<'static>,
@@ -237,6 +266,9 @@ pub async fn supervise(
         }
     };
     let mut retries = ConnectionRetries::new();
+    // main starts the radio only after the ADC POST passes, so the first ready
+    // network completes startup.
+    let mut startup_complete = false;
     loop {
         // Clear any cached address BEFORE retrying association. A lease from
         // the previous link must not count as successful DHCP on the new one.
@@ -260,31 +292,16 @@ pub async fn supervise(
                 .is_ok();
                 if configured && network_ready(stack) {
                     retries.connected();
-                    let address = stack.config_v4().map(|config| config.address);
                     info!("network ready; motion permission available");
-                    loop {
-                        if !network_ready(stack)
-                            || stack.config_v4().map(|config| config.address) != address
-                        {
-                            break;
-                        }
-                        state.publish_network(true);
-                        // Event waits cut permission as soon as the stack
-                        // reports a loss. Polling also notices address changes
-                        // and renews the independently enforced 300 ms permit.
-                        match select3(
-                            stack.wait_link_down(),
-                            stack.wait_config_down(),
-                            Timer::after(Duration::from_millis(NETWORK_POLL_MS)),
-                        )
-                        .await
-                        {
-                            Either3::First(()) | Either3::Second(()) => break,
-                            Either3::Third(()) => {}
-                        }
+                    let hold = hold_permission(stack, state);
+                    if startup_complete {
+                        hold.await;
+                    } else {
+                        // Flash while holding the permit, not before it, so the
+                        // LED delays neither permission nor its revocation.
+                        startup_complete = true;
+                        join(hold, wifi.flash_led()).await;
                     }
-                    state.publish_network(false);
-                    warn!("network lost or address changed; motion inhibited");
                 } else {
                     warn!("DHCP unavailable after bounded wait; motion inhibited");
                 }
@@ -314,6 +331,33 @@ pub async fn supervise(
         info!("network retry in {=u64}s", retry_secs);
         Timer::after(Duration::from_secs(retry_secs)).await;
     }
+}
+
+/// Renew the actuator's network permit until the link drops or the address
+/// changes, then revoke it.
+async fn hold_permission(stack: Stack<'_>, state: &SharedState) {
+    let address = stack.config_v4().map(|config| config.address);
+    loop {
+        if !network_ready(stack) || stack.config_v4().map(|config| config.address) != address {
+            break;
+        }
+        state.publish_network(true);
+        // Event waits cut permission as soon as the stack reports a loss.
+        // Polling also notices address changes and renews the independently
+        // enforced 300 ms permit.
+        match select3(
+            stack.wait_link_down(),
+            stack.wait_config_down(),
+            Timer::after(Duration::from_millis(NETWORK_POLL_MS)),
+        )
+        .await
+        {
+            Either3::First(()) | Either3::Second(()) => break,
+            Either3::Third(()) => {}
+        }
+    }
+    state.publish_network(false);
+    warn!("network lost or address changed; motion inhibited");
 }
 
 /// Readiness means a current station link and a usable local IPv4 address.

@@ -102,7 +102,8 @@ async fn main(spawner: Spawner) {
 
     // I²C0 to the ADS1015: GP5 = SCL, GP4 = SDA (the schematic's fixed
     // feedback pins), with 4.7 K pull-ups to 3.3 V on the interface board.
-    // POST before WiFi so feedback diagnostics remain available during retry.
+    // POST before WiFi so feedback diagnostics remain available during retry
+    // and a ready network implies a passed POST.
     // The actuator's network gate keeps every direction low until readiness.
     let i2c = I2c::new_async(p.I2C0, p.PIN_5, p.PIN_4, Irqs, i2c::Config::default());
     let mut adc = Ads1015::new(i2c);
