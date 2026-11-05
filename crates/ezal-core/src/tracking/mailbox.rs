@@ -1,23 +1,6 @@
 //! Pending actuator commands, preserving source deadlines and inhibition.
 
-use crate::drive::Command;
-
-/// A request and the original exclusive expiry assigned at admission.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommandEnvelope {
-    /// Operator jog or immediate safety inhibition.
-    pub command: Command,
-    /// Monotonic source deadline; unused for inhibition.
-    pub valid_until_ms: u64,
-}
-
-impl CommandEnvelope {
-    /// Immediate inhibition has no movement lease.
-    pub const INHIBIT: Self = Self {
-        command: Command::Inhibit,
-        valid_until_ms: 0,
-    };
-}
+use crate::drive::{Command, CommandEnvelope};
 
 /// One pending request; unconsumed inhibition cannot be overwritten.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5,26 +5,16 @@
 # The project is organised as a Cargo *workspace* with two member crates:
 #
 #   crates/ezal-core
-#     Pure, no_std Rust: calibration, tracking simulation, controller,
-#     G5500 drive safety, protocol, and command parsers. This crate
-#     has no hardware dependencies, so it can be unit-tested on the host with
-#     `./scripts/test-host.sh` (the workspace defaults to the embedded target).
+#     Pure, no_std control, prediction and tracking policy; the crate doc in
+#     src/lib.rs lists its modules. This crate has no hardware dependencies,
+#     so it can be unit-tested on the host with `./scripts/test-host.sh` (the
+#     workspace defaults to the embedded target).
 #
 #   crates/ezal-firmware
-#     The embedded application that actually runs on the Raspberry Pi Pico 2
-#     (RP2350). It depends on `ezal-core` and on the `embassy-rp` HAL.
+#     The embedded application for the Raspberry Pi Pico 2 W (RP2350). It
+#     depends on `ezal-core` and on the `embassy-rp` HAL.
 #
-# Separating "logic" from "firmware" is a long-standing best practice in
-# embedded development. Hardware-independent code is easier to reason about,
-# easier to test, and easier to refactor; the firmware crate stays a thin
-# shell that wires up peripherals and pumps data through the logic.
-#
-# This file is the single source of truth for:
-#   * which crates make up the workspace,
-#   * dependency version requirements (under [workspace.dependencies]);
-#     Cargo.lock records the exact resolved versions,
-#   * shared package metadata (license, edition) for both crates,
-#   * compiler profiles for debug and release builds.
+# docs/ARCHITECTURE.md describes the boundary between the two.
 
 [workspace]
 resolver = "2"
@@ -32,23 +22,16 @@ members  = [
     "crates/ezal-core",
     "crates/ezal-firmware",
 ]
-# `default-members` controls which crates are built when you run `cargo build`
-# from the workspace root with no `-p <crate>` flag. We deliberately exclude
-# `ezal-firmware` because it cannot be built for the host: it is `no_std`,
-# `no_main`, and depends on RP2350-specific HALs. To work on firmware, either
-# `cd crates/ezal-firmware` or pass `-p ezal-firmware`.
+# The firmware cannot be built for the host, so a command without `-p` selects
+# only the core.
 default-members = ["crates/ezal-core"]
 
-# Workspace-wide package metadata. Each member crate inherits these with
-# `field.workspace = true` in its own `Cargo.toml`, so we only edit them once.
 [workspace.package]
 edition      = "2021"
 license      = "MIT OR Apache-2.0"
 repository   = "https://github.com/tteggel/ezal"
 authors      = ["ezal contributors"]
 
-# Centralised dependency versions. Both crates refer to these with
-# `<dep>.workspace = true`, which keeps versions in lock-step automatically.
 [workspace.dependencies]
 
 # ── shared, no_std friendly ──────────────────────────────────────────────
@@ -84,12 +67,9 @@ cyw43-pio   = { version = "0.10.0", features = ["defmt"] }
 static_cell = "2.1.1"
 
 # ── Embedded web UI ──────────────────────────────────────────────────────
-# `picoserve` is a small no_std HTTP/WebSocket server designed for Embassy
-# network stacks. It stays in firmware; ezal-core only defines the tiny wire
-# protocol and static UI payload, and borrows the same parser in its tests.
-# The version lives here alone so both members always exercise one picoserve;
-# each adds the features it needs (the firmware's `embassy` runtime cannot be
-# built for the host, so ezal-core's dev-dependency omits it).
+# `picoserve` is a small no_std HTTP/WebSocket server for Embassy network
+# stacks. The firmware serves the dashboard with it; ezal-core's tests borrow
+# its parser. Each member adds only the features it can build.
 picoserve = { version = "0.20.1", default-features = false }
 
 # ────────────────────────────────────────────────────────────────────────

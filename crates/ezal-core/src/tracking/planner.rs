@@ -3,8 +3,8 @@
 
 use super::route::{self, Bridge, Knot, Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
 use super::{
-    pointing_deviation_deg, AdmissionPolicy, FollowingController, MotorProfile, ReceptionCoverage,
-    RestingStart, Simulation, SimulationError, SimulationSettings, TrackingTarget,
+    pointing_deviation_deg, FollowingController, MotorProfile, ReceptionCoverage, RestingStart,
+    Scenario, Simulation, SimulationError, SimulationSettings, TrackingTarget,
 };
 use crate::passes::Ephemeris;
 use crate::position::{Pointing, PositionCalibration};
@@ -19,9 +19,10 @@ pub const MAX_SCENARIOS: usize = 9;
 pub const MAX_GAPS: usize = 16;
 /// Hard work bound, including geometry, preparation probes and pass evaluation.
 pub const MAX_PLANNING_STEPS: u64 = 20_000_000;
-const MAX_PASS_MS: u32 = 1_800_000;
 const MAX_PREPARATION_MS: u64 = 300_000;
 const READY_DWELL_MS: u64 = 2_000;
+/// Numeric allowance added to every sampled pointing bound and sky-rate check.
+pub(super) const DEVIATION_SLACK_DEG: f32 = 0.002;
 
 /// The execution owner supplies the UTC/monotonic mapping; planning never reads
 /// or changes a clock. Source provenance/expiry belongs to that owner.
@@ -31,38 +32,13 @@ pub struct PlanningWindow {
     pub aos_unix_s: f64,
     /// Acquisition in the output owner's monotonic time domain.
     pub aos_at_ms: u64,
-    /// Complete reception duration, at most 30 minutes.
+    /// Complete reception duration, at most [`Self::MAX_DURATION_MS`].
     pub duration_ms: u32,
 }
 
-/// One repeatable uncertainty case. These finite cases do not prove all
-/// intermediate combinations of motor behavior, noise or atmospheric effects.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Scenario {
-    /// Assumed loaded motor response; the follower keeps its own fixed reference.
-    pub motor: MotorProfile,
-    /// Total paired acquisition latency, at most 150 ms.
-    pub latency_ms: u64,
-    /// Delay between capturing A0 and A1, included in that latency.
-    pub channel_skew_ms: u64,
-    /// Azimuth/elevation ADC-code offsets before quantization.
-    pub noise_codes: [i8; 2],
-    /// Alternating offsets exercise code-boundary chatter as well as fixed bias.
-    pub alternate_noise: bool,
-    /// Explicit gear engagement at preparation start, where known/assumed.
-    pub initial_engagement: [Option<bool>; 2],
-}
-
-impl Scenario {
-    /// Nominal AC case, initially engaged in the first requested direction.
-    pub const NOMINAL: Self = Self {
-        motor: MotorProfile::AC_50HZ,
-        latency_ms: 100,
-        channel_skew_ms: 0,
-        noise_codes: [0, 0],
-        alternate_noise: false,
-        initial_engagement: [None, None],
-    };
+impl PlanningWindow {
+    /// Longest reception window planned or executed: 30 minutes.
+    pub const MAX_DURATION_MS: u32 = 1_800_000;
 }
 
 /// Preparation schedule that must be included in the complete simulation.
@@ -78,8 +54,6 @@ pub enum PreparationTiming {
 /// Explicit planning assumptions, frozen with a supported route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanningConfig {
-    /// Complete support is preferred; partial support requires recovery validation.
-    pub admission: AdmissionPolicy,
     /// Starting early needs its own duty/relay evaluation, not a schedule override.
     pub preparation_timing: PreparationTiming,
     /// Total operational pointing target (provisional default 3°).
@@ -109,7 +83,6 @@ impl Default for PlanningConfig {
         let slow = MotorProfile::AC_SLOW;
         let fast = MotorProfile::AC_FAST;
         Self {
-            admission: AdmissionPolicy::AllowPartial,
             preparation_timing: PreparationTiming::Scheduled,
             tolerance_deg: 3.0,
             uncertainty_deg: 1.0,
@@ -188,6 +161,13 @@ impl Default for PlanningConfig {
     }
 }
 
+impl PlanningConfig {
+    /// Pointing error the modeled route may use: the target less reserved uncertainty.
+    pub fn allocation_deg(&self) -> f32 {
+        self.tolerance_deg - self.uncertainty_deg
+    }
+}
+
 /// A failure of the planning job itself, distinct from an unsupported route.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanningError {
@@ -195,8 +175,6 @@ pub enum PlanningError {
     Configuration,
     /// The caller must supply a serviced, settled, fault-free starting snapshot.
     StartingState,
-    /// A complete-only job cannot start after AOS; partial admission was disabled.
-    PassAlreadyStarted,
     /// No future reception remains in the selected original window.
     PassEnded,
     /// Propagation failed or returned a non-finite/out-of-range visible sky direction.
@@ -207,9 +185,7 @@ pub enum PlanningError {
     RouteCapacity,
     /// Search exceeded its hard work bound instead of blocking indefinitely.
     WorkLimit,
-    /// Cancelled work cannot publish or revive an earlier candidate.
-    Cancelled,
-    /// Result requested before all candidates were evaluated.
+    /// No completed result is held: the search is unfinished or its report was already taken.
     Incomplete,
 }
 
@@ -242,7 +218,8 @@ pub enum EvaluationPhase {
 pub struct PlannedGap {
     /// First possibly out-of-budget instant.
     pub start_ms: u32,
-    /// Last possibly out-of-budget instant; LOS if there is no recovery in the window.
+    /// Exclusive end: the first instant back within budget, the last sample of a failed
+    /// evaluation, or LOS.
     pub end_ms: u32,
 }
 
@@ -265,8 +242,6 @@ pub struct Assessment {
     pub bounded_peak_deg: f32,
     /// Worst nominal gap duration, or the admitted partial plan's missed interval.
     pub gap_time_ms: u64,
-    /// Scenario whose diagnostic intervals are retained; partial plans aggregate cases.
-    pub gap_scenario: usize,
     /// Diagnostic gaps, or the validated missed interval for a supported partial plan.
     pub gaps: Vec<PlannedGap, MAX_GAPS>,
     /// Additional gaps existed beyond storage; totals and rejection remain valid.
@@ -296,7 +271,6 @@ impl Assessment {
             sampled_peak_deg: 0.0,
             bounded_peak_deg: 0.0,
             gap_time_ms: 0,
-            gap_scenario: 0,
             gaps: Vec::new(),
             gaps_truncated: false,
             energized_ms: [0, 0],
@@ -327,7 +301,7 @@ impl Assessment {
 }
 
 /// Supported in every supplied scenario for its explicit reception coverage. Keep its
-/// ephemeris/calibration/clock revisions bound externally when freezing a run.
+/// ephemeris and clock revisions bound externally when freezing a run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackingPlan {
     pub(super) reception: ReceptionCoverage,
@@ -433,7 +407,7 @@ impl<E: Ephemeris> Planner<E> {
     ) -> Result<Self, PlanningError> {
         let output = start.actuator.configuration();
         if window.duration_ms == 0
-            || window.duration_ms > MAX_PASS_MS
+            || window.duration_ms > PlanningWindow::MAX_DURATION_MS
             || !window.aos_unix_s.is_finite()
             || window.aos_unix_s.abs() > 1.0e11
             || window
@@ -459,11 +433,8 @@ impl<E: Ephemeris> Planner<E> {
         if start.at_ms >= window.aos_at_ms + u64::from(window.duration_ms) {
             return Err(PlanningError::PassEnded);
         }
-        if window.aos_at_ms < start.at_ms && config.admission == AdmissionPolicy::CompleteOnly {
-            return Err(PlanningError::PassAlreadyStarted);
-        }
         let follower =
-            FollowingController::with_timing(config.reference, config.deadband_deg, output.relays)
+            FollowingController::new(config.reference, config.deadband_deg, output.relays)
                 .map_err(|_| PlanningError::Configuration)?;
         for scenario in &config.scenarios {
             if scenario.motor.azimuth.rate_deg_per_s > output.travel.azimuth.max_speed_deg_per_s
@@ -476,9 +447,11 @@ impl<E: Ephemeris> Planner<E> {
             }
             Simulation::from_rest(
                 calibration,
-                scenario.motor,
                 follower,
-                Self::settings(&config, start, *scenario),
+                SimulationSettings {
+                    step_ms: config.step_ms,
+                    scenario: *scenario,
+                },
                 start,
             )
             .map_err(|error| {
@@ -490,8 +463,7 @@ impl<E: Ephemeris> Planner<E> {
             })?;
         }
         let choice = route::choice(0);
-        let partial_round =
-            start.at_ms >= window.aos_at_ms && config.admission == AdmissionPolicy::AllowPartial;
+        let partial_round = start.at_ms >= window.aos_at_ms;
         Ok(Self {
             source,
             window,
@@ -529,24 +501,6 @@ impl<E: Ephemeris> Planner<E> {
         })
     }
 
-    fn settings(
-        config: &PlanningConfig,
-        start: RestingStart,
-        scenario: Scenario,
-    ) -> SimulationSettings {
-        SimulationSettings {
-            step_ms: config.step_ms,
-            feedback_latency_ms: scenario.latency_ms,
-            channel_skew_ms: scenario.channel_skew_ms,
-            noise_codes: scenario.noise_codes,
-            alternate_noise: scenario.alternate_noise,
-            initial_engagement: scenario.initial_engagement,
-            actuator: start.actuator.configuration(),
-            tolerance_deg: config.tolerance_deg - config.uncertainty_deg,
-            ..SimulationSettings::default()
-        }
-    }
-
     /// True after a terminal error, complete search or validated partial fallback.
     pub fn is_finished(&self) -> bool {
         self.phase == Phase::Complete || self.error.is_some()
@@ -555,26 +509,9 @@ impl<E: Ephemeris> Planner<E> {
     pub const fn source(&self) -> &E {
         &self.source
     }
-    /// Cancelling invalidates all partial and earlier candidate results.
-    pub fn cancel(&mut self) {
-        self.error = Some(PlanningError::Cancelled);
-        self.sim = None;
-        self.partial = None;
-        self.report.plan = None;
-    }
-    /// Consume the completed result; partial work never becomes a supported plan.
-    pub fn into_report(self) -> Result<PlanningReport, PlanningError> {
-        if let Some(error) = self.error {
-            Err(error)
-        } else if self.phase != Phase::Complete {
-            Err(PlanningError::Incomplete)
-        } else {
-            Ok(self.report)
-        }
-    }
-    /// Move out a completed report without moving the large planner workspace.
-    /// Useful for a statically stored embedded worker. A second extraction is
-    /// rejected; partial work is never published as success.
+    /// Move out the completed report without moving the large planner workspace.
+    /// A failed job returns its error, an unfinished or already-taken one
+    /// [`PlanningError::Incomplete`]; partial work is never published as success.
     pub fn take_report(&mut self) -> Result<PlanningReport, PlanningError> {
         if let Some(error) = self.error {
             return Err(error);
@@ -651,7 +588,9 @@ impl<E: Ephemeris> Planner<E> {
             let dt = at_ms - previous.at_ms;
             let previous_sky = Pointing::new(route::wrap(previous.az), previous.el);
             let angle = pointing_deviation_deg(previous_sky, sky).ok_or(PlanningError::Source)?;
-            if angle > self.config.sky_rate_bound_deg_per_s * dt as f32 / 1000.0 + 0.002 {
+            if angle
+                > self.config.sky_rate_bound_deg_per_s * dt as f32 / 1000.0 + DEVIATION_SLACK_DEG
+            {
                 return Err(PlanningError::SkyRateBound);
             }
             if dt > 20 && ((az - previous.az).abs() > 5.0 || angle > 1.0) {
@@ -688,10 +627,7 @@ impl<E: Ephemeris> Planner<E> {
         self.scenario = 0;
         self.route.points.clear();
         if self.candidate == route::CANDIDATES {
-            if self.report.plan.is_none()
-                && !self.partial_round
-                && self.config.admission == AdmissionPolicy::AllowPartial
-            {
+            if self.report.plan.is_none() && !self.partial_round {
                 self.partial_round = true;
                 self.candidate = 0;
             } else {
@@ -741,7 +677,7 @@ impl<E: Ephemeris> Planner<E> {
 
     fn start_simulation(&mut self, probe: bool) -> Result<(), PlanningError> {
         let case = self.config.scenarios[self.scenario];
-        let follower = FollowingController::with_timing(
+        let follower = FollowingController::new(
             self.config.reference,
             self.config.deadband_deg,
             self.start.actuator.configuration().relays,
@@ -749,9 +685,11 @@ impl<E: Ephemeris> Planner<E> {
         .map_err(|_| PlanningError::Configuration)?;
         let mut sim = Simulation::from_rest(
             self.calibration,
-            case.motor,
             follower,
-            Self::settings(&self.config, self.start, case),
+            SimulationSettings {
+                step_ms: self.config.step_ms,
+                scenario: case,
+            },
             self.start,
         )
         .map_err(|_| PlanningError::StartingState)?;
@@ -979,30 +917,14 @@ impl<E: Ephemeris> Planner<E> {
     }
 
     fn observe_error(&mut self, now: u64, error: f32, sky: Pointing) -> Result<(), PlanningError> {
-        let case = self.config.scenarios[self.scenario];
-        let az_rate = case.motor.azimuth.rate_deg_per_s;
-        let el_rate = case.motor.elevation.rate_deg_per_s;
-        let motor_rate = libm::sqrtf(az_rate * az_rate + el_rate * el_rate);
-        let mut bound = error + 0.002;
-        let mut begin = now;
-        if let Some((previous_ms, previous_error, previous_sky)) = self.metrics.previous {
-            let dt = (now - previous_ms) as f32 / 1000.0;
-            if pointing_deviation_deg(previous_sky, sky).ok_or(PlanningError::Source)?
-                > self.config.sky_rate_bound_deg_per_s * dt + 0.002
-            {
-                return Err(PlanningError::SkyRateBound);
-            }
-            // Every instant lies within dt/2 of an endpoint. Mechanical sky
-            // speed <= sqrt(az_rate² + el_rate²), including startup/coast.
-            bound = error.max(previous_error)
-                + (motor_rate + self.config.sky_rate_bound_deg_per_s) * dt / 2.0
-                + 0.002;
-            begin = previous_ms;
-        }
+        let motor = self.config.scenarios[self.scenario].motor;
+        let previous = self.metrics.previous;
+        let bound = intersample_bound(&self.config, motor, previous, now, error, sky)?;
+        let begin = previous.map_or(now, |(previous_ms, ..)| previous_ms);
         self.metrics.peak = self.metrics.peak.max(error);
         self.metrics.bound = self.metrics.bound.max(bound);
         let relative = (now - self.window.aos_at_ms) as u32;
-        if bound > self.config.tolerance_deg - self.config.uncertainty_deg {
+        if bound > self.config.allocation_deg() {
             let cut = (begin - self.window.aos_at_ms) as u32;
             self.partial_cut = Some(self.partial_cut.map_or(cut, |previous| previous.min(cut)));
             self.metrics
@@ -1036,16 +958,13 @@ impl<E: Ephemeris> Planner<E> {
         let summary = self.sim.as_ref().unwrap().summary();
         self.assessment.sampled_peak_deg = self.assessment.sampled_peak_deg.max(self.metrics.peak);
         self.assessment.bounded_peak_deg = self.assessment.bounded_peak_deg.max(self.metrics.bound);
-        if self.assessment.failure.is_none()
-            && self.metrics.bound > self.config.tolerance_deg - self.config.uncertainty_deg
-        {
+        if self.assessment.failure.is_none() && self.metrics.bound > self.config.allocation_deg() {
             self.assessment.failure = Some(CandidateFailure::PointingBudget);
             self.assessment.failure_scenario = Some(self.scenario);
             self.assessment.failure_phase = Some(EvaluationPhase::Following);
         }
         if self.metrics.gap_time > self.assessment.gap_time_ms {
             self.assessment.gap_time_ms = self.metrics.gap_time;
-            self.assessment.gap_scenario = self.scenario;
             self.assessment.gaps = self.metrics.gaps.clone();
             self.assessment.gaps_truncated = self.metrics.truncated;
         }
@@ -1128,4 +1047,31 @@ impl<E: Ephemeris> Planner<E> {
         }
         self.next_candidate();
     }
+}
+
+/// Pointing-error bound over the interval from `previous` to this sample, or of
+/// the sample alone; sky motion beyond the configured rate bound rejects the source.
+pub(super) fn intersample_bound(
+    config: &PlanningConfig,
+    motor: MotorProfile,
+    previous: Option<(u64, f32, Pointing)>,
+    now: u64,
+    error: f32,
+    sky: Pointing,
+) -> Result<f32, PlanningError> {
+    let Some((previous_ms, previous_error, previous_sky)) = previous else {
+        return Ok(error + DEVIATION_SLACK_DEG);
+    };
+    let dt = (now - previous_ms) as f32 / 1000.0;
+    if pointing_deviation_deg(previous_sky, sky).ok_or(PlanningError::Source)?
+        > config.sky_rate_bound_deg_per_s * dt + DEVIATION_SLACK_DEG
+    {
+        return Err(PlanningError::SkyRateBound);
+    }
+    // Every instant lies within dt/2 of an endpoint. Mechanical sky
+    // speed <= sqrt(az² + el²) of the axis rates, including startup/coast.
+    let (az, el) = (motor.azimuth.rate_deg_per_s, motor.elevation.rate_deg_per_s);
+    Ok(error.max(previous_error)
+        + (libm::sqrtf(az * az + el * el) + config.sky_rate_bound_deg_per_s) * dt / 2.0
+        + DEVIATION_SLACK_DEG)
 }

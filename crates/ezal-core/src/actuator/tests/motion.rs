@@ -327,7 +327,7 @@ fn short_same_direction_pulses_cannot_repeatedly_spend_the_direction_noise_allow
             };
             for now_ms in (0..10_000).step_by(100) {
                 // Tiny wrong-way steps stay below each sample's noise tolerance.
-                // Each pulse is shorter than the former startup blind window.
+                // Direction evidence carries across pulses, so the drift accumulates.
                 if actuator.actual().is_active() {
                     let delta = if increasing { -0.04 } else { 0.04 };
                     if azimuth {

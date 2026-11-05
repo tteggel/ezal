@@ -1,14 +1,14 @@
-//! Shared output policy for manual holds and future tracking/preparation pulses.
+//! Shared output policy for manual holds and tracking pulses.
 
 mod common;
 
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput, ActuatorUpdate};
 use ezal_core::drive::{
-    AzimuthDirection, Command, DriveCommand, ElevationDirection, RelayConfig, MOVEMENT_LEASE_MS,
+    AzimuthDirection, Command, CommandEnvelope, DriveCommand, ElevationDirection, RelayConfig,
+    MOVEMENT_LEASE_MS,
 };
 use ezal_core::duty::{DutyConfig, DutyHistory};
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::motion::MotionFault;
 use ezal_core::network::NetworkGate;
 use ezal_core::position::Pointing;
@@ -132,18 +132,56 @@ fn policy() -> ActuatorConfig {
 }
 
 #[test]
+fn startup_override_is_once_only_and_later_exhaustion_still_requires_full_rest() {
+    let config = ActuatorConfig {
+        duty: DutyConfig {
+            energized_ms: 1000,
+            rest_ms: 900_000,
+        },
+        ..ActuatorConfig::DEFAULT
+    };
+    let mut actuator = Actuator::with_config(config, DutyHistory::Unknown);
+    step(&mut actuator, 0, None);
+    step(&mut actuator, 2000, None);
+    assert!(
+        !actuator.override_startup_rest(2001),
+        "must be serviced at the same instant"
+    );
+    assert!(actuator.override_startup_rest(2000));
+    assert_eq!(actuator.actual(), DriveCommand::IDLE);
+    for now in (2000..=3000).step_by(100) {
+        step(&mut actuator, now, Some(Command::Jog(BOTH)));
+        assert!(!actuator.override_startup_rest(now));
+    }
+    let exhausted = actuator.status().duty;
+    assert!(!exhausted.startup_rest_required);
+    assert_eq!(exhausted.azimuth.remaining_ms, 0);
+    assert_eq!(exhausted.elevation.cooldown_ms, 900_000);
+    assert_eq!(actuator.actual(), DriveCommand::IDLE);
+    let almost = step(&mut actuator, 902_999, None);
+    assert_eq!(almost.status.duty.azimuth.cooldown_ms, 1);
+    assert!(!actuator.override_startup_rest(902_999));
+    let rested = step(&mut actuator, 903_000, None);
+    assert_eq!(rested.status.duty.azimuth.remaining_ms, 1000);
+    assert!(!actuator.override_startup_rest(903_000));
+}
+
+#[test]
 fn unknown_boot_requires_full_rest_and_never_replays_a_refused_request() {
     let mut actuator = Actuator::new();
     let boot = step(&mut actuator, 100, Some(Command::Jog(BOTH)));
     assert_eq!(boot.output, DriveCommand::IDLE);
     assert_eq!(boot.status.duty.azimuth.remaining_ms, 0);
     assert_eq!(boot.status.duty.azimuth.cooldown_ms, 900_000);
+    assert!(boot.status.duty.startup_rest_required);
     assert_eq!(actuator.target(), DriveCommand::IDLE);
     let almost = step(&mut actuator, 900_099, Some(Command::Drive(BOTH)));
     assert_eq!(almost.output, DriveCommand::IDLE);
     assert_eq!(almost.status.duty.azimuth.cooldown_ms, 1);
     assert_eq!(almost.next_deadline_ms, Some(900_100));
     let rested = step(&mut actuator, 900_100, None);
+    assert!(!rested.status.duty.startup_rest_required);
+    assert!(!actuator.override_startup_rest(900_100));
     assert_eq!(rested.output, DriveCommand::IDLE);
     assert_eq!(rested.status.duty.azimuth.remaining_ms, 180_000);
     assert_eq!(rested.status.duty.elevation.cooldown_ms, 0);

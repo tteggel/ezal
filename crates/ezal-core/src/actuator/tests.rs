@@ -1,9 +1,8 @@
 //! Physical-policy fixtures use the production step with healthy networking.
 
 use super::{Actuator, ActuatorInput};
-use crate::drive::Command;
+use crate::drive::{Command, CommandEnvelope};
 use crate::interlock::FeedbackInterlock;
-use crate::mailbox::CommandEnvelope;
 use crate::network::NetworkGate;
 
 use crate::test_support as common;

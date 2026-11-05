@@ -2,7 +2,8 @@
 //!
 //! Each axis replenishes its allowance only after a continuous full rest.
 //! Stops, mode/owner changes, short pulse gaps and network recovery cannot reset
-//! accumulated usage. Unknown boot history requires a full rest before movement.
+//! accumulated usage. Unknown boot history requires a full rest unless the
+//! operator explicitly confirms that both motors are already rested at startup.
 
 use crate::drive::DriveCommand;
 
@@ -37,7 +38,8 @@ impl DutyConfig {
 /// Evidence about previously applied motion when creating an actuator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DutyHistory {
-    /// A boot/reset has no trustworthy previous duty record; require rest.
+    /// A boot/reset has no trustworthy previous duty record; require rest unless
+    /// the operator explicitly asserts that both motors are already rested.
     Unknown,
     /// Explicit known accumulated azimuth/elevation energized milliseconds.
     /// `[0, 0]` asserts a rested installation, as in a controlled simulation.
@@ -66,24 +68,14 @@ pub struct AxisDutyStatus {
 /// Coherent per-axis duty telemetry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DutyStatus {
+    /// Unknown startup history, eligible for an explicit rested-motors override.
+    /// Cleared by a full rest or that one-time override; later usage cannot
+    /// restore eligibility.
+    pub startup_rest_required: bool,
     /// Azimuth motor allowance.
     pub azimuth: AxisDutyStatus,
     /// Elevation motor allowance.
     pub elevation: AxisDutyStatus,
-}
-
-impl DutyStatus {
-    /// Before the first output service, boot history is unknown.
-    pub const INITIAL: Self = Self {
-        azimuth: AxisDutyStatus {
-            remaining_ms: 0,
-            cooldown_ms: DutyConfig::DEFAULT.rest_ms,
-        },
-        elevation: AxisDutyStatus {
-            remaining_ms: 0,
-            cooldown_ms: DutyConfig::DEFAULT.rest_ms,
-        },
-    };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +128,7 @@ pub(crate) struct DutyMonitor {
     min_active_ms: u64,
     axes: [AxisDuty; 2],
     observed_ms: Option<u64>,
+    startup_rest_required: bool,
 }
 
 impl DutyMonitor {
@@ -157,6 +150,7 @@ impl DutyMonitor {
             min_active_ms,
             axes: [AxisDuty::new(used[0]), AxisDuty::new(used[1])],
             observed_ms: None,
+            startup_rest_required: matches!(history, DutyHistory::Unknown),
         }
     }
 
@@ -173,6 +167,27 @@ impl DutyMonitor {
         {
             axis.account(energized, elapsed_ms, self.config);
         }
+        if self
+            .axes
+            .iter()
+            .all(|axis| axis.idle_ms >= self.config.rest_ms)
+        {
+            self.startup_rest_required = false;
+        }
+    }
+
+    /// Resolve only unknown startup history at an already serviced instant.
+    /// Preserve elapsed rest and the accounting clock; later consumption cannot
+    /// regain this permission, even after a full cooldown.
+    pub(crate) fn override_startup_rest(&mut self, now_ms: u64) -> bool {
+        if !self.startup_rest_required || self.observed_ms != Some(now_ms) {
+            return false;
+        }
+        self.startup_rest_required = false;
+        for axis in &mut self.axes {
+            axis.used_ms = 0;
+        }
+        true
     }
 
     /// Active outputs may finish their remaining allowance. A new direction
@@ -202,6 +217,9 @@ impl DutyMonitor {
 
     /// Record activation at its actual instant, even before any on-time accrues.
     pub(crate) fn applied(&mut self, output: DriveCommand) {
+        if output.is_active() {
+            self.startup_rest_required = false;
+        }
         for (axis, active) in self
             .axes
             .iter_mut()
@@ -215,6 +233,7 @@ impl DutyMonitor {
 
     pub(crate) const fn status(&self) -> DutyStatus {
         DutyStatus {
+            startup_rest_required: self.startup_rest_required,
             azimuth: self.axes[0].status(self.config, self.min_active_ms),
             elevation: self.axes[1].status(self.config, self.min_active_ms),
         }

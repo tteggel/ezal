@@ -5,7 +5,7 @@ ezal/design/circuit.py
 Schemdraw source for the Raspberry Pi Pico 2 W ↔ Yaesu G-5500
 interface circuit. This is the canonical schematic for the project:
 edit this file when the circuit changes, then re-render to refresh
-`circuit.svg` (and `circuit.png`).
+`circuit.svg`.
 
 Topology
 --------
@@ -25,15 +25,14 @@ feedback down into a range the ADS1015 can sample comfortably.
 
 Rendering
 ---------
-    nix develop            # pins schemdraw + matplotlib; see flake.nix
+    nix develop            # pins schemdraw; see flake.nix
     python3 design/circuit.py
 
-Outputs land beside this file whatever directory you run it from.
-(Outside the devshell: `pip install --user schemdraw matplotlib` first.)
+The output lands beside this file whatever directory you run it from.
+(Outside the devshell: `pip install --user schemdraw` first.)
 
-Produces `circuit.svg` (always) and `circuit.png` (best-effort, needs
-matplotlib). Both files are checked in so GitHub renders the schematic
-without the reader needing a Python environment.
+Produces `circuit.svg`, which is checked in so GitHub renders the
+schematic without the reader needing a Python environment.
 
 Notes
 -----
@@ -80,7 +79,7 @@ from pathlib import Path
 import schemdraw
 import schemdraw.elements as elm
 
-# Renders land beside this file whatever the caller's cwd is.
+# The render lands beside this file whatever the caller's cwd is.
 HERE = Path(__file__).resolve().parent
 
 
@@ -287,7 +286,7 @@ def i2c_bus(d: schemdraw.Drawing, ads_left: dict) -> None:
 
     # Horizontal SDA / SCL bus lines: ADS1015 → Pico label.
     # Labels positioned with explicit .at() coords (and shortened from
-    # "GP4 (SDA)" to "GP4 SDA") so matplotlib's auto-bbox doesn't crop
+    # "GP4 (SDA)" to "GP4 SDA") so schemdraw's auto-bbox doesn't crop
     # them at the canvas's left edge.
     d += elm.Line().endpoints((sda_x - 0.3, sda_y), (X_PICO, sda_y))
     d += elm.Dot(open=True).at((X_PICO, sda_y))
@@ -399,8 +398,8 @@ def title(d: schemdraw.Drawing) -> None:
     ).at((X_DIN / 2, TITLE_Y - 1.4))
 
 
-def build(filename: str | None, backend: str = "svg") -> None:
-    schemdraw.use(backend)
+def build(filename: str) -> None:
+    schemdraw.use("svg")
     with schemdraw.Drawing(file=filename, show=False) as d:
         d.config(unit=1.6, fontsize=10, lw=1.1)
 
@@ -421,14 +420,7 @@ def build(filename: str | None, backend: str = "svg") -> None:
 
 
 def main() -> None:
-    # SVG via the default text-only backend (always works).
-    build(str(HERE / "circuit.svg"), backend="svg")
-
-    # PNG via matplotlib backend (best-effort).
-    try:
-        build(str(HERE / "circuit.png"), backend="matplotlib")
-    except Exception as exc:  # noqa: BLE001
-        print(f"PNG render skipped: {exc}")
+    build(str(HERE / "circuit.svg"))
 
 
 if __name__ == "__main__":

@@ -8,12 +8,6 @@
 //! a bus. The bus transactions live in the firmware crate's `ads1015`
 //! module, which delegates every bit of encoding/decoding here.
 //!
-//! Keeping this half hardware-free is what makes it testable with a plain
-//! `cargo test` on the host — and the bit-twiddling below (field positions,
-//! the self-clearing OS bit, sign-extending a left-justified 12-bit result)
-//! is exactly where an ADC bring-up tends to go wrong, so that is where the
-//! tests earn their keep.
-//!
 //! [ADS1015]: https://www.ti.com/product/ADS1015
 
 /// Feedback ADC range used by both the hardware driver and calibration checks.
@@ -26,9 +20,10 @@ pub const FEEDBACK_FULL_SCALE: FullScale = FullScale::V4_096;
 /// that rail reads far below the ±4.096 V saturation code. Readings within
 /// 100 mV of the nominal rail are not trusted as feedback.
 pub const FEEDBACK_SUPPLY_RAIL_MV: i32 = 3_200;
+const _: () = assert!(FEEDBACK_SUPPLY_RAIL_MV < FEEDBACK_FULL_SCALE.positive_saturation_mv());
 
 /// Conversion codes between zero and positive full scale.
-pub const CODES_PER_FULL_SCALE: i32 = 2048;
+const CODES_PER_FULL_SCALE: i32 = 2048;
 
 /// The four ADS1015 registers, selected by the *pointer* byte that opens
 /// every I²C transaction.
@@ -88,7 +83,7 @@ impl FullScale {
     }
 
     /// Full-scale magnitude in millivolts (the voltage at +2048 codes).
-    pub const fn full_scale_mv(self) -> i32 {
+    const fn full_scale_mv(self) -> i32 {
         match self {
             FullScale::V6_144 => 6144,
             FullScale::V4_096 => 4096,

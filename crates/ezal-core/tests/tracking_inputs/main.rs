@@ -1,27 +1,32 @@
+// A directory binary resolves `mod common;` inside its own directory.
+#[path = "../common/mod.rs"]
+mod common;
+
+use common::{
+    download, full_travel_installed, full_travel_sample, nominal, resting_start,
+    FULL_TRAVEL_CALIBRATION,
+};
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::drive::{AzimuthDirection, Command, DriveCommand};
+use ezal_core::catalog::{Catalog, OrbitalDownload, SourceOrder};
+use ezal_core::drive::{Command, CommandEnvelope};
 use ezal_core::duty::{DutyConfig, DutyHistory};
-use ezal_core::feedback::FeedbackSample;
+use ezal_core::feedback::{FeedbackHealth, FeedbackSample, FeedbackSnapshot};
 use ezal_core::http;
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::network::NetworkGate;
 use ezal_core::ntp::{self, UtcClock};
 use ezal_core::operator::OperatorToken;
 use ezal_core::orbit::{Observer, MAX_TLE_AGE_S};
 use ezal_core::passes::Ephemeris;
-use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
+use ezal_core::position::{AxisCalibration, Pointing};
 use ezal_core::tracking::*;
 use std::sync::OnceLock;
 
-#[path = "common/tracking_recovery.rs"]
+mod execution;
 mod recovery;
 
-#[path = "common/tracking_execution.rs"]
-mod execution;
-
-const TLES: &str = include_str!("fixtures/weather-2026-10-07.tle");
+const TLES: &str = include_str!("../fixtures/weather-2026-10-07.tle");
 const EVENT: PassEvent = PassEvent {
     norad_id: 39260,
     aos_unix_s: 1_791_385_770,
@@ -32,27 +37,9 @@ const AOS: u64 = 122_000;
 const LOS: u64 = 152_000;
 const REVISIONS: PlanRevisions = PlanRevisions {
     orbit: 1,
-    observer: 1,
-    calibration: 1,
-    motion: 1,
     clock: 1,
     start: 1,
 };
-const CAL: PositionCalibration = PositionCalibration {
-    azimuth: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 450.0,
-        voltage_min_mv: 200,
-        voltage_max_mv: 2900,
-    },
-    elevation: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 180.0,
-        voltage_min_mv: 2800,
-        voltage_max_mv: 1000,
-    },
-};
-
 fn sample(utc: u64) -> ntp::TimeSample {
     let mut stamp = [0; 8];
     stamp[..4].copy_from_slice(&((utc / 1000 + 2_208_988_800) as u32).to_be_bytes());
@@ -80,20 +67,8 @@ fn observation(at: u64) -> RuntimeObservation {
         network,
     }
 }
-fn download(body: &str, now: i64) -> CompletedOrbitalDownload {
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    let mut download = OrbitalDownload::new(now);
-    for bytes in response.as_bytes().chunks(17) {
-        download.push(bytes).unwrap();
-    }
-    assert!(download.is_complete());
-    download.finish().unwrap()
-}
-fn catalog() -> OrbitalCatalog {
-    let mut catalog = OrbitalCatalog::new();
+fn catalog() -> Catalog {
+    let mut catalog = Catalog::new();
     assert_eq!(
         catalog
             .commit(download(TLES, (UTC / 1000) as i64), 2000)
@@ -101,12 +76,6 @@ fn catalog() -> OrbitalCatalog {
         7
     );
     catalog
-}
-fn config() -> PlanningConfig {
-    let mut config = PlanningConfig::default();
-    config.scenarios.clear();
-    config.scenarios.push(Scenario::NOMINAL).unwrap();
-    config
 }
 fn action(
     runtime: &mut TrackingRuntime,
@@ -141,7 +110,7 @@ fn selected(event: PassEvent, observation: RuntimeObservation) -> (TrackingRunti
 }
 fn capture(
     runtime: &TrackingRuntime,
-    catalog: &OrbitalCatalog,
+    catalog: &Catalog,
     current: UtcClock,
     aos_utc: u64,
     los_utc: u64,
@@ -152,7 +121,7 @@ fn capture(
         InputSettings::default(),
         current,
         execution_window(current.anchor().unwrap(), aos_utc, los_utc).unwrap(),
-        &config(),
+        &nominal(),
         2000,
     )
 }
@@ -162,54 +131,18 @@ fn report(inputs: &ExecutionInputs) -> PlanningReport {
         .get_or_init(|| {
             let look = inputs.look_at(inputs.window().aos_unix_s).unwrap();
             let pose = Pointing::new(look.azimuth_deg as f32, look.elevation_deg as f32);
-            let installed = InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap();
-            let mut actuator = Actuator::with_config(
-                ActuatorConfig {
-                    duty: DutyConfig::CONFIRMED_AC,
-                    ..ActuatorConfig::DEFAULT
-                },
-                DutyHistory::Known([0, 0]),
-            );
-            let mut network = NetworkGate::new();
-            let mut feedback = None;
-            for at in [0, 2000] {
-                feedback = Some(
-                    FeedbackSample::from_voltages(
-                        installed,
-                        CAL.position_to_feedback(pose).unwrap(),
-                        at,
-                    )
-                    .unwrap(),
-                );
-                let mut interlock = FeedbackInterlock::new(installed);
-                interlock.publish(feedback);
-                network.observe(at, true);
-                actuator.step(
-                    ActuatorInput {
-                        interlock,
-                        network,
-                        command: None,
-                    },
-                    at,
-                );
-            }
             let mut planner = Planner::new(
                 inputs.clone(),
                 inputs.window(),
-                CAL,
-                RestingStart {
-                    at_ms: 2000,
-                    feedback: feedback.unwrap(),
-                    actuator,
-                    network,
-                },
-                config(),
+                FULL_TRAVEL_CALIBRATION,
+                resting_start(FULL_TRAVEL_CALIBRATION, pose, [0, 0]),
+                nominal(),
             )
             .unwrap();
             while !planner.is_finished() {
                 planner.step().unwrap();
             }
-            let report = planner.into_report().unwrap();
+            let report = planner.take_report().unwrap();
             assert!(
                 report.plan.is_some(),
                 "fixture must be feasible: {:?}",
@@ -266,33 +199,79 @@ fn armed() -> (TrackingRuntime, OperatorToken, u64) {
 }
 fn following() -> (TrackingRuntime, RunToken) {
     let (mut runtime, _, prep) = armed();
-    runtime.service(observation(prep)).unwrap();
-    let run = runtime.snapshot().run.unwrap();
-    assert!(runtime
-        .preparation_ready(run, observation(prep + 2000))
-        .unwrap());
-    runtime.service(observation(AOS)).unwrap();
-    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
+    let run = follow(&mut runtime, prep);
     (runtime, run)
 }
-fn command(at: u64) -> CommandEnvelope {
-    CommandEnvelope {
-        command: Command::Drive(DriveCommand {
-            azimuth: Some(AzimuthDirection::Clockwise),
-            elevation: None,
-        }),
-        valid_until_ms: at + 500,
+/// Freeze at `prep`, then run the device's execution turn every control step
+/// for the last four seconds before AOS, with a rested actuator and fresh
+/// feedback at the route's first point. Measured readiness hands over to
+/// Following at AOS; the command generated there stays queued.
+fn follow(runtime: &mut TrackingRuntime, prep: u64) -> RunToken {
+    runtime.service(observation(prep)).unwrap();
+    let run = runtime.snapshot().run.unwrap();
+    let mut device = RestedDevice::new(runtime);
+    let step = runtime.bound_plan().unwrap().plan().config.step_ms as usize;
+    assert!(prep <= AOS - 4000);
+    for at in (AOS - 4000..=AOS).step_by(step) {
+        device.turn(runtime, at);
     }
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
+    run
+}
+/// The device side of a frozen run: a rested actuator of the plan's
+/// configuration that reads fresh feedback at the route's first point.
+struct RestedDevice {
+    actuator: Actuator,
+    pose: Pointing,
+}
+impl RestedDevice {
+    fn new(runtime: &TrackingRuntime) -> Self {
+        let plan = runtime.bound_plan().unwrap().plan();
+        Self {
+            actuator: Actuator::with_config(plan.actuator, DutyHistory::Known([0, 0])),
+            pose: plan.route.pointing_at(0).unwrap(),
+        }
+    }
+    /// One control step at `at`: apply the actuator, drain the mailbox, then
+    /// run the execution turn, leaving its command queued.
+    fn turn(&mut self, runtime: &mut TrackingRuntime, at: u64) {
+        let sample = full_travel_sample(self.pose, at);
+        let mut interlock = FeedbackInterlock::new(full_travel_installed());
+        interlock.publish(Some(sample));
+        let obs = observation(at);
+        self.actuator.step(
+            ActuatorInput {
+                interlock,
+                network: obs.network,
+                command: None,
+            },
+            at,
+        );
+        runtime.take_command(obs);
+        runtime.execution_command(healthy(sample), &self.actuator, obs);
+    }
+}
+fn healthy(sample: FeedbackSample) -> FeedbackSnapshot {
+    FeedbackSnapshot {
+        raw: None,
+        last_valid: Some(sample),
+        health: FeedbackHealth::Healthy,
+    }
+}
+fn is_drive(command: Option<CommandEnvelope>) -> bool {
+    matches!(
+        command,
+        Some(CommandEnvelope {
+            command: Command::Drive(_),
+            ..
+        })
+    )
 }
 
 #[test]
 fn framed_downloads_are_atomic_and_failed_older_or_malformed_updates_retain_metadata() {
     let mut catalog = catalog();
     let before = catalog.snapshot(EVENT.norad_id).unwrap();
-    assert_eq!(
-        before.publication().transport,
-        OrbitalTransport::CelestrakHttp
-    );
     let mut truncated = OrbitalDownload::new((UTC / 1000) as i64);
     truncated
         .push(
@@ -323,7 +302,7 @@ fn framed_downloads_are_atomic_and_failed_older_or_malformed_updates_retain_meta
     );
     assert_eq!(
         catalog.commit(download(TLES, (UTC / 1000) as i64), 1999),
-        Err(InputError::SourceOrder)
+        Err(SourceOrder)
     );
     assert_eq!(
         catalog.snapshot(EVENT.norad_id).unwrap().publication(),
@@ -411,7 +390,7 @@ fn input_snapshot_propagates_fractional_time_and_binds_clock_satellite_and_plan(
         InputSettings::default(),
         clock(UTC),
         inputs.window(),
-        &config(),
+        &nominal(),
         2000,
     );
     assert!(matches!(wrong, Err(InputError::Binding)));
@@ -427,7 +406,7 @@ fn input_snapshot_propagates_fractional_time_and_binds_clock_satellite_and_plan(
         },
         clock(UTC),
         inputs.window(),
-        &config(),
+        &nominal(),
         2000,
     );
     assert!(matches!(wrong, Err(InputError::Observer)));
@@ -488,28 +467,22 @@ fn early_selection_allows_refreshes_but_old_clock_cannot_freeze_hours_later() {
 fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unchanged() {
     let (mut runtime, token, prep) = armed();
     assert!(runtime.release(token, observation(2001)).unwrap());
-    runtime.service(observation(prep)).unwrap();
-    let run = runtime.snapshot().run.unwrap();
+    follow(&mut runtime, prep);
     let anchor = runtime.bound_plan().unwrap().inputs().clock().anchor();
-    runtime
-        .preparation_ready(run, observation(prep + 2000))
-        .unwrap();
-    runtime.service(observation(AOS)).unwrap();
     let pointing = runtime
         .bound_plan()
         .unwrap()
         .inputs()
-        .look_at_uptime(AOS + 100);
-    let mut obs = observation(AOS + 100);
+        .look_at_uptime(AOS + 10);
+    let mut obs = observation(AOS + 10);
     obs.clock
-        .synchronize(AOS + 100, sample(UTC + AOS + 100 - 2000 + 100))
+        .synchronize(AOS + 10, sample(UTC + AOS + 10 - 2000 + 100))
         .unwrap();
     runtime
         .refresh(
             &[EVENT],
             PlanRevisions {
                 orbit: 2,
-                observer: 2,
                 clock: 2,
                 ..REVISIONS
             },
@@ -525,7 +498,7 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
             .bound_plan()
             .unwrap()
             .inputs()
-            .look_at_uptime(AOS + 100),
+            .look_at_uptime(AOS + 10),
         pointing
     );
     assert_eq!(
@@ -533,13 +506,13 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
             .bound_plan()
             .unwrap()
             .inputs()
-            .orbit()
-            .publication()
-            .revision,
+            .ticket()
+            .revisions()
+            .orbit,
         1
     );
-    assert!(runtime.tracking_command(run, command(obs.now_ms), obs));
-    assert_eq!(runtime.take_command(obs), Some(command(obs.now_ms)));
+    assert!(is_drive(runtime.take_command(obs)));
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
     // The network supervisor continues its 100 ms observations while the
     // tracking test jumps to LOS; a gap in that supervision would be an outage.
     obs = RuntimeObservation {
@@ -591,7 +564,7 @@ fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacemen
         InputSettings::default(),
         obs.clock,
         execution_window(obs.clock.anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
-        &config(),
+        &nominal(),
         prep,
     )
     .unwrap();
@@ -614,9 +587,9 @@ fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacemen
 #[test]
 fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
     for correction in [-1000i64, 1000] {
-        let (mut runtime, run) = following();
-        let now = AOS + 100;
-        assert!(runtime.tracking_command(run, command(now), observation(now)));
+        let (mut runtime, _) = following();
+        let mut device = RestedDevice::new(&runtime);
+        let now = AOS + 10;
         let mut obs = observation(now);
         obs.clock
             .synchronize(
@@ -629,7 +602,8 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
             runtime.snapshot().termination.unwrap().reason,
             TrackingStop::Inputs(InputError::Timing(TimingError::Correction))
         );
-        assert!(!runtime.tracking_command(run, command(now + 1), observation(now + 1)));
+        device.turn(&mut runtime, now + 1);
+        assert_eq!(runtime.take_command(observation(now + 1)), None);
         assert_eq!(runtime.snapshot().mode, TrackingMode::Manual);
     }
 }
@@ -637,8 +611,8 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
 #[test]
 fn device_outage_expired_network_observation_and_recovered_generation_stop_the_run() {
     for recovered in [false, true] {
-        let (mut runtime, run) = following();
-        assert!(runtime.tracking_command(run, command(AOS + 1), observation(AOS + 1)));
+        let (mut runtime, _) = following();
+        let mut device = RestedDevice::new(&runtime);
         let mut obs = observation(AOS + 1);
         obs.network.observe(AOS + 2, false);
         if recovered {
@@ -650,7 +624,8 @@ fn device_outage_expired_network_observation_and_recovered_generation_stop_the_r
             runtime.snapshot().termination.unwrap().reason,
             TrackingStop::NetworkUnavailable
         );
-        assert!(!runtime.tracking_command(run, command(AOS + 4), observation(AOS + 4)));
+        device.turn(&mut runtime, AOS + 4);
+        assert_eq!(runtime.take_command(observation(AOS + 4)), None);
     }
     let (mut runtime, _) = following();
     let mut expired = observation(AOS);
@@ -672,7 +647,7 @@ fn device_outage_expired_network_observation_and_recovered_generation_stop_the_r
 
 #[test]
 fn missing_clock_invalid_input_reports_and_reboot_remain_disarmed() {
-    assert!(OrbitalCatalog::new().snapshot(EVENT.norad_id).is_none());
+    assert!(Catalog::new().snapshot(EVENT.norad_id).is_none());
     let mut boot = TrackingRuntime::new();
     boot.service(observation(AOS)).unwrap();
     assert_eq!(boot.snapshot().mode, TrackingMode::Manual);
@@ -708,14 +683,22 @@ fn missing_clock_invalid_input_reports_and_reboot_remain_disarmed() {
 
 #[test]
 fn installation_changes_and_backwards_uptime_inhibit_frozen_work() {
-    let (mut runtime, _) = following();
+    let (mut runtime, run) = following();
+    let frozen = runtime.bound_plan().unwrap().plan().actuator;
+    let mut travel = frozen.travel;
+    travel.azimuth.coast_ms += 100;
+    assert!(travel.is_valid());
+    let installed = Actuator::with_config(
+        ActuatorConfig { travel, ..frozen },
+        DutyHistory::Known([0, 0]),
+    );
+    // Unavailable feedback would stop the run too; the reason shows the
+    // configuration check ran first.
     runtime
-        .refresh(
-            &[EVENT],
-            PlanRevisions {
-                calibration: 2,
-                ..REVISIONS
-            },
+        .observe_tracking(
+            run,
+            FeedbackSnapshot::INITIAL,
+            &installed,
             observation(AOS + 1),
         )
         .unwrap();
@@ -723,17 +706,25 @@ fn installation_changes_and_backwards_uptime_inhibit_frozen_work() {
         runtime.snapshot().termination.unwrap().reason,
         TrackingStop::InstallationChanged
     );
-    let (mut runtime, run) = following();
-    assert!(runtime.tracking_command(run, command(AOS + 100), observation(AOS + 100)));
     assert_eq!(
-        runtime.take_command(observation(AOS + 99)),
+        runtime.take_command(observation(AOS + 1)),
+        Some(CommandEnvelope::INHIBIT)
+    );
+    let (mut runtime, _) = following();
+    let mut device = RestedDevice::new(&runtime);
+    assert_eq!(
+        runtime.take_command(observation(AOS - 1)),
         Some(CommandEnvelope::INHIBIT)
     );
     assert_eq!(
         runtime.snapshot().termination.unwrap().reason,
         TrackingStop::ClockOrCounter
     );
-    assert!(!runtime.tracking_command(run, command(AOS + 200), observation(AOS + 200)));
+    device.turn(&mut runtime, AOS + 20);
+    assert_eq!(
+        runtime.take_command(observation(AOS + 20)),
+        Some(CommandEnvelope::INHIBIT)
+    );
 }
 
 #[test]
@@ -751,7 +742,7 @@ fn clock_that_is_valid_now_but_exceeds_the_los_budget_blocks_preparation() {
         },
         clock(UTC),
         execution_window(clock(UTC).anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
-        &config(),
+        &nominal(),
         2000,
     )
     .unwrap();
@@ -807,16 +798,16 @@ fn runtime_cancel_at_preparation_prevents_a_freeze_and_stale_clock_publications_
         runtime.take_command(observation(prep)),
         Some(CommandEnvelope::INHIBIT)
     );
-    let (mut runtime, run) = following();
-    let mut updated = observation(AOS + 100);
+    let (mut runtime, _) = following();
+    let mut updated = observation(AOS + 10);
     updated
         .clock
-        .synchronize(AOS + 100, sample(UTC + AOS + 100 - 2000))
+        .synchronize(AOS + 10, sample(UTC + AOS + 10 - 2000))
         .unwrap();
     runtime.service(updated).unwrap();
-    assert!(runtime.tracking_command(run, command(AOS + 100), updated));
+    assert!(is_drive(runtime.take_command(updated)));
     assert_eq!(
-        runtime.take_command(observation(AOS + 101)),
+        runtime.take_command(observation(AOS + 11)),
         Some(CommandEnvelope::INHIBIT)
     );
     assert_eq!(

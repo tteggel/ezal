@@ -2,45 +2,23 @@
 # Cargo configuration (workspace-wide)
 # ────────────────────────────────────────────────────────────────────────────
 #
-# Cargo reads this file before any `build`, `run`, `test`, or `check` command
-# executed from anywhere inside this workspace. It pre-configures three
-# things so individual invocations stay short:
-#
-#   1. The default build target is the Pico 2's RP2350.
-#      → `cargo build` cross-compiles for thumbv8m.main-none-eabihf.
-#      → host-side tests for ezal-core need an explicit `--target <host>`
-#        (see scripts/test-host.sh and docs/DEVELOPMENT.md).
-#
-#   2. `cargo run -p ezal-firmware` flashes the firmware via probe-rs and
-#      streams defmt logs back to the terminal in one step.
-#
-#   3. Linker and codegen flags wire in `cortex-m-rt`'s memory layout and
-#      `defmt`'s log-section script.
+# Cargo reads this file for every command run inside the workspace. It makes
+# the RP2350 the default target, makes `cargo run -p ezal-firmware` flash
+# through probe-rs, and passes the linker scripts. docs/DEVELOPMENT.md covers
+# the workflow, including BOOTSEL flashing without a probe.
 
 # ── Default build target ─────────────────────────────────────────────────
-# Why "default target = embedded": the project is primarily an embedded one,
-# so the common case (cargo build / cargo run) targets the chip. The host
-# tests are run via a script that overrides this with `--target <host>`.
+# The project is primarily embedded, so plain `cargo build` / `cargo run`
+# target the chip; scripts/test-host.sh passes `--target <host>` for the host
+# tests.
 [build]
 target = "thumbv8m.main-none-eabihf"
 
 # ── Embedded target settings ─────────────────────────────────────────────
 [target.thumbv8m.main-none-eabihf]
 
-# probe-rs is the modern Swiss-army knife for flashing, debugging, and
-# log streaming from Rust embedded targets. Setting it as the cargo "runner"
-# means `cargo run` will:
-#     1. build the firmware elf,
-#     2. flash it onto the chip via SWD,
-#     3. attach to RTT and stream defmt logs back to stdout,
-#     4. exit when the chip resets or you Ctrl-C.
-#
-# Alternative: with no debug probe, point the runner at the Pico 2's USB
-# bootloader instead — hold BOOTSEL while plugging in, then swap this for
-#     runner = "picotool load -uvx -t elf"
-# (you'll lose live log streaming). For a portable drag-and-drop .uf2 image
-# — no runner, nothing installed on the target machine — build one with
-# ./scripts/build-uf2.sh and copy it onto the "RP2350" drive.
+# `cargo run` builds the ELF, flashes it over SWD, then streams defmt logs
+# over RTT until the chip resets or the command is interrupted.
 runner = "probe-rs run --chip RP235x --protocol swd"
 
 # Linker flags. These are passed to the linker via `-C link-arg=`:
@@ -65,8 +43,7 @@ rustflags = [
 ]
 
 # ── Environment ──────────────────────────────────────────────────────────
-# Default log level for defmt. Override per-module like:
+# Default defmt log level; a per-module filter overrides it, for example
 #     DEFMT_LOG=ezal_firmware=trace,info cargo run -p ezal-firmware
-# to crank up just your module while leaving the rest at INFO.
 [env]
 DEFMT_LOG = "info"

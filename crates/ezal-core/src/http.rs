@@ -12,7 +12,7 @@ use heapless::Vec;
 
 /// Longest header or chunk-size line examined. Longer lines are skipped
 /// unless they carry framing, which must be short.
-pub const MAX_LINE: usize = 256;
+const MAX_LINE: usize = 256;
 /// Header block limit, bounding work before the body.
 pub const MAX_HEADER_BYTES: usize = 16 * 1024;
 /// Body limit, bounding work for a hostile or broken server.

@@ -1,11 +1,7 @@
 //! Host tests for WiFi credentials and the network supervisor's retry schedule.
-//!
-//! These run on the host with a plain `cargo test` (see
-//! `scripts/test-host.sh`). They pin down the boundaries of the 802.11 / WPA
-//! length rules — the empty SSID, the 32-octet SSID, the 8-and-63-octet
-//! passphrase edges, and the "empty password means open network" carve-out —
-//! so a mistyped `.env` is caught here, in seconds, with a clear message
-//! rather than as an opaque `JoinError` from inside the radio driver at boot.
+//! They pin the 802.11 / WPA length boundaries: the empty SSID, the 32-octet
+//! SSID, the 8- and 63-octet passphrase edges, and the empty password that
+//! selects an open network.
 
 use ezal_core::wifi::*;
 
@@ -59,8 +55,6 @@ fn empty_ssid_is_rejected_before_the_password() {
 /// The SSID boundary: 32 octets is the longest allowed; 33 is too long.
 #[test]
 fn ssid_length_boundary_is_32_octets() {
-    assert_eq!(SSID_MAX_LEN, 32);
-
     let ssid_32 = n_chars(32);
     assert_eq!(
         Credentials {
@@ -78,7 +72,7 @@ fn ssid_length_boundary_is_32_octets() {
             password: ""
         }
         .validate(),
-        Err(CredentialError::SsidTooLong { len: 33 })
+        Err(CredentialError::SsidTooLong)
     );
 }
 
@@ -86,21 +80,13 @@ fn ssid_length_boundary_is_32_octets() {
 /// too short and 64 is too long.
 #[test]
 fn password_length_boundaries_are_8_and_63_octets() {
-    assert_eq!((PSK_MIN_LEN, PSK_MAX_LEN), (8, 63));
-
     let ssid = "ground-station";
     let check = |pw: &str| Credentials { ssid, password: pw }.validate();
 
-    assert_eq!(
-        check(&n_chars(7)),
-        Err(CredentialError::PasswordTooShort { len: 7 })
-    );
+    assert_eq!(check(&n_chars(7)), Err(CredentialError::PasswordTooShort));
     assert_eq!(check(&n_chars(8)), Ok(Security::Protected));
     assert_eq!(check(&n_chars(63)), Ok(Security::Protected));
-    assert_eq!(
-        check(&n_chars(64)),
-        Err(CredentialError::PasswordTooLong { len: 64 })
-    );
+    assert_eq!(check(&n_chars(64)), Err(CredentialError::PasswordTooLong));
 }
 
 /// SSID length is counted in octets, not `char`s: a multi-byte SSID that fits
@@ -117,7 +103,7 @@ fn ssid_length_is_measured_in_octets_not_chars() {
             password: ""
         }
         .validate(),
-        Err(CredentialError::SsidTooLong { len: 34 })
+        Err(CredentialError::SsidTooLong)
     );
 }
 
@@ -126,9 +112,9 @@ fn ssid_length_is_measured_in_octets_not_chars() {
 fn every_error_has_a_message() {
     for err in [
         CredentialError::SsidEmpty,
-        CredentialError::SsidTooLong { len: 33 },
-        CredentialError::PasswordTooShort { len: 7 },
-        CredentialError::PasswordTooLong { len: 64 },
+        CredentialError::SsidTooLong,
+        CredentialError::PasswordTooShort,
+        CredentialError::PasswordTooLong,
     ] {
         assert!(!err.message().is_empty());
     }

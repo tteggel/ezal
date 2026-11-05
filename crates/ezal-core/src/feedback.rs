@@ -72,7 +72,7 @@ pub enum FeedbackHealth {
 }
 
 impl FeedbackHealth {
-    /// Stable diagnostic token for logs.
+    /// Stable diagnostic token for logs and the dashboard.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Healthy => "healthy",

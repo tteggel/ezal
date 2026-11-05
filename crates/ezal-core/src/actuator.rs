@@ -5,11 +5,10 @@
 //! is consumed before a pending activation. Firmware supplies time, applies
 //! the resulting GPIO state, and wakes for the returned deadline.
 
-use crate::drive::{ActuatorGuard, Command, DriveCommand, RelayConfig};
+use crate::drive::{ActuatorGuard, Command, CommandEnvelope, DriveCommand, RelayConfig};
 use crate::duty::{DutyConfig, DutyHistory, DutyMonitor, DutyStatus};
 use crate::feedback::FEEDBACK_MAX_AGE_MS;
 use crate::interlock::{FeedbackInterlock, TravelProfile};
-use crate::mailbox::CommandEnvelope;
 use crate::motion::{MotionConfig, MotionFault, MotionMonitor};
 use crate::network::NetworkGate;
 
@@ -36,7 +35,7 @@ impl ActuatorConfig {
     };
 
     /// Reversal must allow old-direction coast and old feedback to finish before
-    /// establishing the new direction's baseline. No per-pulse blind window is used.
+    /// establishing the new direction's baseline.
     pub const fn is_valid(self) -> bool {
         let Some(reversal_settle_ms) = self
             .travel
@@ -97,7 +96,8 @@ pub struct Actuator {
 }
 
 impl Actuator {
-    /// Boot idle with unknown prior motor duty; a full rest is required.
+    /// Boot idle with unknown prior motor duty; require rest unless the operator
+    /// explicitly asserts that both motors are already rested.
     pub const fn new() -> Self {
         Self::with_config(ActuatorConfig::DEFAULT, DutyHistory::Unknown)
     }
@@ -108,7 +108,7 @@ impl Actuator {
         Self {
             config,
             configuration_valid: config.is_valid() && history.is_valid(config.duty),
-            guard: ActuatorGuard::with_timing(config.relays),
+            guard: ActuatorGuard::new(config.relays),
             motion: MotionMonitor::new(config.motion, config.travel),
             duty: DutyMonitor::new(config.duty, history, config.relays.min_active_ms),
             network_generation: 0,
@@ -191,9 +191,9 @@ impl Actuator {
         }
     }
 
-    /// Physical deadlines, combined with operating permission by `step`.
+    /// Physical deadlines, combined with operating permission by `step`. The
+    /// interlock is the one `step` bound to this actuator's travel profile.
     fn next_deadline_ms(&self, interlock: &FeedbackInterlock, now_ms: u64) -> Option<u64> {
-        let interlock = interlock.with_travel_profile(self.config.travel);
         let transition = self.guard.next_transition_ms(now_ms);
         let feedback = interlock.deadline_ms(self.guard.actual(), now_ms);
         let duty = if self.fault().is_none() {
@@ -243,6 +243,17 @@ impl Actuator {
     /// Settings copied into a plan; replacing them during a run requires replanning.
     pub const fn configuration(&self) -> ActuatorConfig {
         self.config
+    }
+
+    /// Explicit operator assertion that both motors were already rested at boot.
+    /// Call after service at `now_ms`, while no output or pending movement exists.
+    /// This one-time action cannot reset consumed duty, relay timing or faults.
+    /// The coordination owner validates the operator lease and request freshness.
+    pub fn override_startup_rest(&mut self, now_ms: u64) -> bool {
+        if self.fault().is_some() || self.actual().is_active() || self.target().is_active() {
+            return false;
+        }
+        self.duty.override_startup_rest(now_ms)
     }
 
     /// Require a serviced, inhibited, physically settled starting snapshot.

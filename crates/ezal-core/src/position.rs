@@ -230,18 +230,6 @@ impl PositionCalibration {
         Ok(())
     }
 
-    /// Check single-ended ADC and supply rails before applying calibrated
-    /// endpoint clamping. Pure mathematical conversions remain available
-    /// through [`Self::feedback_to_position`]; hardware supervision uses this.
-    pub fn feedback_to_position_for_adc(
-        self,
-        feedback: FeedbackVoltages,
-        full_scale: FullScale,
-    ) -> Result<Pointing, CalibrationError> {
-        validate_adc_readings(feedback, full_scale)?;
-        InstalledCalibration::new(self, full_scale)?.convert(feedback)
-    }
-
     /// Convert a position into the voltages the installed feedback chain
     /// should produce. Used by calibration diagnostics and round-trip tests.
     pub fn position_to_feedback(
@@ -294,10 +282,6 @@ impl InstalledCalibration {
         feedback: FeedbackVoltages,
     ) -> Result<Pointing, CalibrationError> {
         validate_adc_readings(feedback, self.full_scale)?;
-        self.convert(feedback)
-    }
-
-    fn convert(self, feedback: FeedbackVoltages) -> Result<Pointing, CalibrationError> {
         Ok(Pointing {
             azimuth_deg: self.azimuth.voltage_to_angle(feedback.a1_azimuth_mv)?,
             elevation_deg: self.elevation.voltage_to_angle(feedback.a0_elevation_mv)?,

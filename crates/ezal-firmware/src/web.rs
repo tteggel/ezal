@@ -19,20 +19,16 @@ use picoserve::response::{Content, Response};
 use picoserve::routing::{get, PathRouter};
 
 use ezal_core::dashboard::{ClientConfig, CONFIG_PATH, INDEX_HTML};
-use ezal_core::drive::Command;
-use ezal_core::mailbox::CommandEnvelope;
+use ezal_core::drive::{Command, CommandEnvelope};
 use ezal_core::passes::Report;
 use ezal_core::protocol::{
     ClientMessage, TelemetryMessage, CONTROL_STATUS_CAPACITY, INPUT_REQUIRED_MESSAGE,
-    TELEMETRY_CAPACITY, TRACKING_REPLY_CAPACITY, WS_PATH,
+    STARTUP_REST_REPLY_CAPACITY, TELEMETRY_CAPACITY, TRACKING_REPLY_CAPACITY, WS_PATH,
 };
 use ezal_core::session::{CommandFreshness, LeaseHeartbeat, TELEMETRY_PERIOD_MS};
 
 use crate::state::{SharedState, STATE};
-
-#[path = "ws_receive.rs"]
-mod ws_receive;
-use ws_receive::{ReceiveError, ReceiveEvent};
+use crate::ws_receive::{self, ReceiveError, ReceiveEvent};
 
 /// picoserve server configuration.
 ///
@@ -129,7 +125,7 @@ impl Content for ForecastJson<'_> {
     }
 
     fn content_length(&self) -> usize {
-        self.0.borrow().as_ref().map_or(0, Report::json_len)
+        format_args!("{self}").content_length()
     }
 
     async fn write_content<W: PicoserveWrite>(self, mut writer: W) -> Result<(), W::Error> {
@@ -353,6 +349,19 @@ impl DashboardSocket {
                             // Release the executor before formatting or waiting on a reader.
                             yield_now().await;
                             let mut payload: String<TRACKING_REPLY_CAPACITY> = String::new();
+                            reply
+                                .write_json(&mut payload)
+                                .map_err(|_| SocketError::Encoding)?;
+                            tx.send_text(&payload).await?;
+                            true
+                        }
+                        Some(ClientMessage::StartupRest(intent)) => {
+                            let reply = state.request_startup_rest(client_id, intent, &freshness);
+                            // Old presses/holds cannot use the restored allowance.
+                            // The user must observe its application and press again.
+                            freshness.reject();
+                            yield_now().await;
+                            let mut payload: String<STARTUP_REST_REPLY_CAPACITY> = String::new();
                             reply
                                 .write_json(&mut payload)
                                 .map_err(|_| SocketError::Encoding)?;

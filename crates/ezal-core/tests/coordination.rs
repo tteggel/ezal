@@ -1,6 +1,5 @@
 use ezal_core::coordination::CoordinationState;
-use ezal_core::drive::{AzimuthDirection, Command, DriveCommand};
-use ezal_core::mailbox::CommandEnvelope;
+use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
 use ezal_core::operator::{OperatorGrant, OPERATOR_LEASE_MS};
 
 const MOVE: CommandEnvelope = CommandEnvelope {

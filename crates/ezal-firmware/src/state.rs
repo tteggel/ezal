@@ -9,16 +9,18 @@ use core::cell::RefCell;
 use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
 use embassy_sync::signal::Signal;
 use embassy_time::Instant;
-use ezal_core::actuator::{Actuator, ActuatorInput};
+use ezal_core::actuator::{Actuator, ActuatorUpdate};
 use ezal_core::coordination::{ControlStatus, CoordinationState, TelemetrySnapshot};
+use ezal_core::drive::CommandEnvelope;
 use ezal_core::feedback::FeedbackSnapshot;
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::network::NetworkGate;
 use ezal_core::ntp::UtcClock;
 use ezal_core::operator::{OperatorGrant, OperatorToken};
 use ezal_core::position::FeedbackVoltages;
-use ezal_core::protocol::{TrackingIntent, TrackingReply, TrackingTelemetry};
+use ezal_core::protocol::{
+    StartupRestIntent, StartupRestReply, TrackingIntent, TrackingReply, TrackingTelemetry,
+};
 use ezal_core::session::CommandFreshness;
 
 pub static STATE: SharedState = SharedState::new();
@@ -106,7 +108,7 @@ impl SharedState {
                 intent,
                 freshness,
                 Instant::now().as_millis(),
-                |pass| crate::prediction::report().offers(pass),
+                |pass| pass.offered_by(&crate::prediction::report()),
             )
         });
         self.changed.signal(());
@@ -116,6 +118,19 @@ impl SharedState {
     pub fn control_status(&self, client_id: u32) -> ControlStatus {
         self.telemetry(client_id, Instant::now().as_millis())
             .control
+    }
+
+    pub fn request_startup_rest(
+        &self,
+        client_id: u32,
+        intent: StartupRestIntent,
+        freshness: &CommandFreshness,
+    ) -> StartupRestReply {
+        let reply = self.with(|state| {
+            state.request_startup_rest(client_id, intent, freshness, Instant::now().as_millis())
+        });
+        self.changed.signal(());
+        reply
     }
 
     pub fn take_control(&self, client_id: u32) {
@@ -163,8 +178,8 @@ impl SharedState {
         self.changed.signal(());
     }
 
-    pub fn take_actuator_input(&self, now_ms: u64) -> ActuatorInput {
-        self.with(|state| state.take_actuator_input(now_ms))
+    pub fn service_actuator(&self, actuator: &mut Actuator, now_ms: u64) -> ActuatorUpdate {
+        self.with(|state| state.service_actuator(actuator, now_ms))
     }
 
     pub async fn wait_changed(&self) {

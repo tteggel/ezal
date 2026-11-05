@@ -5,13 +5,12 @@ mod common;
 use common::{installed, sample, TEST_CALIBRATION};
 use ezal_core::actuator::ActuatorInput;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::drive::{AzimuthDirection, Command, DriveCommand};
+use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
 use ezal_core::feedback::{
     AcquisitionState, FeedbackHealth, FeedbackMonitor, FeedbackReadError, FeedbackSample,
     FEEDBACK_MAX_AGE_MS, FEEDBACK_MAX_LATENCY_MS, FEEDBACK_PERIOD_MS,
 };
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::network::NetworkGate;
 use ezal_core::position::{CalibrationError, FeedbackVoltages, Pointing};
 

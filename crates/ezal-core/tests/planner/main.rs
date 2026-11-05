@@ -1,91 +1,29 @@
-use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
+// A directory binary resolves `mod common;` inside its own directory.
+#[path = "../common/mod.rs"]
+mod common;
+
+use common::{
+    full_travel_installed, full_travel_sample, nominal, resting_start, FULL_TRAVEL_CALIBRATION,
+};
+use ezal_core::actuator::ActuatorInput;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, RelayConfig, MOVEMENT_LEASE_MS};
-use ezal_core::duty::{DutyConfig, DutyHistory};
+use ezal_core::drive::{
+    AzimuthDirection, Command, CommandEnvelope, DriveCommand, RelayConfig, MOVEMENT_LEASE_MS,
+};
 use ezal_core::feedback::FeedbackSample;
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandEnvelope;
-use ezal_core::network::NetworkGate;
 use ezal_core::orbit::LookAngle;
 use ezal_core::passes::Ephemeris;
-use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
+use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing};
 use ezal_core::tracking::{
-    AdmissionPolicy, CandidateFailure, FollowingController, MotorProfile, Planner, PlanningConfig,
-    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, RestingStart, RouteKind,
-    Scenario, Simulation, SimulationError, SimulationSettings, MAX_PLANNING_STEPS,
+    CandidateFailure, FollowingController, MotorProfile, Planner, PlanningConfig, PlanningError,
+    PlanningReport, PlanningWindow, PreparationTiming, RestingStart, RouteKind, Scenario,
+    Simulation, SimulationError, SimulationSettings, MAX_PLANNING_STEPS, PARTIAL_ADMISSION_LEAD_MS,
 };
 use std::cell::Cell;
 
-#[path = "common/tracking_partial.rs"]
-mod partial;
-
-#[path = "common/tracking_plan_acceptance.rs"]
 mod acceptance;
-
-const CAL: PositionCalibration = PositionCalibration {
-    azimuth: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 450.0,
-        voltage_min_mv: 200,
-        voltage_max_mv: 2900,
-    },
-    elevation: AxisCalibration {
-        angle_min_deg: 0.0,
-        angle_max_deg: 180.0,
-        voltage_min_mv: 2800,
-        voltage_max_mv: 1000,
-    },
-};
-
-fn snapshot(cal: PositionCalibration, pose: Pointing, used: [u64; 2]) -> RestingStart {
-    let installed = InstalledCalibration::new(cal, FEEDBACK_FULL_SCALE).unwrap();
-    let mut actuator = Actuator::with_config(
-        ActuatorConfig {
-            duty: DutyConfig::CONFIRMED_AC,
-            ..ActuatorConfig::DEFAULT
-        },
-        DutyHistory::Known(used),
-    );
-    let mut network = NetworkGate::new();
-    let mut feedback = None;
-    for at_ms in [0, 2000] {
-        feedback = Some(
-            FeedbackSample::from_voltages(
-                installed,
-                cal.position_to_feedback(pose).unwrap(),
-                at_ms,
-            )
-            .unwrap(),
-        );
-        let mut interlock = FeedbackInterlock::new(installed);
-        interlock.publish(feedback);
-        network.observe(at_ms, true);
-        actuator.step(
-            ActuatorInput {
-                interlock,
-                network,
-                command: None,
-            },
-            at_ms,
-        );
-    }
-    RestingStart {
-        at_ms: 2000,
-        feedback: feedback.unwrap(),
-        actuator,
-        network,
-    }
-}
-
-fn nominal() -> PlanningConfig {
-    let mut config = PlanningConfig {
-        admission: AdmissionPolicy::CompleteOnly,
-        ..PlanningConfig::default()
-    };
-    config.scenarios.clear();
-    config.scenarios.push(Scenario::NOMINAL).unwrap();
-    config
-}
+mod partial;
 
 fn window(duration_ms: u32) -> PlanningWindow {
     PlanningWindow {
@@ -99,7 +37,7 @@ fn run<E: Ephemeris>(mut planner: Planner<E>) -> PlanningReport {
     while !planner.is_finished() {
         planner.step().unwrap();
     }
-    let report = planner.into_report().unwrap();
+    let report = planner.take_report().unwrap();
     assert!(report.work_steps <= MAX_PLANNING_STEPS);
     assert!((1..=48).contains(&(report.evaluated_candidates + report.geometry_rejections)));
     report
@@ -115,11 +53,11 @@ fn zenith(time_s: f64) -> Option<LookAngle> {
 
 #[test]
 fn over_top_crosses_zenith_without_a_keyhole_in_all_default_scenarios() {
-    let start = snapshot(CAL, Pointing::new(180.0, 10.0), [0, 0]);
+    let start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 10.0), [0, 0]);
     let report = run(Planner::new(
         zenith,
         window(600_000),
-        CAL,
+        FULL_TRAVEL_CALIBRATION,
         start,
         PlanningConfig::default(),
     )
@@ -141,7 +79,7 @@ fn over_top_crosses_zenith_without_a_keyhole_in_all_default_scenarios() {
     let mut previous = plan.route.pointing_at(0).unwrap();
     for time in (20..=600_000).step_by(20) {
         let position = plan.route.pointing_at(time).unwrap();
-        assert!(position.is_valid_for(CAL));
+        assert!(position.is_valid_for(FULL_TRAVEL_CALIBRATION));
         assert!((position.azimuth_deg - previous.azimuth_deg).abs() < 0.1);
         assert!((position.elevation_deg - previous.elevation_deg).abs() < 0.1);
         previous = position;
@@ -158,13 +96,13 @@ fn over_top_crosses_zenith_without_a_keyhole_in_all_default_scenarios() {
 
 #[test]
 fn conventional_only_travel_reports_keyhole_gaps_instead_of_a_plan() {
-    let mut cal = CAL;
+    let mut cal = FULL_TRAVEL_CALIBRATION;
     cal.elevation.angle_max_deg = 90.0;
     let report = run(Planner::new(
         zenith,
         window(600_000),
         cal,
-        snapshot(cal, Pointing::new(180.0, 10.0), [0, 0]),
+        resting_start(cal, Pointing::new(180.0, 10.0), [0, 0]),
         nominal(),
     )
     .unwrap());
@@ -194,8 +132,8 @@ fn azimuth_wrap_is_a_continuous_overlap_and_each_step_has_at_most_one_propagatio
     let mut planner = Planner::new(
         source,
         window(120_000),
-        CAL,
-        snapshot(CAL, Pointing::new(350.0, 30.0), [0, 0]),
+        FULL_TRAVEL_CALIBRATION,
+        resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(350.0, 30.0), [0, 0]),
         nominal(),
     )
     .unwrap();
@@ -204,7 +142,7 @@ fn azimuth_wrap_is_a_continuous_overlap_and_each_step_has_at_most_one_propagatio
         planner.step().unwrap();
         assert!(calls.get() - before <= 1);
     }
-    let report = planner.into_report().unwrap();
+    let report = planner.take_report().unwrap();
     let plan = report
         .plan
         .unwrap_or_else(|| panic!("{:?}", report.closest_attempt));
@@ -222,13 +160,13 @@ fn preparation_time_and_duty_include_the_slew_and_do_not_reset_at_aos() {
             elevation_deg: 60.0,
         })
     };
-    let mut cal = CAL;
+    let mut cal = FULL_TRAVEL_CALIBRATION;
     cal.elevation.angle_max_deg = 90.0;
     let report = run(Planner::new(
         source,
         window(10_000),
         cal,
-        snapshot(cal, Pointing::new(100.0, 10.0), [20_000, 20_000]),
+        resting_start(cal, Pointing::new(100.0, 10.0), [20_000, 20_000]),
         nominal(),
     )
     .unwrap());
@@ -247,7 +185,7 @@ fn preparation_time_and_duty_include_the_slew_and_do_not_reset_at_aos() {
         source,
         window(10_000),
         cal,
-        snapshot(cal, Pointing::new(100.0, 10.0), [295_000, 295_000]),
+        resting_start(cal, Pointing::new(100.0, 10.0), [295_000, 295_000]),
         nominal(),
     )
     .unwrap());
@@ -266,20 +204,21 @@ fn insufficient_lead_time_and_already_started_passes_cannot_claim_full_support()
             elevation_deg: 60.0,
         })
     };
-    let start = snapshot(CAL, Pointing::new(100.0, 10.0), [0, 0]);
+    let start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(100.0, 10.0), [0, 0]);
     let mut time = window(10_000);
-    time.aos_at_ms = 2500;
-    let report = run(Planner::new(source, time, CAL, start, nominal()).unwrap());
-    assert!(report.plan.is_none());
-    assert_eq!(
-        report.closest_attempt.unwrap().failure,
-        Some(CandidateFailure::LatePreparation)
-    );
-    time.aos_at_ms = 1999;
-    assert!(matches!(
-        Planner::new(source, time, CAL, start, nominal()),
-        Err(PlanningError::PassAlreadyStarted)
-    ));
+    for aos_at_ms in [2500, 1999] {
+        time.aos_at_ms = aos_at_ms;
+        let report =
+            run(Planner::new(source, time, FULL_TRAVEL_CALIBRATION, start, nominal()).unwrap());
+        assert!(report.plan.is_none());
+        // Only a late intercept at the fixed entry remains, and none reaches the target.
+        let attempt = report.closest_attempt.unwrap();
+        assert_eq!(
+            attempt.prepare_at_ms,
+            start.at_ms + PARTIAL_ADMISSION_LEAD_MS
+        );
+        assert_eq!(attempt.failure, Some(CandidateFailure::NoRecovery));
+    }
 }
 
 #[test]
@@ -296,8 +235,12 @@ fn future_wait_replenishes_partial_duty_before_preparation_without_simulating_ho
         let report = run(Planner::new(
             source,
             time,
-            CAL,
-            snapshot(CAL, Pointing::new(100.0, 10.0), [295_000, 295_000]),
+            FULL_TRAVEL_CALIBRATION,
+            resting_start(
+                FULL_TRAVEL_CALIBRATION,
+                Pointing::new(100.0, 10.0),
+                [295_000, 295_000],
+            ),
             nominal(),
         )
         .unwrap());
@@ -308,16 +251,15 @@ fn future_wait_replenishes_partial_duty_before_preparation_without_simulating_ho
 
 #[test]
 fn recorded_pass_includes_real_sky_error_and_reports_noisy_preparation_failure() {
-    use ezal_core::orbit::{Catalog, GroundStation, Observer};
+    use ezal_core::orbit::{GroundStation, Observer, Update};
     use ezal_core::passes::Track;
     use ezal_core::tracking::EvaluationPhase;
-    let mut catalog = Catalog::new();
-    catalog.update(
-        include_str!("fixtures/weather-2026-10-07.tle"),
-        1_791_385_200,
-    );
-    let orbit = catalog
-        .orbits()
+    let mut update = Update::new(1_791_385_200);
+    update.push(include_str!("../fixtures/weather-2026-10-07.tle").as_bytes());
+    let orbits = update.finish();
+    let orbit = orbits
+        .iter()
+        .flatten()
         .find(|orbit| orbit.satellite.norad_id == 39260)
         .unwrap();
     let station = GroundStation::new(Observer::CLEVEDON).unwrap();
@@ -326,14 +268,14 @@ fn recorded_pass_includes_real_sky_error_and_reports_noisy_preparation_failure()
         duration_ms: 777_000,
         ..window(1)
     };
-    let start = snapshot(CAL, Pointing::new(180.0, 10.0), [0, 0]);
+    let start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 10.0), [0, 0]);
     let quiet = run(Planner::new(
         Track {
             orbit,
             station: &station,
         },
         time,
-        CAL,
+        FULL_TRAVEL_CALIBRATION,
         start,
         nominal(),
     )
@@ -354,7 +296,7 @@ fn recorded_pass_includes_real_sky_error_and_reports_noisy_preparation_failure()
             station: &station,
         },
         time,
-        CAL,
+        FULL_TRAVEL_CALIBRATION,
         start,
         PlanningConfig::default(),
     )
@@ -385,8 +327,9 @@ fn prepare_now_does_not_borrow_future_rest_and_can_hold_after_readiness() {
     };
     let mut config = nominal();
     config.preparation_timing = PreparationTiming::Immediate;
-    let start = snapshot(CAL, Pointing::new(100.0, 10.0), [0, 0]);
-    let report = run(Planner::new(source, time, CAL, start, config.clone()).unwrap());
+    let start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(100.0, 10.0), [0, 0]);
+    let report =
+        run(Planner::new(source, time, FULL_TRAVEL_CALIBRATION, start, config.clone()).unwrap());
     let plan = report
         .plan
         .unwrap_or_else(|| panic!("{:?}", report.closest_attempt));
@@ -396,8 +339,12 @@ fn prepare_now_does_not_borrow_future_rest_and_can_hold_after_readiness() {
     let report = run(Planner::new(
         source,
         time,
-        CAL,
-        snapshot(CAL, Pointing::new(100.0, 10.0), [295_000, 295_000]),
+        FULL_TRAVEL_CALIBRATION,
+        resting_start(
+            FULL_TRAVEL_CALIBRATION,
+            Pointing::new(100.0, 10.0),
+            [295_000, 295_000],
+        ),
         config,
     )
     .unwrap());
@@ -409,15 +356,8 @@ fn prepare_now_does_not_borrow_future_rest_and_can_hold_after_readiness() {
 }
 
 #[test]
-fn cancellation_and_bad_sources_never_publish_partial_results() {
-    let start = snapshot(CAL, Pointing::new(180.0, 10.0), [0, 0]);
-    let mut planner = Planner::new(zenith, window(600_000), CAL, start, nominal()).unwrap();
-    for _ in 0..2000 {
-        planner.step().unwrap();
-    }
-    planner.cancel();
-    assert_eq!(planner.step(), Err(PlanningError::Cancelled));
-    assert_eq!(planner.into_report(), Err(PlanningError::Cancelled));
+fn bad_sources_never_publish_partial_results() {
+    let start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 10.0), [0, 0]);
     for source in [
         |_: f64| None,
         |_: f64| {
@@ -427,9 +367,16 @@ fn cancellation_and_bad_sources_never_publish_partial_results() {
             })
         },
     ] {
-        let mut planner = Planner::new(source, window(1000), CAL, start, nominal()).unwrap();
+        let mut planner = Planner::new(
+            source,
+            window(1000),
+            FULL_TRAVEL_CALIBRATION,
+            start,
+            nominal(),
+        )
+        .unwrap();
         assert_eq!(planner.step(), Err(PlanningError::Source));
-        assert_eq!(planner.into_report(), Err(PlanningError::Source));
+        assert_eq!(planner.take_report(), Err(PlanningError::Source));
     }
     let source = |t: f64| {
         Some(LookAngle {
@@ -437,13 +384,20 @@ fn cancellation_and_bad_sources_never_publish_partial_results() {
             elevation_deg: 10.0,
         })
     };
-    let mut planner = Planner::new(source, window(1000), CAL, start, nominal()).unwrap();
+    let mut planner = Planner::new(
+        source,
+        window(1000),
+        FULL_TRAVEL_CALIBRATION,
+        start,
+        nominal(),
+    )
+    .unwrap();
     planner.step().unwrap();
     assert_eq!(planner.step(), Err(PlanningError::SkyRateBound));
 }
 
 #[test]
-fn route_storage_exhaustion_is_explicit_and_cancellable() {
+fn route_storage_exhaustion_is_explicit() {
     let source = |_: f64| {
         Some(LookAngle {
             azimuth_deg: 180.0,
@@ -453,8 +407,8 @@ fn route_storage_exhaustion_is_explicit_and_cancellable() {
     let mut planner = Planner::new(
         source,
         window(600_000),
-        CAL,
-        snapshot(CAL, Pointing::new(180.0, 89.0), [0, 0]),
+        FULL_TRAVEL_CALIBRATION,
+        resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 89.0), [0, 0]),
         nominal(),
     )
     .unwrap();
@@ -464,23 +418,24 @@ fn route_storage_exhaustion_is_explicit_and_cancellable() {
         }
     };
     assert_eq!(error, PlanningError::RouteCapacity);
-    assert_eq!(planner.into_report(), Err(PlanningError::RouteCapacity));
+    assert_eq!(planner.take_report(), Err(PlanningError::RouteCapacity));
     assert!(std::mem::size_of::<Planner<fn(f64) -> Option<LookAngle>>>() < 90_000);
 }
 
 #[test]
 fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
-    let start = snapshot(CAL, Pointing::new(100.0, 30.0), [1000, 2000]);
-    let follower = FollowingController::new(MotorProfile::AC_50HZ, 0.15).unwrap();
-    let make = |start| {
-        Simulation::from_rest(
-            CAL,
-            MotorProfile::AC_50HZ,
-            follower,
-            SimulationSettings::default(),
-            start,
-        )
+    let start = resting_start(
+        FULL_TRAVEL_CALIBRATION,
+        Pointing::new(100.0, 30.0),
+        [1000, 2000],
+    );
+    let follower =
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap();
+    let settings = SimulationSettings {
+        step_ms: 20,
+        scenario: Scenario::NOMINAL,
     };
+    let make = |start| Simulation::from_rest(FULL_TRAVEL_CALIBRATION, follower, settings, start);
     assert!(make(start).is_ok());
     assert!(matches!(
         make(RestingStart {
@@ -489,14 +444,7 @@ fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
         }),
         Err(SimulationError::InvalidStart)
     ));
-    let installed = InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap();
-    let old = FeedbackSample::from_voltages(
-        installed,
-        CAL.position_to_feedback(Pointing::new(100.0, 30.0))
-            .unwrap(),
-        1000,
-    )
-    .unwrap();
+    let old = full_travel_sample(Pointing::new(100.0, 30.0), 1000);
     assert!(matches!(
         make(RestingStart {
             feedback: old,
@@ -510,18 +458,16 @@ fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
     assert_eq!(sim.step(None).unwrap().requested, Command::Inhibit);
     assert_eq!(sim.actuator().status().duty.azimuth.remaining_ms, 300_000);
     assert_eq!(sim.summary().energized_ms, [0, 0]);
-    let mut settings = SimulationSettings::default();
-    settings.actuator.relays = RelayConfig {
-        min_active_ms: 600,
-        ..RelayConfig::DEFAULT
-    };
+    let mut actuator = start.actuator.configuration();
+    actuator.relays.min_active_ms = 600;
     assert!(matches!(
         Simulation::new(
-            CAL,
+            FULL_TRAVEL_CALIBRATION,
             start.feedback.position(),
-            MotorProfile::AC_50HZ,
             follower,
-            settings
+            settings,
+            actuator,
+            [0, 0],
         ),
         Err(SimulationError::InvalidSettings)
     ));
@@ -529,16 +475,20 @@ fn resting_snapshot_requires_matching_clock_and_post_coast_feedback() {
 
 #[test]
 fn simulation_copies_recent_relay_holds_and_consumed_duty_from_the_output_owner() {
-    let mut start = snapshot(CAL, Pointing::new(100.0, 30.0), [0, 0]);
-    let installed = InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap();
+    let mut start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(100.0, 30.0), [0, 0]);
+    let installed = full_travel_installed();
     let cw = DriveCommand {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
     };
-    let follower = FollowingController::new(MotorProfile::AC_50HZ, 0.15).unwrap();
+    let follower =
+        FollowingController::new(MotorProfile::AC_50HZ, 0.15, RelayConfig::DEFAULT).unwrap();
     let settings = SimulationSettings {
-        feedback_latency_ms: 0,
-        ..SimulationSettings::default()
+        step_ms: 20,
+        scenario: Scenario {
+            latency_ms: 0,
+            ..Scenario::NOMINAL
+        },
     };
     for (now, azimuth, command) in [
         (2000, 100.0, Command::Drive(cw)),
@@ -547,13 +497,7 @@ fn simulation_copies_recent_relay_holds_and_consumed_duty_from_the_output_owner(
         (3000, 102.0, Command::Inhibit),
     ] {
         start.at_ms = now;
-        start.feedback = FeedbackSample::from_voltages(
-            installed,
-            CAL.position_to_feedback(Pointing::new(azimuth, 30.0))
-                .unwrap(),
-            now,
-        )
-        .unwrap();
+        start.feedback = full_travel_sample(Pointing::new(azimuth, 30.0), now);
         let mut interlock = FeedbackInterlock::new(installed);
         interlock.publish(Some(start.feedback));
         start.network.observe(now, true);
@@ -570,13 +514,13 @@ fn simulation_copies_recent_relay_holds_and_consumed_duty_from_the_output_owner(
         );
         if now < 3000 {
             assert!(matches!(
-                Simulation::from_rest(CAL, MotorProfile::AC_50HZ, follower, settings, start),
+                Simulation::from_rest(FULL_TRAVEL_CALIBRATION, follower, settings, start),
                 Err(SimulationError::InvalidStart)
             ));
         }
     }
     let mut sim =
-        Simulation::from_rest(CAL, MotorProfile::AC_50HZ, follower, settings, start).unwrap();
+        Simulation::from_rest(FULL_TRAVEL_CALIBRATION, follower, settings, start).unwrap();
     while sim.now_ms() < 4500 {
         assert_eq!(
             sim.step(Some(Pointing::new(90.0, 30.0))).unwrap().applied,

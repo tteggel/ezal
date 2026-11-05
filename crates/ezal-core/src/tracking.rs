@@ -5,7 +5,7 @@
 //! The incremental simulator exercises that controller through the production
 //! actuator, using explicit, unmeasured motor assumptions. Its sampled results
 //! are development diagnostics, not permission to track a pass on hardware.
-//! [`TrackingSession`] binds a single selected event, revisioned plans and
+//! [`TrackingLifecycle`] binds a single selected event, revisioned plans and
 //! executor generations to an exclusive operator lease. It owns frozen input
 //! snapshots independently of browser connections.
 //! [`TrackingRuntime`] adds validated input publication and execution gating;
@@ -19,6 +19,7 @@ mod deviation;
 mod event;
 mod inputs;
 mod lifecycle;
+mod mailbox;
 mod model;
 mod planner;
 mod reception;
@@ -33,34 +34,31 @@ pub use deviation::{
     DeviationReading, DeviationStatus, REACQUISITION_DWELL_MS, REACQUISITION_ENTER_MS,
     REACQUISITION_LIMIT_MS, REACQUISITION_TOLERANCE_DEG,
 };
-pub use event::{reconcile_event, EventError, EventId, PassEvent, MAX_EVENT_SHIFT_S};
-pub use inputs::{
-    CompletedOrbitalDownload, ExecutionInputs, InputError, InputSettings, OrbitalCatalog,
-    OrbitalDownload, OrbitalPublication, OrbitalSnapshot, OrbitalTransport,
-};
+pub use event::{reconcile_event, EventError, EventId, PassEvent};
+pub use inputs::{ExecutionInputs, InputError, InputSettings};
 pub use lifecycle::{
     BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
-    RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingMode, TrackingPhase,
-    TrackingRequest, TrackingSession, TrackingSnapshot, TrackingStop, TrackingTermination,
+    RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingLifecycle,
+    TrackingMode, TrackingPhase, TrackingRequest, TrackingSnapshot, TrackingStop,
+    TrackingTermination,
 };
 pub use model::MotorModel;
 pub use planner::{
     Assessment, CandidateFailure, EvaluationPhase, PlannedGap, Planner, PlanningConfig,
-    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, Scenario, TrackingPlan,
-    MAX_GAPS, MAX_PLANNING_STEPS, MAX_SCENARIOS,
+    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, TrackingPlan, MAX_GAPS,
+    MAX_PLANNING_STEPS, MAX_SCENARIOS,
 };
-pub use reception::{
-    AdmissionPolicy, ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS,
-};
+pub use reception::{ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS};
 pub use recovery::{
     RecoveryHold, RecoveryStatus, INTERCEPT_GRID_MS, INTERCEPT_PLANNING_LEAD_MS, INTERCEPT_RETRY_MS,
 };
-pub use route::{Route, RouteChoice, RouteKind, MAX_ROUTE_POINTS};
+pub use route::{Route, RouteChoice, RouteKind};
 pub use runtime::{RuntimeError, RuntimeObservation, TrackingRuntime, TrackingSummary};
 pub use simulation::{
-    RestingStart, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
+    RestingStart, Scenario, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
 };
 
+use crate::duty::DutyConfig;
 use crate::feedback::FeedbackHealth;
 use crate::motion::MotionFault;
 use crate::position::Pointing;
@@ -127,14 +125,12 @@ impl AxisProfile {
 /// They do not identify the installed hardware or replace commissioning.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotorProfile {
-    /// Azimuth response, initially symmetric in both directions.
+    /// Azimuth response, the same in both directions.
     pub azimuth: AxisProfile,
-    /// Elevation response, initially symmetric in both directions.
+    /// Elevation response, the same in both directions.
     pub elevation: AxisProfile,
-    /// Maximum accumulated energized time on each axis before a full rest.
-    pub duty_limit_ms: u64,
-    /// Continuous de-energized interval that replenishes that axis's allowance.
-    pub rest_ms: u64,
+    /// Per-axis energized allowance and the full rest that replenishes it.
+    pub duty: DutyConfig,
 }
 
 impl MotorProfile {
@@ -152,8 +148,7 @@ impl MotorProfile {
             coast_ms: 500,
             backlash_deg: 1.0,
         },
-        duty_limit_ms: 300_000,
-        rest_ms: 900_000,
+        duty: DutyConfig::CONFIRMED_AC,
     };
 
     /// Slower loaded-rate scenario used for preparation/intercept estimates.
@@ -169,7 +164,7 @@ impl MotorProfile {
         ..Self::AC_50HZ
     };
 
-    /// Existing AC upper-rate assumptions, not suitable G-5500DC bounds.
+    /// AC upper-rate assumptions; they do not bound a G-5500DC.
     pub const AC_FAST: Self = Self {
         azimuth: AxisProfile {
             rate_deg_per_s: 7.0,
@@ -184,10 +179,7 @@ impl MotorProfile {
 
     /// Reject non-finite physics and empty duty/rest allowances.
     pub fn is_valid(self) -> bool {
-        self.azimuth.is_valid()
-            && self.elevation.is_valid()
-            && self.duty_limit_ms > 0
-            && self.rest_ms > 0
+        self.azimuth.is_valid() && self.elevation.is_valid() && self.duty.is_valid()
     }
 }
 
@@ -202,7 +194,7 @@ pub enum SimulationError {
     InvalidCalibration,
     /// Controller thresholds were non-finite or outside their supported range.
     InvalidController,
-    /// Simulation cadence, ADC latency or tolerance was invalid.
+    /// Sampling cadence, acquisition, output policy or consumed duty was invalid.
     InvalidSettings,
     /// Initial/commanded mechanical coordinates were outside installed travel.
     InvalidPointing,

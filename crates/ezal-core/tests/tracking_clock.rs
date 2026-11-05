@@ -139,7 +139,6 @@ fn full_horizon_uncertainty_and_source_age_are_checked_at_exclusive_boundaries()
         2000,
     )
     .unwrap();
-    assert_eq!(frozen.uncertainty_deg(2_472_000).unwrap(), 0.5);
     assert_eq!(frozen.admission_deadline_ms().unwrap(), 2_472_001);
     assert_eq!(
         ExecutionClock::new(

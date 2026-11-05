@@ -1,19 +1,12 @@
 //! WiFi station credentials and the reconnect schedule.
 //!
-//! The Pico 2 W joins an access point in **station (STA) mode** using an SSID
-//! and password that [`build.rs`] bakes into the firmware from `.env` at
-//! compile time (there is no filesystem on the chip to read them from at
-//! runtime). This module is the *pure* half of that story: it holds the
-//! [`Credentials`] the build supplies and the rules that decide whether they
-//! are join-able, with no dependency on the radio or the HAL. The bus-facing
-//! half — powering the CYW43439 and issuing the join — lives in the firmware
-//! crate's `wifi` module. Its supervisor validates credentials once and
-//! uses [`ConnectionRetries`] to schedule retries after association or DHCP fails.
-//!
-//! Keeping the rules here means they are checked by `./scripts/test-host.sh`,
-//! and a mistyped `.env` (an empty SSID or five-character password) is caught
-//! with a clear message at boot rather
-//! than as an opaque `JoinError` from deep inside the driver.
+//! [`Credentials`] are the SSID and password that [`build.rs`] bakes into the
+//! firmware from `.env` (`docs/DEVELOPMENT.md` describes provisioning). This
+//! module decides whether they are joinable, with no dependency on the radio or
+//! the HAL. The firmware's `wifi` supervisor validates them once at boot, so a
+//! mistyped `.env` is reported clearly rather than as an opaque driver
+//! `JoinError`, and it uses [`ConnectionRetries`] to schedule retries after
+//! association or DHCP fails.
 //!
 //! ezal accepts these credential lengths:
 //!
@@ -23,9 +16,9 @@
 //! * an empty password selects an **open** (unencrypted) network.
 //!
 //! (The 64-hex-character "raw PSK" form that some stacks accept in place of a
-//! passphrase is deliberately not modelled — ezal takes a passphrase.)
-//! The firmware currently requests WPA3/SAE for protected networks; this
-//! module validates strings and does not negotiate a security protocol.
+//! passphrase is deliberately not modelled — ezal takes a passphrase.) The
+//! firmware requests WPA3/SAE for protected networks; this module validates
+//! strings and does not negotiate a security protocol.
 //!
 //! [`build.rs`]: https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/build.rs
 
@@ -49,30 +42,20 @@ pub enum Security {
     Protected,
 }
 
-/// Why a set of [`Credentials`] is not join-able. Each variant carries the
-/// offending length where one applies, and [`CredentialError::message`] gives
-/// a short static description suitable for a boot-time log line.
+/// Why a set of [`Credentials`] is not join-able. [`CredentialError::message`]
+/// gives a short static description suitable for a boot-time log line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CredentialError {
     /// The SSID was empty — nothing to join. Usually means `.env` is missing
     /// or `EZAL_WIFI_SSID` was left blank.
     SsidEmpty,
     /// The SSID was longer than [`SSID_MAX_LEN`] octets.
-    SsidTooLong {
-        /// The offending SSID length, in octets.
-        len: usize,
-    },
+    SsidTooLong,
     /// A non-empty password was shorter than [`PSK_MIN_LEN`] octets. (An
     /// *empty* password is not an error — it selects an open network.)
-    PasswordTooShort {
-        /// The offending password length, in octets.
-        len: usize,
-    },
+    PasswordTooShort,
     /// The password was longer than [`PSK_MAX_LEN`] octets.
-    PasswordTooLong {
-        /// The offending password length, in octets.
-        len: usize,
-    },
+    PasswordTooLong,
 }
 
 impl CredentialError {
@@ -81,11 +64,11 @@ impl CredentialError {
     pub const fn message(self) -> &'static str {
         match self {
             CredentialError::SsidEmpty => "SSID is empty (set EZAL_WIFI_SSID in .env)",
-            CredentialError::SsidTooLong { .. } => "SSID is longer than 32 octets",
-            CredentialError::PasswordTooShort { .. } => {
+            CredentialError::SsidTooLong => "SSID is longer than 32 octets",
+            CredentialError::PasswordTooShort => {
                 "WPA passphrase is shorter than 8 octets (use 8-63, or leave blank for open)"
             }
-            CredentialError::PasswordTooLong { .. } => "WPA passphrase is longer than 63 octets",
+            CredentialError::PasswordTooLong => "WPA passphrase is longer than 63 octets",
         }
     }
 }
@@ -137,7 +120,7 @@ impl Credentials<'_> {
             return Err(CredentialError::SsidEmpty);
         }
         if ssid_len > SSID_MAX_LEN {
-            return Err(CredentialError::SsidTooLong { len: ssid_len });
+            return Err(CredentialError::SsidTooLong);
         }
 
         let pw_len = self.password.len();
@@ -146,10 +129,10 @@ impl Credentials<'_> {
             return Ok(Security::Open);
         }
         if pw_len < PSK_MIN_LEN {
-            return Err(CredentialError::PasswordTooShort { len: pw_len });
+            return Err(CredentialError::PasswordTooShort);
         }
         if pw_len > PSK_MAX_LEN {
-            return Err(CredentialError::PasswordTooLong { len: pw_len });
+            return Err(CredentialError::PasswordTooLong);
         }
         Ok(Security::Protected)
     }

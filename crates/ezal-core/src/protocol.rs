@@ -2,21 +2,31 @@
 //!
 //! The browser-facing half of the firmware: the text the dashboard sends
 //! ([`ClientMessage`], including freshness envelopes around `drive:cw+up`) and the compact
-//! JSON frames it receives ([`PositionTelemetry`], [`ControlStatus`]). The
+//! JSON frames it receives ([`TelemetryMessage`], [`ControlStatus`]). The
 //! HTTP server and socket transport that carry these live in `ezal-firmware`;
 //! the drive semantics they wrap live in [`crate::drive`].
+//!
+//! Each outgoing frame type this module defines ([`TelemetryMessage`],
+//! [`TrackingTelemetry`], [`TrackingReply`]) encodes itself with `write_json`. A
+//! type from another module gets an inherent `write_json` here only when two or
+//! more messages write it ([`ControlStatus`]: the acknowledgement and
+//! telemetry); a type written by one message is encoded inline in that message
+//! ([`CommandToken`]).
 
 use crate::coordination::TelemetrySnapshot;
 use core::fmt;
 
+mod startup_rest;
 mod tracking;
+pub use startup_rest::{
+    StartupRestIntent, StartupRestRejection, StartupRestReply, STARTUP_REST_REPLY_CAPACITY,
+};
 pub use tracking::{
     TrackingIntent, TrackingRejection, TrackingReply, TrackingTelemetry, TRACKING_REPLY_CAPACITY,
 };
 
 use crate::coordination::ControlStatus;
 use crate::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
-use crate::feedback::{FeedbackHealth, FeedbackSnapshot};
 use crate::motion::MotionFault;
 
 /// WebSocket route used by the dashboard.
@@ -75,6 +85,8 @@ pub enum ClientMessage {
     Movement(MovementRequest),
     /// Single-pass intent; the server supplies connection identity and inputs.
     Tracking(TrackingIntent),
+    /// Operator assertion that both motors were already rested at startup.
+    StartupRest(StartupRestIntent),
 }
 
 impl ClientMessage {
@@ -86,6 +98,8 @@ impl ClientMessage {
             Some(Self::Stop)
         } else if let Some(message) = message.strip_prefix("track:") {
             TrackingIntent::parse(message).map(Self::Tracking)
+        } else if let Some(message) = message.strip_prefix("startup-rest:") {
+            StartupRestIntent::parse(message).map(Self::StartupRest)
         } else {
             let mut fields = message.splitn(4, ':');
             let pressed = match fields.next()? {
@@ -103,13 +117,6 @@ impl ClientMessage {
                 drive,
             }))
         }
-    }
-}
-
-impl CommandToken {
-    /// Write a proof nested inside its coherent telemetry observation.
-    pub fn write_json(&self, out: &mut impl fmt::Write) -> fmt::Result {
-        write!(out, "{{\"token\":\"{}\"}}", self.token)
     }
 }
 
@@ -157,80 +164,13 @@ impl ControlStatus {
         write_option(out, self.motion_fault.map(MotionFault::as_str))?;
         write!(
             out,
-            ",\"duty_remaining_ms\":[{},{}],\"duty_cooldown_ms\":[{},{}]}}",
+            ",\"duty_remaining_ms\":[{},{}],\"duty_cooldown_ms\":[{},{}],\"duty_startup_rest\":{}}}",
             self.duty.azimuth.remaining_ms,
             self.duty.elevation.remaining_ms,
             self.duty.azimuth.cooldown_ms,
-            self.duty.elevation.cooldown_ms
+            self.duty.elevation.cooldown_ms,
+            self.duty.startup_rest_required
         )
-    }
-}
-
-/// Raw position feedback reported to the browser.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PositionTelemetry {
-    /// ADS1015 channel A0 in millivolts.
-    pub a0_mv: i32,
-    /// ADS1015 channel A1 in millivolts.
-    pub a1_mv: i32,
-}
-
-impl PositionTelemetry {
-    /// A zeroed telemetry sample used before the first ADC read completes.
-    pub const ZERO: Self = Self { a0_mv: 0, a1_mv: 0 };
-
-    /// Write this telemetry sample as a compact WebSocket JSON message.
-    pub fn write_json(&self, out: &mut impl fmt::Write) -> fmt::Result {
-        write!(
-            out,
-            "{{\"type\":\"position\",\"a0_mv\":{},\"a1_mv\":{}}}",
-            self.a0_mv, self.a1_mv
-        )
-    }
-}
-
-impl From<FeedbackSnapshot> for PositionTelemetry {
-    fn from(snapshot: FeedbackSnapshot) -> Self {
-        snapshot.raw.map_or(Self::ZERO, |raw| Self {
-            a0_mv: raw.a0_elevation_mv,
-            a1_mv: raw.a1_azimuth_mv,
-        })
-    }
-}
-
-/// Last good calibrated position and acquisition health.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FeedbackTelemetry {
-    /// Azimuth in tenths of a degree.
-    pub azimuth_tenths: i32,
-    /// Elevation in tenths of a degree.
-    pub elevation_tenths: i32,
-    /// Health of the latest acquisition.
-    pub health: FeedbackHealth,
-}
-
-impl From<FeedbackSnapshot> for FeedbackTelemetry {
-    fn from(snapshot: FeedbackSnapshot) -> Self {
-        let position = snapshot.last_valid.map(|sample| sample.position());
-        Self {
-            azimuth_tenths: position.map_or(0, |position| degrees_to_tenths(position.azimuth_deg)),
-            elevation_tenths: position
-                .map_or(0, |position| degrees_to_tenths(position.elevation_deg)),
-            health: snapshot.health,
-        }
-    }
-}
-
-impl FeedbackTelemetry {
-    /// Encode calibrated feedback for the dashboard.
-    pub fn write_json(&self, out: &mut impl fmt::Write) -> fmt::Result {
-        // Preserve the dashboard's wire names while keeping domain health explicit.
-        let state = match self.health {
-            FeedbackHealth::Healthy => "idle",
-            FeedbackHealth::ReadTimedOut => "feedback-stale",
-            other => other.as_str(),
-        };
-        write!(out, "{{\"type\":\"feedback\",\"azimuth_tenths\":{},\"elevation_tenths\":{},\"control_state\":\"{}\"}}", self.azimuth_tenths, self.elevation_tenths, state)
     }
 }
 
@@ -253,16 +193,35 @@ pub struct TelemetryMessage {
 
 impl TelemetryMessage {
     /// Encode an entire periodic observation in one bounded WebSocket message.
+    /// An absent measurement is `null`: raw millivolts until an ADC pair
+    /// completes, tenths of a degree until a sample is accepted.
     pub fn write_json(&self, out: &mut impl fmt::Write) -> fmt::Result {
-        out.write_str("{\"type\":\"telemetry\",\"position\":")?;
-        PositionTelemetry::from(self.snapshot.feedback).write_json(out)?;
-        out.write_str(",\"feedback\":")?;
-        FeedbackTelemetry::from(self.snapshot.feedback).write_json(out)?;
-        out.write_str(",\"control\":")?;
+        fn write_number(out: &mut impl fmt::Write, value: Option<i32>) -> fmt::Result {
+            match value {
+                Some(value) => write!(out, "{value}"),
+                None => out.write_str("null"),
+            }
+        }
+
+        let feedback = self.snapshot.feedback;
+        let position = feedback.last_valid.map(|sample| sample.position());
+        out.write_str("{\"type\":\"telemetry\",\"position\":{\"a0_mv\":")?;
+        write_number(out, feedback.raw.map(|raw| raw.a0_elevation_mv))?;
+        out.write_str(",\"a1_mv\":")?;
+        write_number(out, feedback.raw.map(|raw| raw.a1_azimuth_mv))?;
+        out.write_str("},\"feedback\":{\"azimuth_tenths\":")?;
+        write_number(out, position.map(|p| degrees_to_tenths(p.azimuth_deg)))?;
+        out.write_str(",\"elevation_tenths\":")?;
+        write_number(out, position.map(|p| degrees_to_tenths(p.elevation_deg)))?;
+        write!(
+            out,
+            ",\"health\":\"{}\"}},\"control\":",
+            feedback.health.as_str()
+        )?;
         self.snapshot.control.write_json(out)?;
         out.write_str(",\"freshness\":")?;
         match self.token {
-            Some(token) => token.write_json(out)?,
+            Some(token) => write!(out, "{{\"token\":\"{}\"}}", token.token)?,
             None => out.write_str("null")?,
         }
         out.write_str(",\"tracking\":")?;

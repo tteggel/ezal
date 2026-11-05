@@ -42,7 +42,7 @@ You need:
 
 ### The board is the Pico 2 W
 
-The firmware now brings up the Pico 2 W's onboard **CYW43439** radio at boot
+The firmware brings up the Pico 2 W's onboard **CYW43439** radio at boot
 and joins WiFi in station mode (see
 [`wifi.rs`](../crates/ezal-firmware/src/wifi.rs) and
 [WiFi credentials](#wifi-credentials) below), so the target is specifically
@@ -90,15 +90,11 @@ manual operation.
 
 ### WiFi credentials
 
-The radio joins your access point in **station mode**. The Pico has no
-filesystem to read credentials from at runtime, so they are baked into the
-firmware image at *build* time: copy [`.env.example`](../.env.example) to
-`.env` at the repo root and set `EZAL_WIFI_SSID` / `EZAL_WIFI_PASSWORD`.
-`crates/ezal-firmware/build.rs` reads that file and network supervision joins the
-network at boot (an empty password selects an open network; protected joins
-use WPA3/SAE). Credential validation runs after radio initialization and before
-association. `.env` is git-ignored, but the credentials do end up in the flashed `.elf`/`.uf2`
-in the clear — there's no secure element on the board.
+The radio joins your access point as a station (a WiFi client). The Pico has
+no filesystem, so the credentials are baked into the firmware image at build
+time and sit in the flashed `.elf`/`.uf2` in the clear; there is no secure
+element on the board. [DEVELOPMENT.md](DEVELOPMENT.md#4-wifi-credentials)
+describes provisioning.
 
 The CYW43439 also needs three firmware blobs uploaded at every boot
 (MAC firmware, regulatory table, board NVRAM). These are vendored in-tree
@@ -126,6 +122,10 @@ feedback** voltages for position.
 | 6   | output    | Azimuth feedback: 2.0–4.5 VDC corresponds to 0°–450°         |
 | 7   | output    | Auxiliary supply, unused by ezal; consult your model manual |
 | 8   | —         | Common ground                                                |
+
+Direction is from the G-5500's perspective: an *input* is a line the controller
+box drives internally and expects ezal to short to ground; an *output* is a
+line the box drives and ezal reads.
 
 In ezal terms, the data flow is:
 
@@ -198,7 +198,7 @@ The interface circuit (canonical version in
 
   The wider ADC range leaves room around the measured 2033 mV endpoint
   for the **25 mV endpoint margin** and observable overrange readings.
-  The old ±2.048 V range saturated at 2047 mV, inside that accepted margin.
+  The ±2.048 V range would saturate at 2047 mV, inside that accepted margin.
   The installed calibration model validates that its entire band sits above zero
   and below **3200 mV**, the lower of the ±4.096 V saturation code (4094 mV)
   and the 3.3 V supply-rail ceiling. The ceiling matters because the ADS1015
@@ -221,8 +221,9 @@ The interface circuit (canonical version in
 
 There is no speed control on this interface: each direction is either energised
 or idle. Manual dashboard input requests a direction; the actuator checks
-feedback and timing before applying it. A future target-following controller
-will need to select directions and stop within a suitable angular tolerance.
+feedback and timing before applying it. During a pass, the tracking follower
+selects directions and stops within its deadband; see
+[TRACKING.md](TRACKING.md#planning).
 
 ## Calibration
 
@@ -265,9 +266,9 @@ ADC's unsaturated range and below the supply-rail ceiling; a calibration that
 overlaps either is rejected.
 
 The complete safety setup, channel worksheet, source location, edit example,
-and verification steps are in [CALIBRATION.md](CALIBRATION.md). Flash-backed
-calibration storage is not implemented yet; the checked-in constants are the
-source of truth for the firmware.
+and verification steps are in [CALIBRATION.md](CALIBRATION.md). Calibration is
+not stored in flash; the checked-in constants are the source of truth for the
+firmware.
 
 ## Motor switching budget
 
@@ -289,6 +290,10 @@ specifies five minutes of operation followed by at least fifteen minutes of
 rest. The [G-5500DC manual, printed pages 1 and 5](https://www.yaesu.com/Files/4CB6273C-1018-01AF-FA4D504B591F641A/G-5500DC_IM_ENG_EBB70X101_1906V-BS.pdf)
 supplies the DC times and a three-minute operating limit with fifteen minutes
 of rest. These are source specifications, not loaded measurements of this dish.
+The actuator applies them conservatively as `DutyConfig`, an engineering
+interpretation of the operating and rest specifications rather than a thermal
+model; the [control contract](CONTROL_CONTRACT.md#ownership-and-recovery)
+states the allowance, the rest that replenishes it and the boot rule.
 
 The installed relay type, motor transient response and snubber thermal limits
 have not been verified. The [FCL FTR-B4 datasheet](https://www.fcl-components.com/downloads/MICRO/fcai/relays/ftr-b4.pdf)
@@ -301,124 +306,54 @@ minimum useful motor pulse or an installed-system 1 Hz switching ceiling.
 Use the original AC G-5500 at 50 Hz as the planning assumption for Clevedon
 until the installation record identifies a different model. Apply the same
 initial values in both directions, replacing them separately when measured.
-This profile is for the [tracking design](PASS_PREDICTION.md#planned-tracking);
-the firmware's current output timing is documented below.
+This profile is for the [tracking planner](TRACKING.md#planning);
+the firmware's output timing is in the [control contract](CONTROL_CONTRACT.md).
 
 | Planning parameter | Initial value | Basis |
 |---|---:|---|
 | Nominal energized azimuth / elevation rates | 5.14 / 2.25°/s | Brochure times |
 | Slower rates for preparation and intercept estimates | 4.0 / 1.8°/s | Engineering allowance of approximately 20% for load and supply variation |
-| Upper rates for simulated travel and stopping margins | 7.0 / 3.0°/s | Existing AC firmware assumptions, to be measured |
+| Upper rates for simulated travel and stopping margins | 7.0 / 3.0°/s | Published 60 Hz rates plus margin; unmeasured |
 | Backlash at a direction reversal | 1° per axis | Brochure value; model take-up before useful travel |
 | Startup allowance | 300 ms | Unmeasured engineering assumption |
 | Release/coasting allowance | 500 ms | Unmeasured engineering assumption |
 | Minimum ordinary on-time | 500 ms | Initial useful-pulse assumption |
-| Minimum off-time before the same direction | 500 ms | Proposed relaxation for simulation and commissioning |
-| Minimum off-time before the opposite direction | 1,000 ms | Proposed reversal allowance |
 
 Startup, coast and pulse values are selected budgets, not guarantees from
 Yaesu. Simulate the slower and faster cases with the same controller and
-actuator timing that will run on the device; if timing relaxation cannot
-maintain useful movement and supervision on the bench, retain the longer
-intervals. A maximum-rate-times-coast-time bound initially reserves 3.5°
+actuator timing that will run on the device; if the shorter off-times of
+[`RelayConfig::TRACKING_CANDIDATE`](CONTROL_CONTRACT.md#ordering-and-time)
+cannot maintain useful movement and supervision on the bench, keep
+`RelayConfig::DEFAULT`. A maximum-rate-times-coast-time bound reserves 3.5°
 azimuth and 1.5° elevation for post-release travel, in addition to feedback
-age and quantization. It is deliberately conservative and should be replaced
-with measured stopping travel. The endpoint gate now includes that allowance.
+age and quantization. It is deliberately conservative and should be
+replaced with measured stopping travel. The endpoint gate includes that
+allowance.
 
 The DC time tolerance implies possible rates up to 7.5°/s azimuth and about
 3.46°/s elevation. The current 7/3°/s bounds therefore cannot be assumed to
 cover a G-5500DC; selecting that model requires matching planner, interlock
 and motion-supervision limits.
 
-The shared actuator duty guard accumulates each axis's actual energized time
-across command sources, ready for preparation, following and reacquisition. Use
-a conservative 300 s allowance for confirmed AC hardware, or 180 s for DC
-or unidentified hardware, replenished only after 900 s continuously idle on
-that axis. Brief pulse gaps do not reset it. This accounting is an engineering
-interpretation of the operating/rest specifications, not a published thermal
-model. Include it in feasibility checks and retain it across mode/owner
-changes; a reboot with unknown prior duty starts with a rest requirement.
-Firmware defaults to 180 s and an unknown boot history, so jogging initially
-requires 15 minutes of rest. The dashboard displays each axis's remaining
-on-time or rest countdown and clears a blocked hold. A new activation needs
-enough allowance for the full minimum pulse; exhaustion cuts that axis and
-discards its pending request while preserving the other axis. This records
-Pico-controlled output only; front-panel motor use requires a full rest before
-returning to Pico control.
+The [bench verification](CALIBRATION.md#bench-verification) records the
+installed model and supply frequency, and measures relay behaviour and loaded
+motion with the [motion-profile worksheet](CALIBRATION.md#motion-profile-worksheet).
 
-### Implemented output timing
+### Watchdog reset
 
-The implemented rules are in
-[`drive.rs`](../crates/ezal-core/src/drive.rs) and the
-[manual control contract](CONTROL_CONTRACT.md):
-
-1. **Ordinary minimum on-time: 500 ms per axis.** Ordinary release
-   respects this hold. Feedback faults, endpoint inhibition, browser stops,
-   releasing or reversing a held browser control, ownership changes, and
-   movement-lease expiry and duty exhaustion clear the relevant output immediately
-   when serviced,
-   even inside the hold. Releasing one of two held buttons therefore stops
-   that axis at once and leaves the other one running.
-2. **Minimum off-time: 2 s per axis.** Reversal and reactivation wait for
-   the inactive interval, including after a safety inhibition. At the ordinary
-   500 ms minimum on-time, a complete on/off cycle is at least 2.5 s.
-3. **Feedback sampling:** the next paired read starts 100 ms after the previous
-   read completes. A pair that took longer than 150 ms is rejected. Relay
-   transitions are governed independently from sampling.
-
-`ActuatorConfig` makes same-direction and reversal holds independently
-configurable. The proposed 500/1,000 ms off-times remain simulation and
-commissioning options. Reversal hold must be at least the configured coast
-plus maximum feedback age, preventing a new direction baseline from including
-old-direction motion.
-
-Every active command has a **750 ms movement lease**, and an output starts
-only when its lease covers the 500 ms minimum on-time — a stalled command
-stream leaves the relay alone instead of producing a click too short to move
-the rotator. The actuator also checks that the oldest feedback channel is at
-most **500 ms** old and that movement does not continue into a calibrated
-endpoint: outward motion stops one ADC code before it, widened by the travel
-the rotator could have made since that sample began and the configured release/coast.
-An energised axis is cut at that computed instant rather than at the next sample. Its next wake-up
-is the earliest of those deadlines or a fixed 100 ms service pass. These are
-software deadlines; motor coasting and physical relay release add mechanical
-stopping time beyond them.
-
-A **500 ms hardware watchdog** covers executor stalls, disabled interrupts,
-and panics after the actuator task has started. Only that task feeds it,
-after processing safety policy and applying GPIOs. The RP2350 watchdog reset
+The hardware watchdog covers executor stalls, disabled interrupts and panics
+once the output task has started; the contract's
+[executor-failure row](CONTROL_CONTRACT.md#ownership-and-recovery) gives its
+timeout, who feeds it and what boot does after it. The RP2350 watchdog reset
 includes SIO and both CPUs, taking the pins out of the stalled executor's
-control, and the board's 10 K base pull-downs then keep the switches off.
-That hand-off may not be instantaneous: RP2350 pads have isolation latches
-that can hold a pin's last output state through a reset until boot
-reinitialises the pad, so measure the pin *during* the reset window rather
-than only after the reboot (see [DEVELOPMENT.md](DEVELOPMENT.md)). Startup
-checks for a watchdog timeout this firmware armed and leaves outputs low
-without accepting movement until an explicit reset; a UF2 or `picotool` reboot,
-which also restarts the chip through the watchdog, is not mistaken for one.
-A board reset, power
-cycle, or debugger warm reset clears that reason. The watchdog relies on the
-chip's clock and reset hardware; this board has no separate external
-motor-enable interlock. See the
-[RP2350 reset and watchdog registers](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf).
-
-### To verify on the bench
-
-- Record the model and supply frequency; measure loaded slew rate, startup,
-  useful pulse duration, stopping travel and reversal take-up in each direction.
-  Use the worksheet in [CALIBRATION.md](CALIBRATION.md#motion-profile-worksheet).
-- Verify the installed relay and load before interpreting component endurance
-  figures as a system switching budget.
-- Exercise short pulse trains as well as continuous motion. Direction and speed
-  checks now retain evidence across pulses, with no per-activation blind window.
-  Verify healthy delayed feedback, coast and reversal as well as frozen,
-  wrong-direction and implausibly fast readings.
-- Whether an energised direction pin stays high through a watchdog reset.
-  Capture the pin across the reset itself, not just after the reboot: the pad
-  isolation latch can hold the last output state until boot claims the pin.
-- Fault-injection checks: invalid feedback, interrupted command refresh,
-  executor stall, watchdog reset, and confirmation that movement stays inhibited
-  until an explicit reset and fresh operator input.
+control, and the board's 10 K base pull-downs then keep the switches off. That
+hand-off may not be instantaneous: RP2350 pads have isolation latches that can
+hold a pin's last output state through a reset until boot reinitialises the
+pad, so measure the pin *during* the reset window rather than only after the
+reboot (see the [bench verification](CALIBRATION.md#bench-verification)). The
+watchdog relies on the chip's clock and reset hardware; this board has no
+separate external motor-enable interlock. See the [RP2350 reset and watchdog
+registers](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf).
 
 ## Debug probe
 

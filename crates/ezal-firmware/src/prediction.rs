@@ -8,11 +8,10 @@ use embassy_net::{dns::DnsQueryType, tcp::TcpSocket, Stack};
 use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use ezal_core::{
+    catalog::{Catalog, CompletedOrbitalDownload, OrbitalDownload, OrbitalSnapshot},
     orbit::{GroundStation, ObserverError, SATELLITES, SATELLITE_COUNT},
     passes::{needs_forecast, ConfigError, Elements, Forecast, Job, Report},
-    tracking::{
-        CompletedOrbitalDownload, OrbitalCatalog, OrbitalDownload, OrbitalSnapshot, PassEvent,
-    },
+    tracking::PassEvent,
 };
 
 include!(concat!(env!("OUT_DIR"), "/prediction_config.rs"));
@@ -115,7 +114,7 @@ pub fn report() -> Report {
 #[embassy_executor::task]
 pub async fn run(stack: Stack<'static>) -> ! {
     let station = GroundStation::new(CONFIG.observer).expect("validated at compile time");
-    let mut catalog = OrbitalCatalog::new();
+    let mut catalog = Catalog::new();
     let mut next_fetch = Instant::now();
     // New elements make the published forecast outdated even while it still
     // covers the window.
@@ -136,7 +135,7 @@ pub async fn run(stack: Stack<'static>) -> ! {
             SHARED.lock(|cell| {
                 let elements = &mut cell.borrow_mut().elements;
                 if succeeded {
-                    elements.epochs = catalog.catalog().epochs();
+                    elements.epochs = catalog.epochs();
                     elements.updated_unix_s = Some(now);
                 }
                 elements.download_failed = !succeeded;
@@ -157,8 +156,7 @@ pub async fn run(stack: Stack<'static>) -> ! {
         let due = SHARED.lock(|cell| needs_forecast(cell.borrow().forecast.as_ref(), now));
         if elements_changed || due {
             // NTP only yields 2020–2099 UTC, which a job always accepts.
-            let job: Result<Job, _> = Job::new(catalog.catalog(), &station, CONFIG, now);
-            if let Ok(mut job) = job {
+            if let Ok(mut job) = Job::new(&catalog, &station, CONFIG, now) {
                 // A timer yields even if every socket and CPU operation is
                 // immediately ready. ADC, network and actuator tasks keep running.
                 while !job.step() {

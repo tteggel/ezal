@@ -1,23 +1,14 @@
 #!/usr/bin/env bash
-# build-uf2.sh — build the ezal firmware and package it as a UF2 image
-# for drag-and-drop BOOTSEL flashing (no debug probe required).
+# build-uf2.sh — build the ezal firmware and package it as a UF2 image for
+# drag-and-drop BOOTSEL flashing without a debug probe. docs/DEVELOPMENT.md
+# describes the flashing steps.
 #
-# A UF2 is the file format the RP2350's built-in USB mass-storage
-# bootloader accepts. Hold the Pico 2's BOOTSEL button while plugging it
-# in; it mounts as a drive named "RP2350"; copy the .uf2 onto that drive
-# and the chip reboots straight into the new firmware. This path needs no
-# probe-rs, no debug probe, and nothing installed on the machine doing the
-# copy — handy for handing a build to someone else to flash.
+# Builds the release profile unless `--debug` is passed; further arguments go
+# to `cargo build` (e.g. `--features ...` or `--target-dir ...`). The build
+# target comes from .cargo/config.toml.
 #
-# The trade-off versus `cargo run` / scripts/flash.sh (which flash over a
-# debug probe): you lose the live defmt log stream. The firmware still
-# emits logs over RTT, there's just no probe attached to read them.
-#
-# Defaults to a *release* build — smaller, and what you'd actually deploy.
-# Pass `--debug` for a debug build instead. Any further arguments are
-# forwarded to `cargo build` (e.g. `--features ...` or `--target-dir ...`).
-#
-# Output: target/thumbv8m.main-none-eabihf/<profile>/ezal-firmware.uf2
+# Output: the ELF and UF2 paths on stdout, one per line; progress and
+# diagnostics go to stderr.
 
 set -euo pipefail
 
@@ -25,10 +16,6 @@ set -euo pipefail
 # there, so the script can be run from any working directory.
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "${ROOT}"
-
-# The firmware's build target is fixed in .cargo/config.toml. Keep this in
-# lock-step with that file (and the paths quoted throughout the docs).
-TARGET="thumbv8m.main-none-eabihf"
 
 # Release unless --debug is passed. Cargo reports the actual output path,
 # so profiles and target-directory overrides cannot select an older ELF.
@@ -59,7 +46,7 @@ fi
 # Diagnostics stay on stderr while compiler-artifact messages go to this file.
 BUILD_MESSAGES=$(mktemp)
 trap 'rm -f -- "$BUILD_MESSAGES"' EXIT
-cargo build --locked -p ezal-firmware --bin ezal-firmware --target "${TARGET}" \
+cargo build --locked -p ezal-firmware --bin ezal-firmware \
     ${PROFILE_FLAG} "$@" --message-format=json-render-diagnostics > "${BUILD_MESSAGES}"
 ELF=$(jq -ers '
     [.[] | select(.reason == "compiler-artifact")
@@ -88,9 +75,12 @@ fi
 #    The .uf2 extension on the output is enough for picotool to infer the
 #    output type, so no second -t is needed.
 picotool uf2 convert "${ELF}" -t elf "${UF2}" \
-    --family rp2350-arm-s --platform rp2350
+    --family rp2350-arm-s --platform rp2350 >&2
 
-echo
-echo "✓ UF2 written to ${UF2}"
-echo "  To flash: hold BOOTSEL, plug in the Pico 2, then copy the file onto"
-echo "  the 'RP2350' drive that appears — or run: picotool load \"${UF2}\""
+{
+    echo
+    echo "✓ UF2 written to ${UF2}"
+    echo "  To flash: hold BOOTSEL, plug in the Pico 2, then copy the file onto"
+    echo "  the 'RP2350' drive that appears — or run: picotool load \"${UF2}\""
+} >&2
+printf '%s\n' "${ELF}" "${UF2}"

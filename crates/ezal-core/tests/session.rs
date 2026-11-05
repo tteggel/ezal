@@ -113,11 +113,8 @@ fn command_envelopes_require_complete_ordered_movement_fields() {
             ..
         }))
     ));
-    let mut freshness = CommandFreshness::new(3);
-    let token = freshness.issue(0).unwrap();
-    let mut json = String::new();
-    token.write_json(&mut json).unwrap();
-    assert_eq!(json, r#"{"token":"12884901889"}"#);
+    let token = CommandFreshness::new(3).issue(0).unwrap();
+    assert_eq!(token.token, 12884901889);
 }
 
 #[test]

@@ -6,8 +6,8 @@ set -euo pipefail
 
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "${REPO_ROOT}"
-HOST_TRIPLE=$(rustc -vV | sed -n 's/host: //p')
+HOST=$(rustc --print host-tuple)
 CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/ezal-dashboard-config.XXXXXX.js")
 trap 'rm -f "$CONFIG_FILE"' EXIT
-cargo run --quiet --locked -p ezal-core --example dashboard-config --target "$HOST_TRIPLE" > "$CONFIG_FILE"
+cargo run --quiet --locked -p ezal-core --example dashboard-config --target "$HOST" > "$CONFIG_FILE"
 EZAL_DASHBOARD_CONFIG="$CONFIG_FILE" node "$@" "${REPO_ROOT}/crates/ezal-core/tests/dashboard.test.mjs"

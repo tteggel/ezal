@@ -2,19 +2,19 @@
 //! Transport supplies a nonzero connection identity and authenticates its use.
 //! A lease is ownership/freshness policy, not an authentication credential.
 
-/// Browser ownership lifetime, renewed by fresh device-issued Ping/Pong challenges.
+/// Browser ownership lifetime, renewed by fresh device-issued Ping/Pong heartbeats.
 pub const OPERATOR_LEASE_MS: u64 = 5_000;
 
 /// A grant bound to both its connection and a never-reused generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OperatorToken {
-    client_id: u64,
+    client_id: u32,
     generation: u64,
 }
 
 impl OperatorToken {
     /// Server-allocated connection identity; never take this from browser input.
-    pub const fn client_id(self) -> u64 {
+    pub const fn client_id(self) -> u32 {
         self.client_id
     }
     /// Generation to bind every operator mutation and renewal to its grant.
@@ -97,7 +97,7 @@ impl OperatorLease {
 
     /// Claim unowned control. A repeated claim by its owner returns the same
     /// grant and deadline; a viewer cannot displace a valid grant.
-    pub fn claim(&mut self, client_id: u64, now_ms: u64) -> Result<OperatorGrant, LeaseError> {
+    pub fn claim(&mut self, client_id: u32, now_ms: u64) -> Result<OperatorGrant, LeaseError> {
         self.advance(now_ms)?;
         if client_id == 0 {
             return Err(LeaseError::Invalid);

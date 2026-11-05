@@ -6,7 +6,7 @@ use ezal_core::duty::{DutyConfig, DutyHistory};
 use ezal_core::feedback::FeedbackSample;
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::network::NetworkGate;
-use ezal_core::orbit::{Catalog, GroundStation, LookAngle, Observer};
+use ezal_core::orbit::{GroundStation, LookAngle, Observer, Update};
 use ezal_core::passes::{Config, Ephemeris, Search, Track};
 use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
 use ezal_core::tracking::{Planner, PlanningConfig, PlanningWindow, RestingStart};
@@ -80,7 +80,7 @@ fn plan(name: &str, source: impl Ephemeris, window: PlanningWindow, relays: Rela
             return;
         }
     }
-    let report = planner.into_report().unwrap();
+    let report = planner.take_report().unwrap();
     println!(
         "{name}: {} ({} candidates, {} geometry rejections, {} steps, {:.2}s host)",
         match report.plan.as_ref() {
@@ -183,14 +183,13 @@ fn main() {
         relays,
     );
     let epoch = 1_791_385_200;
-    let mut catalog = Catalog::new();
-    catalog.update(
-        include_str!("../tests/fixtures/weather-2026-10-07.tle"),
-        epoch,
-    );
+    let mut update = Update::new(epoch);
+    update.push(include_str!("../tests/fixtures/weather-2026-10-07.tle").as_bytes());
+    let orbits = update.finish();
     let station = GroundStation::new(Observer::CLEVEDON).unwrap();
-    let orbit = catalog
-        .orbits()
+    let orbit = orbits
+        .iter()
+        .flatten()
         .find(|orbit| orbit.satellite.norad_id == 39260)
         .unwrap();
     let mut search = Search::new(

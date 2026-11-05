@@ -1,25 +1,7 @@
-//! T6 uses the same frozen real-orbit fixture as the T5 input boundary tests.
+//! Recovery uses the same frozen real-orbit fixture as the input boundary tests.
 
 use super::*;
-use ezal_core::feedback::{FeedbackHealth, FeedbackSnapshot};
 use std::collections::VecDeque;
-
-fn measured(pose: Pointing, at: u64) -> FeedbackSample {
-    FeedbackSample::from_voltages(
-        InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
-        CAL.position_to_feedback(pose).unwrap(),
-        at,
-    )
-    .unwrap()
-}
-
-fn healthy(sample: FeedbackSample) -> FeedbackSnapshot {
-    FeedbackSnapshot {
-        raw: None,
-        last_valid: Some(sample),
-        health: FeedbackHealth::Healthy,
-    }
-}
 
 /// Live-style feedback/actuator/runtime loop with a separate physical model.
 /// Orbit propagation and the recovery search use the production frozen inputs.
@@ -34,17 +16,20 @@ struct Rig {
 }
 
 impl Rig {
+    /// Freeze the run without establishing readiness, `offset` degrees above
+    /// the route's first point, so it enters recovery at AOS as a late preparation.
     fn new(offset: f32, used: [u64; 2]) -> Self {
-        let (runtime, run) = following();
+        let (mut runtime, _, prep) = armed();
+        runtime.service(observation(prep)).unwrap();
+        let run = runtime.snapshot().run.unwrap();
         let plan = runtime.bound_plan().unwrap().plan();
         let mut pose = plan.route.pointing_at(0).unwrap();
         pose.elevation_deg += offset;
         let mut actuator = Actuator::with_config(plan.actuator, DutyHistory::Known(used));
-        let feedback = healthy(measured(pose, AOS - 100));
-        let mut interlock =
-            FeedbackInterlock::new(InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap());
+        let feedback = healthy(full_travel_sample(pose, AOS - 100));
+        let mut interlock = FeedbackInterlock::new(full_travel_installed());
         for at in [AOS - 2000, AOS] {
-            interlock.publish(Some(measured(pose, at)));
+            interlock.publish(Some(full_travel_sample(pose, at)));
             actuator.step(
                 ActuatorInput {
                     interlock,
@@ -54,15 +39,18 @@ impl Rig {
                 at,
             );
         }
-        Self {
+        let mut rig = Self {
             runtime,
             run,
             actuator,
-            model: MotorModel::new(MotorProfile::AC_50HZ, CAL, pose, used).unwrap(),
+            model: MotorModel::new(MotorProfile::AC_50HZ, FULL_TRAVEL_CALIBRATION, pose, used)
+                .unwrap(),
             feedback,
             pending: VecDeque::new(),
             now: AOS,
-        }
+        };
+        rig.tick(AOS);
+        rig
     }
 
     fn tick(&mut self, at: u64) {
@@ -72,13 +60,12 @@ impl Rig {
         self.now = at;
         if (at - AOS).is_multiple_of(100) {
             self.pending
-                .push_back((at + 100, measured(self.model.position(), at)));
+                .push_back((at + 100, full_travel_sample(self.model.position(), at)));
         }
         while self.pending.front().is_some_and(|(ready, _)| *ready <= at) {
             self.feedback = healthy(self.pending.pop_front().unwrap().1);
         }
-        let mut interlock =
-            FeedbackInterlock::new(InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap());
+        let mut interlock = FeedbackInterlock::new(full_travel_installed());
         interlock.publish(self.feedback.last_valid);
         let obs = observation(at);
         // A coherent snapshot is serviced before planning; GPIO would be applied
@@ -92,7 +79,7 @@ impl Rig {
             at,
         );
         self.runtime
-            .reacquisition_command(self.run, self.feedback, &self.actuator, obs);
+            .execution_command(self.feedback, &self.actuator, obs);
         let command = self.runtime.take_command(obs);
         self.actuator.step(
             ActuatorInput {
@@ -112,8 +99,7 @@ impl Rig {
         }
     }
 
-    fn entered(&mut self) -> RecoveryStatus {
-        self.until(AOS + 1200);
+    fn entered(&self) -> RecoveryStatus {
         assert_eq!(self.runtime.snapshot().phase, TrackingPhase::Reacquiring);
         self.runtime.recovery().unwrap()
     }
@@ -142,7 +128,7 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         InputSettings::default(),
         clock(UTC),
         execution_window(clock(UTC).anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
-        &config(),
+        &nominal(),
         at,
     )
     .unwrap();
@@ -156,10 +142,9 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         },
         DutyHistory::Known([0; 2]),
     );
-    let mut interlock =
-        FeedbackInterlock::new(InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap());
+    let mut interlock = FeedbackInterlock::new(full_travel_installed());
     for now in [at - 2000, at] {
-        interlock.publish(Some(measured(pose, now)));
+        interlock.publish(Some(full_travel_sample(pose, now)));
         actuator.step(
             ActuatorInput {
                 interlock,
@@ -171,15 +156,22 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
     }
     let start = RestingStart {
         at_ms: at,
-        feedback: measured(pose, at),
+        feedback: full_travel_sample(pose, at),
         actuator,
         network: observation(at).network,
     };
-    let mut planner = Planner::new(inputs.clone(), inputs.window(), CAL, start, config()).unwrap();
+    let mut planner = Planner::new(
+        inputs.clone(),
+        inputs.window(),
+        FULL_TRAVEL_CALIBRATION,
+        start,
+        nominal(),
+    )
+    .unwrap();
     while !planner.is_finished() {
         planner.step().unwrap();
     }
-    let report = planner.into_report().unwrap();
+    let report = planner.take_report().unwrap();
     let plan = report.plan.as_ref().unwrap_or_else(|| panic!("{report:?}"));
     let coverage = plan.reception();
     let gap = coverage.gap().unwrap();
@@ -199,8 +191,9 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         runtime,
         run,
         actuator,
-        model: MotorModel::new(MotorProfile::AC_50HZ, CAL, pose, [0; 2]).unwrap(),
-        feedback: healthy(measured(pose, gap.recovery_at_ms)),
+        model: MotorModel::new(MotorProfile::AC_50HZ, FULL_TRAVEL_CALIBRATION, pose, [0; 2])
+            .unwrap(),
+        feedback: healthy(full_travel_sample(pose, gap.recovery_at_ms)),
         pending: VecDeque::new(),
         now: gap.recovery_at_ms,
     };
@@ -236,14 +229,9 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
 #[test]
 fn recoverable_lag_executes_a_future_intercept_and_preserves_duty() {
     let mut rig = Rig::new(10.0, [9000, 21000]);
-    rig.until(AOS + 200);
-    let early = rig.runtime.deviation(rig.now);
-    assert!(early.warning);
-    assert_eq!(rig.runtime.snapshot().phase, TrackingPhase::Following);
     let episode = rig.entered().episode;
-    assert!(!rig
-        .runtime
-        .tracking_command(rig.run, command(rig.now), observation(rig.now)));
+    // Reacquiring never drives the normal follower, so nothing moves at entry.
+    assert!(!rig.actuator.target().is_active());
     let plan = rig.plan();
     assert!(plan.intercept_at_ms.is_some(), "{plan:?}");
     assert!(plan.intercept_at_ms.unwrap() > plan.launch_at_ms.unwrap());
@@ -274,13 +262,7 @@ fn recoverable_lag_executes_a_future_intercept_and_preserves_duty() {
 #[test]
 fn unfinished_frozen_preparation_acquires_a_future_point_without_chasing_aos() {
     let mut rig = Rig::new(10.0, [0, 0]);
-    let (mut runtime, _, prep) = armed();
-    runtime.service(observation(prep)).unwrap();
-    rig.run = runtime.snapshot().run.unwrap();
-    runtime.service(observation(AOS)).unwrap();
-    rig.runtime = runtime;
-    rig.tick(AOS);
-    let episode = rig.runtime.recovery().unwrap().episode;
+    let episode = rig.entered().episode;
     assert_eq!(episode.cause(), RecoveryCause::LatePreparation);
     assert_eq!(episode.started_at_ms(), AOS);
     let plan = rig.plan();
@@ -290,6 +272,28 @@ fn unfinished_frozen_preparation_acquires_a_future_point_without_chasing_aos() {
     }
     assert_eq!(rig.runtime.snapshot().phase, TrackingPhase::Following);
     assert!(rig.runtime.deviation(rig.now).outside_tolerance_ms > 1000);
+}
+
+#[test]
+fn deviation_while_following_enters_recovery_within_the_same_run() {
+    let (mut runtime, run) = following();
+    let mut device = RestedDevice::new(&runtime);
+    device.pose.elevation_deg += 10.0;
+    // The warning is immediate; entering recovery needs the error to persist.
+    let mut at = AOS + 20;
+    device.turn(&mut runtime, at);
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
+    assert!(runtime.deviation(at).warning);
+    while runtime.snapshot().phase == TrackingPhase::Following && at < AOS + 3000 {
+        at += 20;
+        device.turn(&mut runtime, at);
+    }
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Reacquiring);
+    assert_eq!(
+        runtime.recovery().unwrap().episode.cause(),
+        RecoveryCause::Deviation
+    );
+    assert_eq!(runtime.snapshot().run, Some(run));
 }
 
 #[test]
@@ -386,6 +390,8 @@ fn failed_and_stale_feedback_stop_recovery_instead_of_reusing_last_position() {
 fn cancellation_discards_pending_search_and_retains_final_deviation() {
     let mut rig = Rig::new(10.0, [0, 0]);
     rig.entered();
+    // Measure the offset after AOS while the search is still before its launch.
+    rig.until(AOS + 1000);
     rig.runtime
         .step_reacquisition(observation(rig.now))
         .unwrap();
@@ -400,20 +406,17 @@ fn cancellation_discards_pending_search_and_retains_final_deviation() {
     .unwrap();
     assert_eq!(rig.runtime.snapshot().phase, TrackingPhase::Cancelled);
     assert_eq!(rig.runtime.recovery(), None);
-    assert!(!rig
-        .runtime
-        .step_reacquisition(observation(rig.now))
-        .unwrap());
-    assert!(!rig.runtime.reacquisition_command(
-        rig.run,
-        rig.feedback,
-        &rig.actuator,
-        observation(rig.now)
-    ));
     assert_eq!(
         rig.runtime.take_command(observation(rig.now)),
         Some(CommandEnvelope::INHIBIT)
     );
+    assert!(!rig
+        .runtime
+        .step_reacquisition(observation(rig.now))
+        .unwrap());
+    rig.runtime
+        .execution_command(rig.feedback, &rig.actuator, observation(rig.now));
+    assert_eq!(rig.runtime.take_command(observation(rig.now)), None);
     let final_status = rig.runtime.deviation(rig.now);
     assert!(final_status.maximum_deg.unwrap() > 9.0);
     assert_eq!(rig.runtime.deviation(rig.now + 10000), final_status);
@@ -440,9 +443,7 @@ fn physical_fault_and_network_loss_discard_validated_intercepts() {
         rig.plan();
         let mut obs = observation(rig.now);
         let reason = if physical {
-            let mut interlock = FeedbackInterlock::new(
-                InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
-            );
+            let mut interlock = FeedbackInterlock::new(full_travel_installed());
             interlock.publish(rig.feedback.last_valid);
             rig.actuator.step(
                 ActuatorInput {
@@ -457,9 +458,8 @@ fn physical_fault_and_network_loss_discard_validated_intercepts() {
             obs.network.observe(rig.now, false);
             TrackingStop::NetworkUnavailable
         };
-        assert!(!rig
-            .runtime
-            .reacquisition_command(rig.run, rig.feedback, &rig.actuator, obs));
+        rig.runtime
+            .execution_command(rig.feedback, &rig.actuator, obs);
         assert_eq!(rig.runtime.snapshot().termination.unwrap().reason, reason);
         assert_eq!(rig.runtime.recovery(), None);
         assert_eq!(
@@ -494,7 +494,13 @@ fn missed_measured_intercept_retries_with_the_original_deadline_and_consumed_dut
         },
         ..MotorProfile::AC_50HZ
     };
-    rig.model = MotorModel::new(slow, CAL, rig.model.position(), [0, 10000]).unwrap();
+    rig.model = MotorModel::new(
+        slow,
+        FULL_TRAVEL_CALIBRATION,
+        rig.model.position(),
+        [0, 10000],
+    )
+    .unwrap();
     rig.until(planned.intercept_at_ms.unwrap() + REACQUISITION_DWELL_MS + 500);
     let missed = rig.runtime.recovery().unwrap();
     assert_eq!(missed.hold, Some(RecoveryHold::MissedIntercept));
@@ -519,7 +525,7 @@ fn deviation_uses_acquisition_time_and_reports_real_sampling_uncertainty() {
     runtime
         .observe_tracking(
             run,
-            healthy(measured(pose, at)),
+            healthy(full_travel_sample(pose, at)),
             &actuator,
             observation(at + 400),
         )
@@ -543,9 +549,7 @@ fn delayed_output_drain_and_missed_control_tick_hold_before_reusing_a_command() 
         let launch = rig.plan().launch_at_ms.unwrap();
         if delayed_launch {
             rig.until(launch - 20);
-            let mut interlock = FeedbackInterlock::new(
-                InstalledCalibration::new(CAL, FEEDBACK_FULL_SCALE).unwrap(),
-            );
+            let mut interlock = FeedbackInterlock::new(full_travel_installed());
             interlock.publish(rig.feedback.last_valid);
             rig.actuator.step(
                 ActuatorInput {
@@ -555,12 +559,10 @@ fn delayed_output_drain_and_missed_control_tick_hold_before_reusing_a_command() 
                 },
                 launch,
             );
-            assert!(rig.runtime.reacquisition_command(
-                rig.run,
-                rig.feedback,
-                &rig.actuator,
-                observation(launch)
-            ));
+            rig.runtime
+                .execution_command(rig.feedback, &rig.actuator, observation(launch));
+            // Launched on time: the drain below is what is late.
+            assert_eq!(rig.runtime.recovery().unwrap().hold, None);
         } else {
             rig.until(launch);
         }

@@ -5,33 +5,22 @@
 //!  1. Put this crate's directory on the linker search path, where the
 //!     `INCLUDE memory.x` in cortex-m-rt's `link.x` finds `memory.x`.
 //!
-//!  2. Bake WiFi credentials and station configuration from `.env` into the build. The Pico has no
-//!     filesystem, so there is nowhere to read an SSID/password from at
-//!     runtime — they have to be compile-time constants. We read them here
-//!     and re-export them as `EZAL_WIFI_SSID` / `EZAL_WIFI_PASSWORD` so
-//!     `src/wifi.rs` can pick them up with `env!(...)`. See `.env.example`.
+//!  2. Bake WiFi credentials and station settings from `.env` into the build
+//!     (`docs/DEVELOPMENT.md` describes provisioning). The credentials become
+//!     `EZAL_WIFI_SSID` / `EZAL_WIFI_PASSWORD` for `env!` in `src/main.rs`.
 //!     Station settings become `OUT_DIR/prediction_config.rs`; unset ones
 //!     name `ezal_core`'s defaults, and the firmware checks their ranges at
 //!     compile time with `Config::validate`, so neither is duplicated here.
 //!
-//!     Precedence for each value: a real process environment variable wins
-//!     (so CI or a one-off command can inject it), otherwise the `.env`
-//!     file at the workspace root, otherwise empty. Empty is deliberately
-//!     *not* a hard error: the firmware must still cross-compile in CI, which
-//!     has no `.env` — instead network supervision validates the baked-in
-//!     credentials and parks offline at boot if they're unset. We do emit a
-//!     build warning so it's not silent.
+//!     For each value a process environment variable wins, then the `.env`
+//!     file at the workspace root, then empty. An empty SSID only warns: CI
+//!     cross-compiles without a `.env`, and network supervision parks offline
+//!     at boot. Cargo prints a failed build script's stdout, so every check
+//!     that can fail runs before the credentials are printed, as the very
+//!     last step.
 //!
-//!     Note: this build-time provisioning scheme stores credentials in the
-//!     flashed image in the clear. Keep `.env` out of git (it is `.gitignore`d)
-//!     and treat built artefacts and Cargo's build-script output as secrets.
-//!     Cargo prints a failed build script's stdout, so every check that can
-//!     fail runs before the credentials are printed, as the very last step.
-//!
-//!  3. Tell Cargo when to re-run this script. Without these hints Cargo
-//!     would re-run `build.rs` on every build (slow) or never (wrong);
-//!     the `rerun-if-changed` / `rerun-if-env-changed` lines hit the right
-//!     balance.
+//!  3. Declare its inputs with `rerun-if-changed` / `rerun-if-env-changed`, so
+//!     Cargo reruns it only when one of them changes.
 
 use std::env;
 use std::fs;
@@ -130,7 +119,7 @@ fn bake_configuration(manifest_dir: &Path) {
         );
     }
 
-    // These reach `src/wifi.rs` as `env!("EZAL_WIFI_SSID")` etc. We always
+    // These reach `src/main.rs` as `env!("EZAL_WIFI_SSID")` etc. We always
     // set them (possibly to "") so `env!` never fails the compile. Nothing
     // may follow that can fail, or Cargo would echo the credentials.
     println!("cargo:rustc-env=EZAL_WIFI_SSID={ssid}");

@@ -5,11 +5,12 @@ mod common;
 use common::{installed, sample, TEST_CALIBRATION};
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput, ActuatorUpdate};
 use ezal_core::coordination::CoordinationState;
-use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, MOVEMENT_LEASE_MS};
+use ezal_core::drive::{
+    AzimuthDirection, Command, CommandEnvelope, DriveCommand, MOVEMENT_LEASE_MS,
+};
 use ezal_core::duty::DutyHistory;
 use ezal_core::feedback::FeedbackMonitor;
 use ezal_core::interlock::FeedbackInterlock;
-use ezal_core::mailbox::CommandEnvelope;
 use ezal_core::motion::{MotionConfig, MotionFault};
 use ezal_core::network::NetworkGate;
 use ezal_core::position::Pointing;

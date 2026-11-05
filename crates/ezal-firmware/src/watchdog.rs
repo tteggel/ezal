@@ -30,7 +30,7 @@ pub fn start(watchdog: &mut Watchdog) {
     // isolation latches that can hold a pin's last output state through a
     // reset until boot reinitialises the pad, so the board's transistor-base
     // pull-downs may only take effect once the next boot claims the pins.
-    // docs/DEVELOPMENT.md has the bench check that measures this window.
+    // docs/CALIBRATION.md#bench-verification measures this window.
     embassy_rp::pac::PSM.wdsel().write(|w| {
         *w = embassy_rp::pac::psm::regs::Wdsel(0x01ff_ffff);
         w.set_rosc(false);

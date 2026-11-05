@@ -3,9 +3,9 @@
 use crate::drive::{DriveCommand, MOVEMENT_LEASE_MS, OUTPUT_MIN_ACTIVE_MS};
 use crate::operator::OperatorToken;
 
-/// Bounded round-trip challenges for automatic WebSocket Ping/Pong ownership
-/// heartbeats. Each challenge is single-use and bound to its original grant;
-/// telemetry reads, replayed pongs and expired grants cannot renew ownership.
+/// Bounded, single-use Ping payloads for automatic WebSocket Ping/Pong
+/// ownership heartbeats. Each ping is bound to its original grant; telemetry
+/// reads, replayed pongs and expired grants cannot renew ownership.
 #[derive(Default)]
 pub struct LeaseHeartbeat {
     serial: u64,
@@ -17,11 +17,11 @@ impl LeaseHeartbeat {
     /// Issue a ping payload for the currently leased connection only.
     pub fn issue(&mut self, grant: OperatorToken, now_ms: u64) -> Option<[u8; 8]> {
         self.serial = self.serial.checked_add(1)?;
-        let challenge = CommandToken {
+        let ping = CommandToken {
             token: self.serial,
             expires_ms: now_ms.checked_add(COMMAND_MAX_AGE_MS)?,
         };
-        self.pending[self.slot] = Some((challenge, grant));
+        self.pending[self.slot] = Some((ping, grant));
         self.slot = (self.slot + 1) % self.pending.len();
         Some(self.serial.to_be_bytes())
     }
@@ -34,8 +34,8 @@ impl LeaseHeartbeat {
             .pending
             .iter_mut()
             .find(|slot| slot.is_some_and(|(t, _)| t.token == serial))?;
-        let (challenge, grant) = slot.take()?;
-        (now_ms < challenge.expires_ms).then_some(grant)
+        let (ping, grant) = slot.take()?;
+        (now_ms < ping.expires_ms).then_some(grant)
     }
 }
 
@@ -47,9 +47,6 @@ pub const TELEMETRY_PERIOD_MS: u64 = 500;
 /// How often the browser repeats a held drive state.
 pub const COMMAND_REFRESH_MS: u64 = 150;
 
-/// How long the firmware allows a movement command to live without refresh.
-pub const COMMAND_TIMEOUT_MS: u64 = MOVEMENT_LEASE_MS;
-
 /// Maximum age of the server observation a dashboard movement can reference.
 /// A token proves a recent round trip without trusting the browser's clock.
 /// Its absolute expiry also bounds motion after a command waited in a TCP
@@ -59,8 +56,8 @@ pub const COMMAND_MAX_AGE_MS: u64 = 1_000;
 // The browser's refresh must beat the firmware lease. A steadily held control
 // must also leave the minimum on-time on its lease between refreshes, or the
 // actuator would defer an activation until the following refresh.
-const _: () = assert!(COMMAND_REFRESH_MS < COMMAND_TIMEOUT_MS);
-const _: () = assert!(COMMAND_REFRESH_MS + OUTPUT_MIN_ACTIVE_MS <= COMMAND_TIMEOUT_MS);
+const _: () = assert!(COMMAND_REFRESH_MS < MOVEMENT_LEASE_MS);
+const _: () = assert!(COMMAND_REFRESH_MS + OUTPUT_MIN_ACTIVE_MS <= MOVEMENT_LEASE_MS);
 const _: () = assert!(TELEMETRY_PERIOD_MS + COMMAND_REFRESH_MS < COMMAND_MAX_AGE_MS);
 
 /// Parsed `press:<token>:<sequence>:drive:cw` or `hold:…` movement envelope.
@@ -77,8 +74,8 @@ pub struct MovementRequest {
     pub drive: DriveCommand,
 }
 
-/// One short-lived server challenge. Tokens are strings on the wire because
-/// JavaScript numbers cannot represent every `u64` exactly.
+/// One short-lived server-issued freshness token. Tokens are strings on the
+/// wire because JavaScript numbers cannot represent every `u64` exactly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandToken {
     /// Server-generated session id and serial number, represented as a string
@@ -175,16 +172,23 @@ impl CommandFreshness {
             return None;
         }
         self.last_sequence = request.sequence;
-        let deadline = deadline?.min(now_ms.saturating_add(COMMAND_TIMEOUT_MS));
+        let deadline = deadline?.min(now_ms.saturating_add(MOVEMENT_LEASE_MS));
         self.armed_until_ms = Some(deadline);
         Some(deadline)
     }
 
     /// Check a tracking action's observation without renewing it or arming a hold.
     pub fn proves_fresh(&self, token: u64, now_ms: u64) -> bool {
+        self.proof_deadline(token, now_ms).is_some()
+    }
+
+    /// Original expiry for an administrative request queued to the output owner.
+    /// Carry it through delivery instead of starting a new lifetime on receipt.
+    pub fn proof_deadline(&self, token: u64, now_ms: u64) -> Option<u64> {
         self.tokens
             .iter()
             .flatten()
-            .any(|proof| proof.token == token && now_ms < proof.expires_ms)
+            .find(|proof| proof.token == token && now_ms < proof.expires_ms)
+            .map(|proof| proof.expires_ms)
     }
 }

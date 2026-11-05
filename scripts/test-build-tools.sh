@@ -53,7 +53,6 @@ EZAL_LATITUDE_DEG=40 "$TEST_ROOT/build-script" > /dev/null
 EZAL_LONGITUDE_DEG=181 EZAL_MIN_PEAK_ELEVATION_DEG=7 "$TEST_ROOT/build-script" > /dev/null
 config=$(cat "$OUT_DIR/prediction_config.rs")
 [[ "$config" == *'longitude_deg: 181.0'* && "$config" == *'min_peak_elevation_deg: 7.0'* ]]
-grep -q 'match CONFIG.validate()' "$REPO_ROOT/crates/ezal-firmware/src/prediction.rs"
 
 # Text that is not a finite number or boolean fails in the build script, and
 # the failure must not make Cargo echo either credential from .env.
@@ -155,10 +154,13 @@ set -euo pipefail
 [[ "$1" == uf2 && "$2" == convert ]]
 [[ "$3" == "$FIXTURE_ELF" && "$6" == "$FIXTURE_ELF.uf2" ]]
 printf '%s' "$3" > "$CONVERTED_ELF"
+echo 'picotool progress'
 EOF
 chmod +x "$TEST_ROOT/bin/cargo" "$TEST_ROOT/bin/picotool"
-PATH="$TEST_ROOT/bin:$PATH" "$REPO_ROOT/scripts/build-uf2.sh" \
-    --target-dir "$TEST_ROOT/custom output" > /dev/null
+# Stdout carries exactly the ELF and UF2 paths, one per line, for CI to copy.
+artefacts=$(PATH="$TEST_ROOT/bin:$PATH" "$REPO_ROOT/scripts/build-uf2.sh" \
+    --target-dir "$TEST_ROOT/custom output" 2> /dev/null)
+[[ "$artefacts" == "$FIXTURE_ELF"$'\n'"$FIXTURE_ELF.uf2" ]]
 [[ "$(cat "$CONVERTED_ELF")" == "$FIXTURE_ELF" ]]
 rm "$CONVERTED_ELF"
 if NO_ARTIFACT=1 PATH="$TEST_ROOT/bin:$PATH" "$REPO_ROOT/scripts/build-uf2.sh" \

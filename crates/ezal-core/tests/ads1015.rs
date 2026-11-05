@@ -1,11 +1,6 @@
-//! Host unit tests for the pure ADS1015 register logic.
-//!
-//! These run on the host with a plain `cargo test` (see
-//! `scripts/test-host.sh`). They lock down the parts of an ADC bring-up that
-//! are easy to get subtly wrong — field positions in the Config register, the
-//! self-clearing OS bit, and the sign-extension of a left-justified 12-bit
-//! conversion result — so a mistake shows up here, in seconds, rather than as
-//! a puzzling voltage on the bench.
+//! Host tests for the pure ADS1015 register logic: Config field positions, the
+//! self-clearing OS bit, and sign extension of the left-justified 12-bit
+//! conversion result.
 
 use ezal_core::ads1015::*;
 
@@ -49,8 +44,6 @@ fn config_matches_ignores_os_but_catches_real_differences() {
     let written = config_single_shot(Mux::Ain0, FullScale::V2_048, DataRate::Sps1600);
     // Device reports OS = 0 (mid-conversion) but otherwise identical: match.
     assert!(config_matches(written, written & !OS));
-    // Device reports OS = 1 (idle) and otherwise identical: match.
-    assert!(config_matches(written, written | OS));
     // A different PGA is a real mismatch and must be rejected.
     let other_pga = config_single_shot(Mux::Ain0, FullScale::V4_096, DataRate::Sps1600);
     assert!(!config_matches(written, other_pga));

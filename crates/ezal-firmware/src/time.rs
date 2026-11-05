@@ -12,6 +12,8 @@ use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use ezal_core::ntp::{self, TimeSample, UtcClock};
 
+/// Kept outside STATE: prediction::report reads it while request_tracking
+/// holds STATE's RefCell borrow, so a read through STATE would panic.
 static CLOCK: Mutex<CriticalSectionRawMutex, Cell<UtcClock>> =
     Mutex::new(Cell::new(UtcClock::new()));
 

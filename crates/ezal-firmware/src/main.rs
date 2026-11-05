@@ -18,6 +18,7 @@ mod tracking;
 mod watchdog;
 mod web;
 mod wifi;
+mod ws_receive;
 
 // ─── imports ────────────────────────────────────────────────────────────
 use cyw43::NetDriver;
@@ -44,9 +45,8 @@ use wifi::Wifi;
 use defmt_rtt as _;
 use panic_probe as _;
 
-// The `imagedef-secure-exe` Embassy feature supplies the RP2350 image header.
-// memory.x places its .start_block within the first 4 KiB, where boot ROM must
-// find it to accept the image. Keep that section placement when changing links.
+// The `imagedef-secure-exe` Embassy feature supplies the RP2350 image header;
+// memory.x places it where the boot ROM looks.
 
 // Each async peripheral receives the interrupt binding owned by main.
 bind_interrupts!(struct Irqs {
@@ -57,10 +57,9 @@ bind_interrupts!(struct Irqs {
 
 // ─── tunables ───────────────────────────────────────────────────────────
 
-/// Station-mode WiFi credentials, baked in from `.env` at build time by
-/// `build.rs` (there's no filesystem on the Pico to read them at runtime).
-/// They're empty until you copy `.env.example` to `.env` and fill it in; the
-/// WiFi supervisor validates them and parks if they cannot be used.
+/// WiFi credentials, baked in from `.env` by `build.rs` (see
+/// `docs/DEVELOPMENT.md`). The WiFi supervisor validates them and parks if they
+/// cannot be used.
 const WIFI_SSID: &str = env!("EZAL_WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("EZAL_WIFI_PASSWORD");
 
@@ -108,10 +107,7 @@ async fn main(spawner: Spawner) {
     let i2c = I2c::new_async(p.I2C0, p.PIN_5, p.PIN_4, Irqs, i2c::Config::default());
     let mut adc = Ads1015::new(i2c);
 
-    info!(
-        "ezal adc-bringup: POSTing ADS1015 at 0x{=u8:x}",
-        ads1015::I2C_ADDR
-    );
+    info!("ezal: POSTing ADS1015 at 0x{=u8:x}", ads1015::I2C_ADDR);
     match with_timeout(ADC_POST_TIMEOUT, adc.post()).await {
         Ok(Ok(r)) => {
             state::STATE.store_raw_feedback(FeedbackVoltages {
@@ -139,14 +135,9 @@ async fn main(spawner: Spawner) {
     spawner.spawn(feedback::run(adc, &state::STATE).expect("static task pool exhausted"));
     info!("ezal: manual control; outputs idle until operator input");
 
-    // ─── WiFi: bring up the CYW43439 and join the AP (station mode) ───
-    // The Pico 2 W's on-module radio. `Wifi::init` powers it and spawns its
-    // driver task; network supervision joins the access point whose credentials were
-    // baked in from `.env` at build time. GP23/24/25/29, PIO0 and one DMA
-    // channel are wired to the CYW43439 on the module and clash with nothing
-    // else here. main owns `Irqs`, so it builds the two peripherals that
-    // consume interrupts — the PIO block and the DMA channel — and hands them
-    // over; the four radio pins go with them.
+    // ─── WiFi: the CYW43439 radio, wired as docs/HARDWARE.md lists ───
+    // main owns `Irqs`, so it builds the interrupt-driven PIO block and DMA
+    // channel and hands them to `Wifi::init` with the four radio pins.
     let creds = Credentials {
         ssid: WIFI_SSID,
         password: WIFI_PASSWORD,

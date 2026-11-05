@@ -2,31 +2,22 @@
 # ezal-core — pure, no_std logic
 # ────────────────────────────────────────────────────────────────────────────
 #
-# This crate is deliberately hardware-independent. It holds calibration,
-# pointing units, advisory pass prediction, feedback validation, actuator policy, wire
-# protocol, ADC register logic, and the embedded dashboard asset.
-#
-# Because it has no hardware dependencies, it can be:
-#   * compiled for the embedded target (no_std, no allocator),
-#   * tested on the host with `./scripts/test-host.sh`,
-#   * compiled for fuzzing, miri, or other host-only verification tools.
-#
-# Anything that needs `embassy-rp`, `embedded-hal`, or talks to actual
-# peripherals belongs in `ezal-firmware`, not here.
+# This crate is deliberately hardware-independent. It holds the control,
+# prediction and tracking policy, the wire protocol and the dashboard asset;
+# the crate doc in src/lib.rs lists its modules. It builds for the embedded
+# target (no_std, no allocator) and is tested on the host with
+# `./scripts/test-host.sh`. Anything that needs `embassy-rp` or touches a
+# peripheral belongs in `ezal-firmware`.
 
 [package]
 name        = "ezal-core"
 description = "Hardware-independent logic for the ezal antenna-tracker firmware."
 version     = "0.1.0"
 
-# Inherit metadata from the workspace so we keep one source of truth.
 edition.workspace      = true
 license.workspace      = true
 authors.workspace      = true
 repository.workspace   = true
-
-[lib]
-# The default `lib` settings are fine. No proc-macro, no special crate-type.
 
 [dependencies]
 sgp4 = { workspace = true }
@@ -37,5 +28,6 @@ heapless = { workspace = true }
 # Exercise the firmware receive adapter against the same WebSocket parser,
 # using an in-memory socket and clock without an embedded runtime. The version
 # comes from the workspace, so these tests can never drift onto a different
-# picoserve than the firmware ships; only the feature set differs.
+# picoserve than the firmware ships; only the feature set differs, because the
+# firmware's `embassy` runtime cannot be built for the host.
 picoserve = { workspace = true, features = ["ws"] }
