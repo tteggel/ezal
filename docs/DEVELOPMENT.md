@@ -302,6 +302,21 @@ do not select its test targets with `--workspace --all-targets`.
 CI runs the same scripts: the lint script, the three test scripts, and
 `build-uf2.sh`, uploading the firmware's ELF and UF2 under `dist/`.
 
+### Build the walkthrough
+
+The [interactive walkthrough](https://tteggel.github.io/ezal/) quotes this
+source tree, so a change to code that it excerpts can fail its build:
+
+```bash
+python3 docs/walkthrough/build.py
+```
+
+The build names the excerpt whose anchor text no longer matches. Fix the
+anchor, and the explanation around it, in `docs/walkthrough/sections/`; see
+the [walkthrough README](walkthrough/README.md). A second workflow runs this
+build on every pull request, in the flake's `.#walkthrough` shell, and
+publishes the page to GitHub Pages from `main`.
+
 To dump the CYW43 radio's own console log, enable the driver's
 diagnostic feature with a debug defmt filter:
 

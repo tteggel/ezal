@@ -15,7 +15,8 @@
 #   * probe-rs       — flashes the Pico 2 and streams defmt logs
 #   * picotool       — optional, for UF2 / BOOTSEL flashing
 #   * Node.js        — executes the dashboard behavior tests without npm
-#   * Python 3 + schemdraw — for re-rendering design/circuit.py
+#   * Python 3 + schemdraw — for re-rendering design/circuit.py and
+#     building the walkthrough
 #
 # Updating any of the above: change the pin here, run `nix flake update`,
 # review the diff to flake.lock, commit.
@@ -107,6 +108,7 @@
             echo "  Host tests    : ./scripts/test-host.sh"
             echo "  Dashboard     : ./scripts/test-dashboard.sh"
             echo "  Re-render SVG : python3 design/circuit.py"
+            echo "  Walkthrough   : python3 docs/walkthrough/build.py"
             echo "─────────────────────────────────────────────────────"
             echo
           '';
@@ -140,6 +142,14 @@
         # the other Rust jobs; flake.lock pins both toolchains.
         devShells.dashboard = pkgs.mkShell {
           packages = [ rustToolchain pkgs.nodejs ];
+        };
+
+        # ── Walkthrough build ───────────────────────────────────────
+        # `docs/walkthrough/build.py` needs only Python's standard
+        # library, so this shell carries Python and no compiler.
+        # `walkthrough.yml` builds and publishes the page from it.
+        devShells.walkthrough = pkgs.mkShellNoCC {
+          packages = [ pkgs.python3 ];
         };
       });
 }

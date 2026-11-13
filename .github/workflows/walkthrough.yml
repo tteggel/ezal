@@ -1,0 +1,69 @@
+# ────────────────────────────────────────────────────────────────────────
+# Builds the interactive walkthrough and publishes it to GitHub Pages.
+#
+# docs/walkthrough/build.py assembles one self-contained HTML page and
+# copies its code excerpts out of the source tree as it does so. It fails
+# when the text that anchors an excerpt no longer matches the code, so the
+# build runs on every pull request too: a change that outdates the
+# explanation is caught before it merges. A push to main also publishes.
+#
+# The build runs in the flake's lean `.#walkthrough` shell (Python only),
+# so flake.lock pins it like every job in ci.yml.
+# ────────────────────────────────────────────────────────────────────────
+
+name: Walkthrough
+
+# The build only reads the repository. The publish job asks for more below.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer commit on a pull request replaces the older run. A deployment
+# from main is left to finish.
+concurrency:
+  group: walkthrough-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ── Assemble the page ────────────────────────────────────────────────
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - name: Load the .#walkthrough dev shell
+        uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+        with:
+          arguments: ".#walkthrough"
+      - name: Build the page
+        run: |
+          mkdir -p site
+          python3 docs/walkthrough/build.py -o site/index.html
+      - name: Upload the page
+        # The publish job deploys this artifact. On a pull request it lets a
+        # reviewer download the page as built from that branch.
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/
+
+  # ── Publish to GitHub Pages ──────────────────────────────────────────
+  deploy:
+    name: Publish
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    # Deploying to Pages needs these two and nothing else.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
