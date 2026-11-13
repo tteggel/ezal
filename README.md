@@ -66,7 +66,7 @@ wait; normal duty limits remain active. See the
 
 ## Documentation
 
-- **[Interactive walkthrough](https://tteggel.github.io/ezal/)**: seven chapters
+- **[Interactive walkthrough](https://tteggel.org/ezal/)**: seven chapters
   for a newcomer, from power-on through the output decision to finding and
   following a satellite, with figures to operate, the source quoted in place
   and a log of open questions. It is built from

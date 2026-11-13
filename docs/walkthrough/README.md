@@ -1,6 +1,6 @@
 # ezal interactive walkthrough
 
-Read it at <https://tteggel.github.io/ezal/>.
+Read it at <https://tteggel.org/ezal/>.
 
 Seven chapters follow one request to move, from power reaching the Pico to a motor turning, and then let a satellite make the requests. The figures are teaching models in JavaScript: they take their constants and rules from the Rust source, but they do not run the firmware and cannot reach hardware. The code excerpts are the firmware itself, copied out of the repository each time the page is built.
 

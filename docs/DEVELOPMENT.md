@@ -304,7 +304,7 @@ CI runs the same scripts: the lint script, the three test scripts, and
 
 ### Build the walkthrough
 
-The [interactive walkthrough](https://tteggel.github.io/ezal/) quotes this
+The [interactive walkthrough](https://tteggel.org/ezal/) quotes this
 source tree, so a change to code that it excerpts can fail its build:
 
 ```bash
