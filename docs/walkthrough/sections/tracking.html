@@ -1,0 +1,318 @@
+<style>
+.tb-read{margin:.7rem 0 0;font-size:.95rem;line-height:1.55;max-width:70ch}
+.tb-read+.tb-read{margin-top:.3rem}
+.tb-wide{flex-basis:100%!important}
+.tb-wide input[type=range]{max-width:none}
+.tb-options{border:0;padding:0;margin:.8rem 0 0;min-width:0;display:flex;flex-wrap:wrap;gap:.35rem 1.2rem;font-size:.9rem}
+.tb-options legend{padding:0;margin-bottom:.3rem;color:#18354a;font-weight:600}
+.tb-options label,.tb-check{display:flex!important;flex:0 1 auto!important;align-items:center;gap:.45rem}
+.tb-scrub{cursor:ew-resize;touch-action:pan-y}
+</style>
+<section class="chapter" id="tracking">
+  <h2>6. Let the device follow a satellite</h2>
+  <p class="lead">Chapter 5 ended with a direction for every moment of a pass. What has to happen before four pins can act on it, with nobody holding a button?</p>
+  <p>Take one real pass from the orbit data recorded in the repository’s tests. On the evening of 7 October 2026 the weather satellite METOP-C rises over Clevedon in the south-south-west at 21:43:40 UTC, climbs to 36° above the horizon in the west, and sets in the north-north-west 12 minutes and 9 seconds later. We will call those twelve minutes the <strong>window</strong>. For any instant inside it, chapter 5’s arithmetic gives a <span class="c-sat">direction</span>: an azimuth and an elevation.</p>
+  <p>Three things stand between that smooth curve and the motors. The dish cannot move smoothly. The arithmetic needs the date and time, which the board does not know when it powers on. And somebody has to keep asking for movement for twelve minutes, when chapter 3 made sure that a request dies within a second of its sender going quiet. This chapter takes them in turn.</p>
+
+  <h3>The dish cannot glide</h3>
+  <p>Chapter 4 ended at four switches. Each one is closed or open, so each motor is running at its one speed or not running. There is no “slowly”. The satellite, though, drifts across the sky at a fraction of a degree per second: in this pass, never faster than 0.41° per second in azimuth. The azimuth motor turns about 5° per second. The only way to keep pace with something slow, using a motor that is either fast or stopped, is to move in hops.</p>
+  <p>How small can a hop be? Chapter 4’s output rule keeps a pin high for at least half a second, then keeps that motor off for at least two. The top half of the figure shows what the repository assumes the dish does during that shortest pulse: nothing for the first 0.3 s while the motor gets going, 0.2 s of travel at full speed, and 0.5 s more of coasting after the pin drops, counted at full speed. For the azimuth motor that adds up to 3.6°. Nobody has measured these on the real rotator yet. They are placeholders, and chapter 7 comes back to them.</p>
+
+  <figure class="live" id="tb-pulse">
+    <div id="tb-pulse-draw"></div>
+    <div class="controls">
+      <label for="tb-pulse-gap">How far the satellite is ahead of the dish: <output id="tb-pulse-gap-out" for="tb-pulse-gap"></output>
+        <input type="range" id="tb-pulse-gap" min="-5" max="5" step="0.05" value="1.2"></label>
+      <label for="tb-pulse-axis">Motor
+        <select id="tb-pulse-axis"><option value="0">Azimuth, 5.14° per second</option><option value="1">Elevation, 2.25° per second</option></select></label>
+    </div>
+    <p class="tb-read" id="tb-pulse-read" role="status" aria-live="polite"></p>
+    <figcaption>One pulse, and whether it is worth taking. The lower half mirrors the resting branch of <code>AxisFollower::request</code> for a satellite that is standing still; the real rule first moves the gap one second along the satellite’s path.</figcaption>
+  </figure>
+
+  <p>The lower half is a question that one small piece of the firmware, the <strong>follower</strong>, asks about each motor many times a second: is a hop worth taking? Only if it leaves the dish closer to the satellite than it is now. So the follower waits until the gap is more than half a hop, plus 0.15° so that two nearly equal choices do not set the switch chattering. For azimuth that comes to 1.95°. For elevation, with its slower motor and 1.6° hop, it is 0.94°.</p>
+  <p>Here is that rule. In the source, <code>error</code> is the gap, <code>velocity</code> is how fast the satellite’s direction is changing on this axis, and <code>rate</code> is the motor’s assumed speed.</p>
+
+  <figure class="code" data-src="crates/ezal-core/src/tracking/controller.rs">
+    <figcaption>The follower deciding whether a resting motor should start.</figcaption>
+    <pre data-from="A fixed-speed minimum pulse should improve" data-to="then_some(future_error &gt; 0.0)"></pre>
+    <ol>
+      <li data-at="let pulse_travel = rate">How far the shortest pulse carries the dish: speed × (0.5 s of pulse − 0.3 s getting going + 0.5 s coasting). For azimuth, 3.6°.</li>
+      <li data-at="let future_error =">Where the gap will be one second from now, when the dish has stopped again. The satellite keeps moving meanwhile.</li>
+      <li data-at="then_some(future_error">More than half a hop plus the margin? Then ask for a pulse, in the direction of the gap. Otherwise ask for nothing.</li>
+    </ol>
+  </figure>
+
+  <p>While a motor is running, the branch just above this one asks the mirror image: if the pin dropped as soon as the output rule allows, would the dish still stop short? If so, keep going. In our pass it never does. Every pulse is the shortest one.</p>
+
+  <h3>Following is a staircase</h3>
+  <p>Now apply that rule for twelve minutes. The figure replays the whole pass, starting with the dish already pointed at the place where the satellite rises. Drag the time, or press Play, and watch three views of the same moment. Two are the views chapter 2 used: the azimuth from above and the elevation from the side. The third looks along the dish’s own aim: the cross is where the dish points and the <span class="c-sat">dot</span> is the satellite. Underneath, the whole pass is laid out at once. Each tick is one pulse, drawn in the upper half of its row if it raised the angle and in the lower half if it lowered it.</p>
+
+  <figure class="live" id="tb-pass">
+    <div id="tb-pass-draw"></div>
+    <div class="controls">
+      <label class="tb-wide" for="tb-pass-time">Time since the window opened: <output id="tb-pass-time-out" for="tb-pass-time"></output>
+        <input type="range" id="tb-pass-time" min="0" max="729" step="0.5" value="0"></label>
+      <button type="button" id="tb-pass-play">Play</button>
+      <label for="tb-pass-which">Pass
+        <select id="tb-pass-which">
+          <option value="metopc">METOP-C, 21:43 on 7 October: up to 36°</option>
+          <option value="metopb">METOP-B, 09:33 on 8 October: up to 77°</option>
+        </select></label>
+      <label for="tb-pass-motor">Assumed motors
+        <select id="tb-pass-motor">
+          <option value="nominal">Expected: 5.14 and 2.25° per second</option>
+          <option value="slow">Slow: 4.0 and 1.8° per second</option>
+          <option value="fast">Fast: 7.0 and 3.0° per second</option>
+        </select></label>
+    </div>
+    <p class="tb-read" id="tb-pass-read" role="status" aria-live="polite"></p>
+    <p class="tb-read" id="tb-pass-sum"></p>
+    <figcaption>This page re-runs the follower (<code>controller.rs</code>), the output timing of chapter 4 (<code>drive.rs</code>) and the assumed dish (<code>model.rs</code>) with the repository’s numbers. With the expected and the slow motors it reproduces the pulse counts of the Rust rehearsal for both passes, and its worst error to 0.01°; with the fast motors on the higher pass it differs by a few pulses. It leaves out the move to the start, noise in the readings, and the travel-limit and stalled-motor checks.</figcaption>
+  </figure>
+
+  <p>The dot drifts away from the cross. A motor fires. The dot jumps to the other side and starts drifting again. Over the pass each motor fires 39 times for half a second: 19.5 s of running, out of the three minutes chapter 4 allows each motor before it must rest.</p>
+  <p>Now choose the other pass. The next morning METOP-B goes nearly overhead, 77° up, and around the top its azimuth swings through 100° in a single minute. On a compass that looks like more than any motor could follow. It is not. The azimuth motor is assumed to turn 308° in a minute, three times as fast, and that close to straight up a degree of azimuth is worth less than a quarter of a degree of sky. What changes is the pulse. Around the top the follower takes its other branch and holds the azimuth pin high for more than a second at a time, and the dish swings round after the satellite. It stays about as close as it did on the low pass.</p>
+  <p>How far off is too far? The dish’s beam is roughly 15° wide, and the repository budgets 3° of pointing error in all, which by its own estimate costs about half a decibel of signal. One of those degrees is set aside for what no rehearsal can see: a mount that is not quite level, orbit data a few days old, a clock a fraction of a second out. That leaves <span class="c-warn">2°</span> for the staircase: the amber ring and the amber line in the figure. The dashboard prints the same budget as <em>tolerance 3.0°, reserved uncertainty 1.0°</em>.</p>
+  <p>Before any motor moves, the Pico rehearses the pass. It runs the real follower and the real output rules against a simulated dish, from the first move to the last coast, and checks every 20 ms that the dish is inside the 2°. Then it does it again with slower motors, with faster ones, with later position readings, with readings that flicker by one count of the ADC: nine rehearsals in all. Try the other motors in the figure. With the fast ones a hop is 4.9° while the follower still expects 3.6°, so the dish overshoots and turns back, again and again. On the low pass it spends over a minute outside the ring.</p>
+  <p>The dashboard reports the outcome in one of three ways.</p>
+  <ul>
+    <li><strong>Full pass supported by the current model.</strong> All nine rehearsals stayed inside 2° from the first second to the last.</li>
+    <li><strong>Partial reception supported by the current model.</strong> Not quite. The planner then allows itself one planned interruption: stop, drive ahead to a place the satellite has not reached yet, wait there, and pick it up again. If the rest of the pass stays inside 2° in all nine rehearsals, the dashboard also shows the stretch it expects to lose as the <em>Missed interval</em>.</li>
+    <li><strong>Tracking blocked</strong>, followed by the first check that failed.</li>
+  </ul>
+  <p>For both passes in the figure, with the numbers checked in today, the answer is <strong>Tracking blocked</strong>. Even the expected motors graze the line, and the fast ones are far outside it. We ran the repository’s planner over all 16 passes that the satellites in its recorded orbit data make in the twelve hours from 15:00 UTC on 7 October, and it blocked every one. A 3.6° hop is too coarse for a 2° allowance. That is the planner doing its job with placeholder numbers, not a verdict on the rotator. Chapter 7 says what would change the answer.</p>
+  <p class="code-links">The budget and the nine rehearsals: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L80-L160"><code>PlanningConfig::default</code></a>. The reasoning behind 3°: <a href="https://github.com/tteggel/ezal/blob/main/docs/TRACKING.md#L142-L156">TRACKING.md, pointing budget</a>. The dashboard’s wording: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/dashboard.html#L770-L771">dashboard.html</a>.</p>
+
+  <h3>North is in the way</h3>
+  <p>A direction can fail to be a motor instruction in one more way. Chapter 2’s azimuth runs from 0° to 360°, and the firmware will not drive past either end. No rotator can turn for ever: the cables to the dish would wind up. In the sky, 359° and 1° are neighbours. For the motor they are almost a full turn apart.</p>
+
+  <figure class="live" id="tb-north">
+    <div id="tb-north-draw"></div>
+    <div class="controls">
+      <label for="tb-north-az">The satellite’s azimuth, moving west across north: <output id="tb-north-az-out" for="tb-north-az"></output>
+        <input type="range" id="tb-north-az" min="0" max="120" step="1" value="35"></label>
+      <label class="tb-check" for="tb-north-flip"><input type="checkbox" id="tb-north-flip"> Flip the dish over the top</label>
+    </div>
+    <p class="tb-read" id="tb-north-read" role="status" aria-live="polite"></p>
+    <figcaption>One direction, two pairs of motor angles. The flip is <code>RouteKind::Inverted</code> in <code>route.rs</code>: add half a turn to the azimuth and measure the elevation from the opposite horizon. The satellite’s elevation is held at 40° here.</figcaption>
+  </figure>
+
+  <p>So the planner never hands the follower directions in the sky. It writes out a <strong>route</strong>: the two motor angles for every moment of the pass, as one unbroken line. It has more than one way to write it. Besides the plain one it can shift the azimuth by a whole turn either way, for a rotator that can turn past 360°. It can tip the dish over the top and look backwards for the whole pass, as the checkbox does, or switch from one to the other near the top of a high pass. That makes 24 candidates. The planner throws out every one that leaves the travel which chapter 2’s calibration allows, rehearses the rest, and keeps the best.</p>
+  <p>With the limits checked in today, 0° to 360° and 0° to 90°, only the plain route can ever fit, and a pass that crosses north has no route at all. That is not a rare case. At 19:41 on the same evening as our first pass, METOP-B rises in the south-east and sets 10° west of north, and the dashboard would show it blocked. The repository’s own tests replay exactly that pass. They give the simulated rotator the full 450° and 180° that a G-5500 can turn, and the planner then follows it flipped.</p>
+  <p class="code-links">The 24 candidates: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/route.rs#L96-L111"><code>route::choice</code></a>. Turning a direction into motor angles: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/route.rs#L167-L178"><code>route::transform</code></a>. Today’s limits: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/position.rs#L320-L336"><code>HARD_CODED_CALIBRATION</code></a>.</p>
+
+  <h3>Two clocks</h3>
+  <p>Chapter 5’s arithmetic begins by asking the date and time, to a fraction of a second. Get the time wrong by one second and the direction is wrong by however far the satellite moves in a second: up to half a degree in the two passes above, and the planner allows for 2°.</p>
+  <p>A Pico has no clock that survives being switched off. What it has is a count that starts at zero when it boots and only ever goes up: its <strong>uptime</strong>. Every deadline in chapters 3 and 4 is an uptime. Nothing can make uptime jump, and that is what a deadline needs.</p>
+  <p>The real time has to come from outside. Once the network is up, the board asks a public time server and gets back the time in <strong>UTC</strong>, the world’s reference time, with no time zones or summer time. From how long the question and answer took to travel, it also works out how wrong the answer might be. It asks again every five minutes. The instant an answer arrives, the board notes its own uptime. That makes one <strong>matched pair</strong> of readings: when uptime was 1 000.000 s, UTC was 21:40:00.000. From that pair, any time on one clock becomes a time on the other by counting the same number of seconds along both.</p>
+
+  <figure class="live" id="tb-clock">
+    <div id="tb-clock-draw"></div>
+    <div class="controls">
+      <label class="tb-wide" for="tb-clock-gap">The time server’s next answer, compared with the run’s clock: <output id="tb-clock-gap-out" for="tb-clock-gap"></output>
+        <input type="range" id="tb-clock-gap" min="-400" max="400" step="5" value="60"></label>
+    </div>
+    <p class="tb-read" id="tb-clock-read" role="status" aria-live="polite"></p>
+    <figcaption>The thick tie is the matched pair. The dashed tie is the next check, with its disagreement drawn hundreds of times larger than life. The bar is the test in <code>ExecutionClock::validate</code>. The times of the two checks, and the 20 ms of uncertainty in the second answer, are invented for the example.</figcaption>
+  </figure>
+
+  <p>When the run starts to move the dish, it keeps one matched pair and uses that pair alone until the window closes. Every later answer from the time server is only compared with it. The bar in the figure is the whole comparison: the disagreement, plus the new answer’s own uncertainty, plus the drift the board’s crystal could add before the window closes (it is allowed 100 parts in a million, or 6 ms a minute), must fit inside 250 ms.</p>
+  <p>Why 250 ms? Half of the reserved degree is given to timing, and the planner assumes nothing it follows crosses the sky faster than 2° per second. A quarter of a second at 2° per second is half a degree.</p>
+  <p>If the sum fits, nothing moves: not the schedule, not a single target. If it does not fit, the run stops. There is no third outcome in which the schedule quietly slides, because a deadline that can move is not a deadline.</p>
+
+  <figure class="code" data-src="crates/ezal-core/src/tracking/clock.rs" data-comments="omit">
+    <figcaption>The run’s clock, and the only thing a later time check can do to it.</figcaption>
+    <pre data-from="pub struct ExecutionClock {" data-to="^}"></pre>
+    <pre data-from="pub fn validate(self, current: UtcClock, now_ms: u64)" data-to="^    }"></pre>
+    <ol>
+      <li data-at="anchor: UtcAnchor,">The matched pair. The code calls it an anchor.</li>
+      <li data-at="allowance_ms: f64,">The 250 ms, worked out once from the planner’s numbers.</li>
+      <li data-at="let latest = current.anchor()">The newest pair from the time server, which the rest of the firmware is already using.</li>
+      <li data-at="let frozen = self.anchor">Ask both pairs the same question: what is UTC at this uptime?</li>
+      <li data-at="let worst_ms">Their disagreement, plus how wrong the new pair could be by the time the window closes.</li>
+      <li data-at="return Err(TimingError::Correction)">Too much: the caller stops the run. Nowhere does this function write to <code>self.anchor</code>.</li>
+    </ol>
+  </figure>
+
+  <p>Before the dish starts to move, the rule is simpler. Any new answer from the time server throws the plan away, and the Pico plans the pass again from the new pair.</p>
+  <p class="code-links">Asking the time server, and noting uptime when it answers: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/time.rs#L30-L66"><code>time::synchronize</code></a>. Converting between the clocks: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/ntp.rs#L165-L182"><code>UtcAnchor</code></a>.</p>
+
+  <h3>From a row in the forecast to a moving dish</h3>
+  <p>Everything so far happens before the dish moves, and none of it moves the dish. Selecting a row in the dashboard’s forecast asks the Pico for a plan and shows the verdict. That is all it does. What follows is a sequence that the Pico walks through by its own clock. Drag the time through it, and try the two switches along the way.</p>
+
+  <figure class="live" id="tb-life">
+    <div id="tb-life-draw"></div>
+    <div class="controls">
+      <label class="tb-wide" for="tb-life-time">Time: <output id="tb-life-time-out" for="tb-life-time"></output>
+        <input type="range" id="tb-life-time" min="0" max="1000" step="1" value="0"></label>
+      <button type="button" id="tb-life-arm">Enter Tracking</button>
+      <button type="button" id="tb-life-cancel">Cancel tracking</button>
+      <label class="tb-check" for="tb-life-browser"><input type="checkbox" id="tb-life-browser" checked> Browser open</label>
+      <label class="tb-check" for="tb-life-wifi"><input type="checkbox" id="tb-life-wifi" checked> Pico’s Wi-Fi up</label>
+      <button type="button" id="tb-life-reset">Start again</button>
+    </div>
+    <p class="tb-read" id="tb-life-read" role="status" aria-live="polite"></p>
+    <figcaption>One run, as <code>TrackingLifecycle::tick</code> steps it. Time is stretched around the start, where the stages are short. A press or a switch takes effect at the time shown, and replaces anything done after it. The figure assumes a plan the planner supports and a dish that needs 7 s to settle at the start.</figcaption>
+  </figure>
+
+  <p><strong>Enter Tracking</strong> is the one human act. The browser that holds control (chapter 3) presses it. From then on the dashboard hides its direction buttons and the Pico refuses manual presses. The run is <em>armed</em>, and waiting.</p>
+  <p>A minute before the window opens, the Pico starts <em>preparing</em>. It starts earlier if the dish has far to go: the travel time it estimated, plus 20 s. (The dashboard’s <em>Prepare now</em> button asks it to plan for starting at once instead.) This is the moment it keeps its one matched pair, and its one copy of the orbit data and of the route. The dashboard says <em>Plan frozen for this run</em>. Then it drives the dish to where the satellite will rise.</p>
+  <p>When the position readings have shown the dish within 3° of that spot and at rest for 2 s, the run is <em>ready</em>. Ready does not mean the motors are locked. The follower is still running against the start of the route, and if wind or a slipping gear moves the dish it will pulse a motor to put it back.</p>
+  <p>When the window opens the run is <em>following</em>, and the target becomes the route. When the window closes the Pico withdraws its requests and returns to manual mode. The dish stays where it stopped. Nothing parks it, and no second pass begins.</p>
+
+  <figure class="code" data-src="crates/ezal-core/src/tracking/lifecycle.rs" data-comments="omit">
+    <figcaption>The stages, under the names the dashboard shows. Reacquiring comes at the end of this chapter.</figcaption>
+    <pre data-from="pub enum TrackingPhase {" data-to="^}"></pre>
+  </figure>
+
+  <h3>Close the browser, lose the network</h3>
+  <p>Close the browser in the figure at any stage, and the run carries on. Chapter 3’s control lease answers the question <em>who may give instructions?</em> After Enter Tracking, the instruction has been given. This is the function that runs when a browser’s connection closes:</p>
+
+  <figure class="code" data-src="crates/ezal-core/src/tracking/lifecycle.rs" data-comments="omit">
+    <figcaption>A browser lets go of control.</figcaption>
+    <pre data-from="pub fn release(" data-to="^    }"></pre>
+    <ol>
+      <li data-at="if released &amp;&amp; self.mode == TrackingMode::Manual">Only in manual mode does letting go write a stop into the mailbox. A tracking run is not the browser’s movement to stop.</li>
+    </ol>
+  </figure>
+
+  <p>Now take the Pico’s own Wi-Fi away instead. The run stops at once, and bringing the network back does not revive it. Why insist on a network that the run never uses? Because the network is the only way anyone can tell the Pico to stop. While it is reachable, any browser can open the dashboard, take control and press Cancel tracking. A run that nobody could cancel is not allowed to continue.</p>
+  <p>After a run is stopped or cancelled, the Pico keeps the selection and soon shows a new verdict for whatever is left of the pass. Moving again takes a new press of Enter Tracking.</p>
+  <p class="code-links">The network check that every tracking turn passes through: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L656-L668"><code>TrackingRuntime::check_inputs</code></a>.</p>
+
+  <h3>Where the satellite replaces the finger</h3>
+  <p>In manual control, the browser writes a note into the mailbox every 150 ms while you hold a button. During a run, this function writes it instead, every 10 ms:</p>
+
+  <figure class="code" data-src="crates/ezal-core/src/tracking/runtime.rs" data-comments="omit">
+    <figcaption>One turn of a run, from stage to note.</figcaption>
+    <pre data-from="let preparing = matches!(state.phase, TrackingPhase::Preparing | TrackingPhase::Ready);" data-to="plan.route.pointing_at(t))"></pre>
+    <pre data-from="let command = follower.command(target, feedback.last_valid, actuator.actual(), now);"></pre>
+    <pre data-from="self.lifecycle.tracking_command(" data-to=");"></pre>
+    <ol>
+      <li data-at="let offset = if preparing">Preparing and ready both aim at the first moment of the route. That is why a ready dish can still be nudged back.</li>
+      <li data-at="plan.route.pointing_at(t)">Otherwise the target is the route at the present moment, counted from when the window opened.</li>
+      <li data-at="follower.command(">The follower of the first figure, given the target, the newest position reading and what the pins are really doing.</li>
+      <li data-at="valid_until_ms: now.saturating_add(MOVEMENT_LEASE_MS)">Its answer goes into the same mailbox as a button press, and is good for the same 750 ms.</li>
+    </ol>
+  </figure>
+
+  <p>The rehearsal never let more than 20 ms pass between two of these turns. So if the Pico is ever later than that, the run stops rather than follow a schedule it did not rehearse.</p>
+
+  <h3>Falling behind</h3>
+  <p>The rehearsal is a prediction. During the real pass the Pico compares every position reading with where the satellite was at the instant of that reading. More than 3° apart, and the dashboard shows <em>Pointing warning</em> straight away. If it stays above 3° through a full second of fresh readings, following has failed, and the stage becomes <em>reacquiring</em>.</p>
+  <p>What happens next is the planned interruption from earlier, unplanned. The Pico drops every request and lets the dish coast to rest. It picks a place on the route a few seconds ahead, checks in a quick rehearsal that the dish can get there and follow on from it, drives there and waits for the satellite to arrive. When the readings have stayed within 2° for 2 s, the stage is following again. The same routine runs if the dish has not settled at the start by the time the window opens.</p>
+
+  <figure class="live" id="tb-recover">
+    <div id="tb-recover-draw"></div>
+    <div class="controls">
+      <label for="tb-recover-left">The window closes this long after recovery begins: <output id="tb-recover-left-out" for="tb-recover-left"></output>
+        <input type="range" id="tb-recover-left" min="3" max="45" step="1" value="40"></label>
+      <label for="tb-recover-took">The dish needs this long to catch up: <output id="tb-recover-took-out" for="tb-recover-took"></output>
+        <input type="range" id="tb-recover-took" min="6" max="40" step="1" value="12"></label>
+    </div>
+    <p class="tb-read" id="tb-recover-read" role="status" aria-live="polite"></p>
+    <figcaption>One allowance for catching up: 30 s, or the rest of the window if that is shorter (<code>enter_reacquisition</code> in <code>lifecycle.rs</code>). How long the dish really needs depends on the pass; the quickest the code allows is a little over 5 s.</figcaption>
+  </figure>
+
+  <p>However many attempts it takes, they share one allowance, fixed at the moment recovery began. The dashboard counts it down as time <em>until fixed deadline</em>. When it runs out, the run stops, like any other stop.</p>
+  <p class="code-links">The 3°, 2°, 1 s, 2 s and 30 s: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/deviation.rs#L8-L19">deviation.rs</a>. Fixing the deadline: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/lifecycle.rs#L944-L965"><code>enter_reacquisition</code></a>. Choosing where to rejoin: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/recovery.rs#L50-L56">recovery.rs</a>.</p>
+
+  <p>There are now two writers of the same note: a finger and a follower. Chapter 7 follows that note the rest of the way to the pin, and asks how much of this anyone has seen happen.</p>
+</section>
+
+<section class="chapter" id="bench">
+  <h2>7. Follow the evidence all the way to the pin</h2>
+  <p class="lead">What would convince you that a request became the right voltage on the right pin, and that a stop really took it away?</p>
+  <p>Whoever wrote it, a request for movement ends up as one note in one mailbox (chapter 3), and one task reads it. This is the moment it is read:</p>
+
+  <figure class="code" data-src="crates/ezal-core/src/coordination.rs" data-comments="omit">
+    <figcaption>Everything an output decision is made from.</figcaption>
+    <pre data-from="pub fn take_actuator_input(&amp;mut self, now_ms: u64) -&gt; ActuatorInput {" data-to="^    }"></pre>
+    <ol>
+      <li data-at="interlock: self.interlock,">The newest position reading and the travel limits (chapter 2).</li>
+      <li data-at="network: self.network,">Whether the Pico is still on the network (chapter 3).</li>
+      <li data-at="command: self.tracking.take_command(observation),">The note. Nothing here says whether a finger or a follower wrote it, and chapter 4’s decision never finds out.</li>
+    </ol>
+  </figure>
+
+  <p>And this is the loop that reads it, in the one task that owns the four pins. It runs at least every 100 ms, and every 10 ms during a tracking run.</p>
+
+  <figure class="code" data-src="crates/ezal-firmware/src/drive.rs" data-comments="omit">
+    <figcaption>One pass through the direction task’s loop.</figcaption>
+    <pre data-from="let now = Instant::now();" data-to="state.record_actuator(&amp;actuator, drain.as_millis());"></pre>
+    <pre data-from="watchdog.feed(crate::watchdog::WATCHDOG_TIMEOUT);"></pre>
+    <ol>
+      <li data-at="state.service_actuator(&amp;mut actuator, now.as_millis())">Take the three ingredients above and decide (chapter 4).</li>
+      <li data-at="outputs.apply_drive(update.output);">Set the pins to match the decision.</li>
+      <li data-at="state.record_actuator(&amp;actuator, now.as_millis());">Write down what the pins are now doing. The dashboard and the follower read this record, never the request.</li>
+      <li data-at="state.execute_tracking(now.as_millis());">Only now may a tracking run look at the result and write its next note.</li>
+      <li data-at="let drain = Instant::now();">Decide and set the pins once more, so that note is acted on in this pass.</li>
+      <li data-at="watchdog.feed(">Feed the watchdog last (chapter 1). A loop that stops deciding also stops feeding.</li>
+    </ol>
+  </figure>
+
+  <p>From the pin onward it is electricity and iron: the transistor switch of chapter 4, the G-5500 with its motor, the dish, and the voltage of chapter 2 that comes back to say where the dish is now. The figure draws that whole loop once. Break it in one place and see what stops the motor, and how long that takes.</p>
+
+  <figure class="live" id="tb-path">
+    <div id="tb-path-draw"></div>
+    <fieldset class="tb-options">
+      <legend>Who writes the note</legend>
+      <label><input type="radio" name="tb-path-source" value="press" checked> A held button</label>
+      <label><input type="radio" name="tb-path-source" value="run"> A tracking run</label>
+    </fieldset>
+    <fieldset class="tb-options">
+      <legend>What breaks</legend>
+      <label><input type="radio" name="tb-path-break" value="none" checked> Nothing</label>
+      <label><input type="radio" name="tb-path-break" value="quiet"> The writer goes quiet</label>
+      <label><input type="radio" name="tb-path-break" value="network"> The Pico drops off the network</label>
+      <label><input type="radio" name="tb-path-break" value="reading"> The position readings stop</label>
+      <label><input type="radio" name="tb-path-break" value="hang"> The processor hangs</label>
+      <label><input type="radio" name="tb-path-break" value="stall"> The dish does not turn</label>
+      <label><input type="radio" name="tb-path-break" value="stuck"> The switch sticks closed</label>
+    </fieldset>
+    <p class="tb-read" id="tb-path-read" role="status" aria-live="polite"></p>
+    <figcaption>Each answer is a rule from an earlier chapter, not a simulation: <code>MOVEMENT_LEASE_MS</code>, <code>NETWORK_HEALTH_TIMEOUT_MS</code>, <code>FEEDBACK_MAX_AGE_MS</code>, <code>WATCHDOG_TIMEOUT</code> and <code>MotionConfig::DEFAULT</code>. The bar is the longest wait; most stops are quicker. A motor that has lost its drive still coasts.</figcaption>
+  </figure>
+
+  <h3>Three kinds of evidence</h3>
+  <p><strong>On your computer.</strong> The rules of this page live in a part of the code that never touches hardware, so tests can hand it a made-up clock and made-up readings, jump straight to the instant a note expires, and check that no pin is still asked to be high. One test replays the 19:41 METOP-B pass of chapter 6 through the mailbox, the decision and the follower, with a simulated dish and the browser disconnected after Enter Tracking. These tests settle what the rules are and in what order they apply. They say nothing about electricity.</p>
+  <pre><code>./scripts/test-host.sh
+./scripts/test-dashboard.sh</code></pre>
+  <p><strong>On the bench, with the motors unpowered.</strong> A logic analyser on the four pins records when each one is really high. It can show that the pins stay low through a restart, that a released button drops its pin, that a note left unrefreshed drops it at 750 ms, and what a pin does while the watchdog resets the chip.</p>
+  <p><strong>On the installed rotator.</strong> Only the real dish can say how far one pulse carries it, how long it coasts, how much the position reading flickers at rest, and whether the dish’s beam points where its two angles say.</p>
+  <p class="code-links">The tests: <a href="https://github.com/tteggel/ezal/blob/main/scripts/test-host.sh">test-host.sh</a>, <a href="https://github.com/tteggel/ezal/blob/main/scripts/test-dashboard.sh">test-dashboard.sh</a>, and <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs#L129-L131">the replayed pass</a>. The bench and rotator steps: <a href="https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L328-L438">CALIBRATION.md, bench verification</a>.</p>
+
+  <h3>What is still unproven</h3>
+  <p>The first kind of evidence exists. The other two do not yet: the README says that the board and the rotator have not been through the bench checklist. Until they have, these stay open.</p>
+  <ul>
+    <li><strong>When a pin falls if the processor hangs.</strong> The watchdog resets the chip within 500 ms. But this chip’s pins can hold their last level through a reset, until the restarted program takes them over, and a pin held high keeps its motor running. Nobody has measured how long that lasts on this board.</li>
+    <li><strong>How the dish really moves.</strong> Its speed, the 0.3 s to get going, the 0.5 s of coasting and the 1° of slack in the gears are assumptions. Every verdict of chapter 6 rests on them. With them, the planner blocked every recorded pass we tried. Measured values, or the shorter rest between pulses that the repository keeps ready as a candidate, may change that.</li>
+    <li><strong>How far the dish can turn.</strong> The limits checked in are 0° to 360° and 0° to 90°, with placeholder voltages. The rotator turns further, and the planner’s flipped routes need that travel calibrated.</li>
+    <li><strong>How much the rehearsal’s rhythm matters.</strong> The rehearsal checks every 20 ms and the real loop runs every 10 ms. In the replayed METOP-B pass that alone moved the worst error from a predicted 2.218° to 2.345°.</li>
+    <li><strong>Whether the Pico can plan a recovery in time.</strong> Finding a place to rejoin took 398,964 small steps of rehearsal in that test, with 2 s to do it in. The test simply grants the Pico enough speed. Nobody has timed the real one.</li>
+    <li><strong>Whether a supported pass is a received pass.</strong> Every angle on this page comes from two voltages. No radio is in the loop.</li>
+  </ul>
+  <p class="code-links"><a href="https://github.com/tteggel/ezal/blob/main/README.md#L14-L17">README, validation status</a>. <a href="https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md#L346-L360">HARDWARE.md, watchdog reset</a>. <a href="https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L440-L463">CALIBRATION.md, known model limits</a>. <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/drive.rs#L45-L50"><code>RelayConfig::TRACKING_CANDIDATE</code></a>.</p>
+
+  <h3>Seven rules that happen to say 500 ms</h3>
+  <p>You have now met half a second seven times. They are seven separate rules with separate jobs, and changing one changes none of the others. In particular, the dashboard hearing from the Pico every 500 ms has nothing to do with a pulse lasting 500 ms.</p>
+  <div class="table-wrap" role="region" aria-label="Seven independent rules of 500 milliseconds" tabindex="0">
+    <table>
+      <caption>Seven independent rules that share a value today</caption>
+      <thead><tr><th scope="col">Rule</th><th scope="col">Chapter</th><th scope="col">What it does</th></tr></thead>
+      <tbody>
+        <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/watchdog.rs#L1-L9">Watchdog</a></th><td>1</td><td>Resets the chip if the direction task has not fed it for 500 ms.</td></tr>
+        <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L66-L69">Start-up check of the ADC</a></th><td>1</td><td>Gives up after 500 ms, so a stuck ADC cannot leave start-up waiting for ever.</td></tr>
+        <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/feedback.rs#L11-L12">Time allowed for one position reading</a></th><td>2</td><td>Abandons a reading that has not finished in 500 ms. The ADC is then left alone until a restart.</td></tr>
+        <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/feedback.rs#L9-L10">Age of a position reading</a></th><td>2</td><td>A reading may keep a pin high until it is 500 ms old, counted from when the reading began.</td></tr>
+        <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L51-L64">Assumed coast</a></th><td>2, 6</td><td>The dish is taken to keep turning for 500 ms after its pin drops, when working out how close to an end stop it may go and how far one pulse carries it.</td></tr>
+        <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/session.rs#L42-L45">Status to the dashboard</a></th><td>3</td><td>Each browser is sent the Pico’s status every 500 ms. Position readings are taken faster, on their own schedule.</td></tr>
+        <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/drive.rs#L16-L17">Shortest pulse</a></th><td>4, 6</td><td>A pin that goes high stays high for 500 ms, unless a release or a stop cuts it sooner.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <details><summary>Where to read on in the source</summary>
+    <p>Follow the path of this chapter’s figure: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs">main.rs</a> starts the tasks; <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/feedback.rs">feedback.rs</a> takes the position readings; <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/session.rs">session.rs</a> accepts a browser’s presses; <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs">runtime.rs</a> runs a pass; <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/coordination.rs">coordination.rs</a> holds the mailbox between them; <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/actuator.rs">actuator.rs</a> decides; and the firmware’s <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/drive.rs">drive.rs</a> sets the pins. At each step ask three things: who owns this value, how old may it be, and what takes its permission away?</p>
+  </details>
+</section>

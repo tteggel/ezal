@@ -15,5 +15,8 @@ result-*
 !crates/ezal-firmware/cyw43-firmware/*.bin
 *.defmt
 
+# The walkthrough page, built by docs/walkthrough/build.py and published by CI.
+docs/walkthrough/index.html
+
 .vscode/
 .idea/

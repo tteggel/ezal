@@ -1,0 +1,50 @@
+<section class="chapter" id="questions">
+<h2>Questions this page turned up</h2>
+<p>Explaining code line by line is a good way to find its loose ends. These are the ones met while writing this page. Each ends with the entry in <a href="https://github.com/tteggel/ezal/blob/main/docs/walkthrough/CONCERNS.md">the full log</a> that holds the evidence. None is a demonstrated fault in the firmware, and nothing in the firmware was changed to write this page.</p>
+
+<h3>Questions the code raises</h3>
+<ul class="questions">
+<li><strong>Were the calibration voltages measured?</strong> The calibration guide heads the four checked-in voltages “placeholder”, while the code calls them the installed values. They are also not what chapter 2’s resistor chain would deliver from the 2.0 to 4.5 V in the rotator’s manual. <a href="https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L22-L30">The table</a> and <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/position.rs#L320-L336">the constant</a>. <span class="ref">B5</span></li>
+<li><strong>Can a held button miss its start?</strong> A lease never outlives its token, and a token outlives the next status report by exactly the 500 ms that a motor start needs. So for part of every half second a steadily held button has too little lease left, and a start that falls due then waits for the next hold: about a fifth of a second on a quick network, longer on a slow one. <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/session.rs#L56-L61">A comment beside the timing rules</a> says they prevent this. Nothing unsafe follows. <span class="ref">C6</span></li>
+<li><strong>Should the fastest rehearsed motor sit exactly on the stall check’s limit?</strong> The planner’s fast-motor rehearsals turn at <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking.rs#L167-L178">7° and 3° per second</a>, which are also <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L51-L64">the speeds above which a reading is called implausible</a>. With one count of flicker in the readings, eight of the sixteen recorded passes were refused for “implausible speed”, a reason that says nothing about pointing. <span class="ref">T7</span></li>
+<li><strong>Is 18 laps a day a search limit or a sanity limit?</strong> <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/orbit.rs#L353-L371">The range checks</a> accept orbits of up to 18 laps a day, and anything above about 17 would be underground. A damaged record at 17.9 passes every check and produces a tidy forecast with no passes, not an error. <span class="ref">O2</span></li>
+<li><strong>How does anyone without a debug probe see a failed sensor test?</strong> Startup <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L111-L136">stops before the radio is switched on</a>, so the only record is a log line, and the Pico’s light stays as dark as it does while Wi-Fi is still joining. <span class="ref">B2</span></li>
+<li><strong>Is a fixed millisecond long enough for the sensor?</strong> Each reading <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/ads1015.rs#L38-L44">waits 1 ms</a> for a conversion that nominally takes 0.625 ms, without asking the chip whether it has finished. Slow the chip’s data rate without lengthening the wait and it would hand back the previous reading, looking fresh. <span class="ref">B3</span></li>
+<li><strong>Which rule owns the instant a reading turns 500 ms old?</strong> At exactly 500 ms <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L201-L210">a manual move may continue</a> and <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L795-L799">a tracking run stops</a>. The stricter rule ends the run, so no harm is done. <span class="ref">T9</span></li>
+</ul>
+
+<h3>What only measurement can settle</h3>
+<p>Chapter 7 lists the large ones: what a pin does while the chip restarts, how the dish really moves, how far it can turn, and whether the Pico is quick enough. The log adds three smaller ones.</p>
+<ul class="questions">
+<li><strong>Does the transistor pull the control box’s input low enough?</strong> The design <a href="https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md#L146-L156">estimates about a milliamp</a> into its base. A lit LED shows what was asked for, not that the switch closed well enough to start a motor. <span class="ref">C3</span></li>
+<li><strong>What does a quick tap do to the relays?</strong> The 500 ms minimum on-time <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/drive.rs#L16-L17">does not apply to your own release</a>, so a tap on the dashboard can ask the control box for a click a few milliseconds long, at most once every two seconds. <span class="ref">C7</span></li>
+<li><strong>How long do a healthy reading and a normal start take?</strong> The page’s 20 ms read and “a few milliseconds” of loader are illustrations. Neither has been timed. <span class="ref">B6, B8</span></li>
+</ul>
+
+<h3>Limits by design</h3>
+<ul class="questions">
+<li><strong>Tracking is refused today.</strong> With the numbers checked in, the planner blocks every pass in the recorded orbit data: a 3.6° hop is too coarse for a 2° allowance, and no pass that crosses north has a route inside 0° to 360°. That is the planner being cautious with placeholders. <span class="ref">T6, T8</span></li>
+<li><strong>Being in control is not being authenticated.</strong> Anyone who can reach the board on your network can take control when it is free, and the orbit data and the time arrive over plain connections that are checked for form, not for origin. <span class="ref">C1, O6</span></li>
+<li><strong>The run-time tank counts only ezal’s own pins.</strong> Running the motors from the control box’s front panel is invisible to it. <span class="ref">C2</span></li>
+<li><strong>The direction to a satellite is a straight line.</strong> It ignores hills, buildings and the bending of radio waves in air, and the seven-day limit on orbit data is a rule of thumb, not a bound on error. <span class="ref">O4, O7</span></li>
+</ul>
+
+<h3>Where this page simplifies</h3>
+<ul class="questions">
+<li><strong>Chapter 5 does not run SGP4.</strong> Its figures move the satellite round a plain ellipse with one steady correction. For the pass it follows that is within half a degree of ezal’s answer. Everything after that step was checked against the Rust and agrees to thirteen decimal places. <span class="ref">O1</span></li>
+<li><strong>Chapter 2 draws an ideal sensor.</strong> A real one adds offset and noise, and a real feedback voltage is not perfectly straight. <span class="ref">B7</span></li>
+<li><strong>Chapters 3 and 4 fix the network delay at 30 ms</strong>, and chapter 4’s live chart gives every hold a full lease. <span class="ref">C8</span></li>
+</ul>
+</section>
+<section class="chapter" id="reading"><h2>Primers for the next layer down</h2><p>Optional detours, for when a chapter leaves you wanting the layer underneath.</p>
+<div class="table-wrap"><table><thead><tr><th scope="col">If you want to understand…</th><th scope="col">Start here</th></tr></thead><tbody>
+<tr><td>Running Rust without an operating system</td><td><a href="https://doc.rust-lang.org/embedded-book/intro/no-std.html">The Embedded Rust Book: no_std</a></td></tr>
+<tr><td>Tasks that take turns on a microcontroller</td><td><a href="https://embassy.dev/book/">The Embassy Book</a></td></tr>
+<tr><td>Voltage becoming a number</td><td><a href="https://learn.sparkfun.com/tutorials/analog-to-digital-conversion/all">SparkFun: Analog to Digital Conversion</a></td></tr>
+<tr><td>The two wires to the position sensor</td><td><a href="https://learn.sparkfun.com/tutorials/i2c/all">SparkFun: I²C</a></td></tr>
+<tr><td>How a small pin controls a switch</td><td><a href="https://learn.sparkfun.com/tutorials/transistors/all#applications-i-switches">SparkFun: Transistors as switches</a></td></tr>
+<tr><td>The browser’s open connection to the board</td><td><a href="https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API">MDN: WebSocket API</a></td></tr>
+<tr><td>Every column of the two orbit lines</td><td><a href="https://celestrak.org/columns/v04n03/">CelesTrak: Two-Line Element Set Format</a></td></tr>
+<tr><td>How GPS turns the same geometry around</td><td><a href="https://ciechanow.ski/gps/">Bartosz Ciechanowski: GPS</a></td></tr>
+</tbody></table></div></section>
+<footer class="endnote"><p>The figures are teaching models written for this page. They do not run the firmware and cannot reach hardware. For changing ezal itself, the source and its <a href="https://github.com/tteggel/ezal/blob/main/docs/CONTROL_CONTRACT.md">control contract</a> are the reference. This page is one file and works offline; only the links need a connection.</p><p><a href="#start">Back to the beginning</a></p></footer>
