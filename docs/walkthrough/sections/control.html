@@ -1,0 +1,344 @@
+<style>
+.control-say{margin:.5rem 0 0;font-size:.95rem}
+.control-press{touch-action:none;user-select:none;-webkit-user-select:none}
+</style>
+<section class="chapter" id="permission">
+  <h2>3. Earn permission to ask for movement</h2>
+  <p class="lead">You press and hold the clockwise button on the dashboard. What does the board need to know before it takes that seriously?</p>
+  <p>The board cannot see your finger. All it ever receives is messages over Wi-Fi, and a message is weak evidence. It may have left your browser a moment ago, or sat in a queue for three seconds. You may have let go since. Your laptop may have gone to sleep with the button down. So ezal never treats a message as an order to switch a pin. It treats it as a <em>request</em>: something with an owner and an expiry, which dies by itself unless you keep it alive.</p>
+  <p>This chapter and the next follow one press of that button until pin GP10 goes high, stopping at each place where it can die on the way. This chapter gets the press as far as a note, waiting for the one task that is allowed to touch the pins.</p>
+
+  <h3>How old is this message?</h3>
+  <p>Twice a second the board sends every open dashboard a status report: where the dish points, who is in control, which pins are on. Tucked into each report is a <strong>token</strong>, a number the board makes up and will recognise for exactly one second. A press has to quote a token back. The board never asks the browser what time it is. A quoted token tells it that this browser has seen a report less than a second old, and that is all it wants to know.</p>
+  <p>Here is one report and one press. Make the press arrive later.</p>
+  <figure class="live" id="control-token">
+    <canvas id="control-token-canvas" role="img" aria-label="Timeline of one status report and one press."></canvas>
+    <div class="controls">
+      <label for="control-token-arrival">The press reaches the board <output id="control-token-value">150 ms</output> after the report left
+        <input id="control-token-arrival" type="range" min="0" max="1200" step="10" value="150" aria-valuetext="150 milliseconds after the report"></label>
+    </div>
+    <p id="control-token-readout" aria-live="polite" class="control-say"></p>
+    <figcaption>Drag the press, or use the slider. The arithmetic is the function <code>admit</code>, shown further down. The board remembers its three most recent tokens; here we watch one.</figcaption>
+  </figure>
+  <p>Two things came out of that. A press that quotes an expired token is refused outright. And an accepted press does not get to move the dish for as long as it likes. It gets a <span class="c-az">movement lease</span> of 750 ms, cut short if its <span class="c-warn">token expires</span> sooner. When the lease ends the board stops asking for movement, whether or not anyone tells it to. A press that arrives 800 ms after its report is accepted, and has 200 ms to live.</p>
+  <p>The bracket along the bottom of the figure looks ahead: the board will not start a motor for a request with less than 500 ms left. Chapter 4 explains why.</p>
+
+  <h3>Keeping it alive</h3>
+  <p>Three quarters of a second is not much of a move. So for as long as the button is down, the browser sends a <strong>hold</strong> every 150 ms. Each hold quotes the newest token the browser has, and each renews the lease by the same rule: 750 ms from the moment it arrives, never past its token’s expiry. When you let go the browser sends <em>stop</em>, and the request ends at once.</p>
+  <p>And if the browser cannot say stop, because the lid is shut or the Wi-Fi has gone? Then the holds simply stop arriving and the lease runs out. That case is what the whole arrangement is for. Stall the Wi-Fi and watch.</p>
+  <figure class="live" id="control-hold">
+    <canvas id="control-hold-canvas" role="img" aria-label="Timeline of status reports, a press and its holds, and how long the request has left."></canvas>
+    <div class="controls">
+      <label for="control-hold-stall">The Wi-Fi stalls for <output id="control-hold-stall-value">not at all</output>
+        <input id="control-hold-stall" type="range" min="0" max="2000" step="50" value="0" aria-valuetext="0 milliseconds"></label>
+      <label for="control-hold-release">You let go at <output id="control-hold-release-value">2600 ms</output>
+        <input id="control-hold-release" type="range" min="500" max="3800" step="50" value="2600" aria-valuetext="2600 milliseconds"></label>
+    </div>
+    <p id="control-hold-readout" aria-live="polite" class="control-say"></p>
+    <figcaption>Thin lines are messages, sloping by the 30 ms each takes to cross. On the board’s line a <span class="c-ok">green dot</span> is a message it accepted and a <span class="c-stop">red cross</span> one it refused; the pale bars under it are the tokens, each a second long. Simplified: every message takes the same 30 ms, and a stall holds messages back and then delivers them together. The browser’s half follows the dashboard’s own code, the board’s half <code>admit</code>.</figcaption>
+  </figure>
+  <p>A stall of half a second does no harm. The holds bunch up, land late, and find the lease still running. Past about 700 ms the lease runs out first, and then the holds that finally arrive are <span class="c-stop">refused</span>, every one.</p>
+  <p>Why not accept them and carry on? Because a hold is no evidence that you want the dish moving <em>now</em>. It comes from a timer in the browser, and all it says is “the press you already accepted is still down”. Once that press’s lease has run out there is nothing left for a hold to continue, and a backlog of timer ticks draining out of a queue says nothing about what you want at this moment. So the board refuses the first of them, forgets every token it has given that browser so that nothing else in the queue can get through, asks for a stop, and tells the dashboard, which lets go of the button for you. To move again you must release, wait for the next report, and press: a new decision.</p>
+  <p>One more guard rides along. Every press and hold carries a counter: 1, 2, 3 and so on. The board refuses any message whose number is not higher than the last one it accepted, so no message can be used twice, or out of order.</p>
+
+  <p>The numbers in those two figures are constants in the code, and the three lines under them say how they must relate.</p>
+  <figure class="code" data-src="crates/ezal-core/src/session.rs" data-comments="omit">
+    <figcaption>The timing of the conversation, in milliseconds.</figcaption>
+    <pre data-from="pub const TELEMETRY_PERIOD_MS" data-to="TELEMETRY_PERIOD_MS + COMMAND_REFRESH_MS &lt; COMMAND_MAX_AGE_MS"></pre>
+    <ol>
+      <li data-at="pub const TELEMETRY_PERIOD_MS">How often a status report goes out, how often the browser repeats a hold, and how long a token lasts. (<code>1_000</code> is just a readable way to write 1000.)</li>
+      <li data-at="assert!(COMMAND_REFRESH_MS &lt; MOVEMENT_LEASE_MS)">An <code>assert!</code> written like this is checked when the firmware is built, not while it runs: change a number so that the relation breaks and the firmware will not compile. This one says holds must come more often than a lease lasts. <code>MOVEMENT_LEASE_MS</code> is the 750, defined in another file.</li>
+      <li data-at="COMMAND_REFRESH_MS + OUTPUT_MIN_ACTIVE_MS">150 + 500 ≤ 750. Just before the next hold arrives, a full lease still has 600 ms on it, more than the 500 ms a motor start needs. A lease cut short by its token can have less, as the dips in the figure show; a start that falls due in one waits for the next hold.</li>
+      <li data-at="TELEMETRY_PERIOD_MS + COMMAND_REFRESH_MS">500 + 150 &lt; 1000. A token is still good when its replacement has been sent and one more hold has gone out.</li>
+    </ol>
+  </figure>
+  <p>And this is the whole of the board’s judgment on a press or a hold. Both figures have been running it.</p>
+  <figure class="code" data-src="crates/ezal-core/src/session.rs">
+    <figcaption><code>CommandFreshness::admit</code>: is this message recent, new, and in order?</figcaption>
+    <pre data-from="pub fn admit(&amp;mut self, request: MovementRequest, now_ms: u64)" data-to="^    }"></pre>
+    <ol>
+      <li data-at=".find(|token| token.token == request.token)">Look the quoted token up among the three most recent ones given to this browser.</li>
+      <li data-at="let deadline = expires_ms.filter">An expired token counts as no token.</li>
+      <li data-at="let fresh_press_or_hold = request.pressed">A press always counts as a new decision. A hold counts only while the lease it continues, remembered in <code>armed_until_ms</code>, is still running.</li>
+      <li data-at="if request.sequence &lt;= self.last_sequence">Three ways to fail: a counter that did not go up, a hold with nothing alive to continue, no valid token. <code>reject</code> forgets every token, and <code>None</code> means “no lease”.</li>
+      <li data-at="let deadline = deadline?.min">The lease: the token’s expiry, or 750 ms from now, whichever comes first.</li>
+      <li data-at="self.armed_until_ms = Some(deadline);">Remembered, for judging the next hold.</li>
+    </ol>
+  </figure>
+
+  <h3>Two things checked before any of that</h3>
+  <p><strong>Are you the one in control?</strong> Two people can have the dashboard open. Only one browser at a time is the <em>operator</em>; the others can watch. The first to connect gets control, and anyone may take it once it is free. The board keeps asking the operator to prove it is still there: with each status report it sends a ping down the connection (a <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API">WebSocket</a>, which has ping and echo built in), and a prompt echo renews control for another 5 seconds. Close the tab and control is free at once. Vanish without closing it and control is free 5 seconds after the last echo. A press from anyone else changes nothing.</p>
+  <p>This stops two dashboards fighting over one dish. It does not keep strangers out: anyone who can reach the board on your network can open the dashboard and take control when it is free.</p>
+  <p><strong>Is the board itself still on the network?</strong> A separate task looks at the Wi-Fi link ten times a second. Once its last good look is 300 ms old, nobody is operator any more and nothing may move. When the link comes back, every token issued before the gap is void, so nothing sent before or during an outage can start a move after it.</p>
+  <p class="code-links">In the code: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/operator.rs#L5-L6">the 5-second operator lease</a>, <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/session.rs#L16-L39">pings and their echoes</a>, <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/coordination.rs#L171-L182">control claimed on connecting</a>, and <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/network.rs#L10-L39">the 300 ms network check</a>.</p>
+
+  <h3>A note for the direction task</h3>
+  <p>The press has been accepted. It is still nowhere near a pin. <a href="#boot">Chapter 1</a> started several tasks that take turns on the processor, and the one talking to your browser is not the one that owns the pins. It has no way to reach them. Only the <strong>direction task</strong> writes GP10, GP11, GP20 and GP21. Everyone else, the browser’s task now and the satellite tracker later, leaves it a note saying <em>move</em> or <em>stop</em>, in a mailbox with room for exactly one.</p>
+  <figure class="live" id="control-mailbox">
+    <canvas id="control-mailbox-canvas" role="img" aria-label="A mailbox with room for one note."></canvas>
+    <div class="controls" style="grid-template-columns:1fr 1fr">
+      <button type="button" id="control-mailbox-cw">Leave “move ↻”</button>
+      <button type="button" id="control-mailbox-ccw">Leave “move ↺”</button>
+      <button type="button" id="control-mailbox-stop">Leave “stop”</button>
+      <button type="button" id="control-mailbox-wait">Wait 400 ms</button>
+      <button type="button" id="control-mailbox-read">Read the note</button>
+    </div>
+    <p id="control-mailbox-readout" aria-live="polite" class="control-say"></p>
+    <figcaption>Each move note here is good for the full 750 ms from the moment it is left. The figure follows <code>CommandMailbox</code>, shown below, and the expiry check made when a note is read, in <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/lifecycle.rs#L1061-L1072"><code>take_command</code></a>.</figcaption>
+  </figure>
+  <p>Three rules, and you can produce each of them above. A newer move replaces an older one, because only the latest wish matters. A stop is never replaced: once someone has asked for a stop, no later move can hide it before it is read. And waiting does not extend a note. A move that has expired by the time it is read is read as a stop.</p>
+  <p>Here is the browser’s task turning an accepted press into a note, and the mailbox the note goes into.</p>
+  <figure class="code" data-src="crates/ezal-firmware/src/web.rs">
+    <figcaption>What the browser’s task does with a press or a hold.</figcaption>
+    <pre data-from="Some(ClientMessage::Movement(request)) =&gt; {" data-to="reject_input(&amp;mut tx, state, client_id).await?"></pre>
+    <ol>
+      <li data-at="freshness.admit(request, now_ms)">The judgment above. It answers with the lease’s deadline, or with nothing.</li>
+      <li data-at="command: Command::Jog(request.drive)">The note. <code>Jog</code> is the code’s word for a move made by hand, and <code>request.drive</code> says which directions.</li>
+      <li data-at="valid_until_ms: deadline">The note carries the lease’s deadline with it. Nothing downstream can extend it.</li>
+      <li data-at="reject_input(">Refused: leave a stop note instead, and tell the dashboard that a fresh press is needed.</li>
+    </ol>
+  </figure>
+  <figure class="code" data-src="crates/ezal-core/src/tracking/mailbox.rs" data-comments="omit">
+    <figcaption>The mailbox: leaving a note, and reading one.</figcaption>
+    <pre data-from="pub fn submit(&amp;mut self, envelope: CommandEnvelope)" data-to="^    }"></pre>
+    <pre data-from="pub fn take(&amp;mut self)" data-to="^    }"></pre>
+    <ol>
+      <li data-at="pending.command == Command::Inhibit">Is a stop already waiting? <code>Inhibit</code> is the code’s word for stop.</li>
+      <li data-at="self.pending = Some(envelope);">If not, the new note takes the place of whatever was there.</li>
+      <li data-at="self.pending.take()">Reading takes the note out and leaves the mailbox empty.</li>
+    </ol>
+  </figure>
+  <p>So the press has become a note: <em>move clockwise, good until such-and-such a millisecond</em>. Nothing has moved yet. Next we follow the note into the only task that can do something about it.</p>
+</section>
+
+<section class="chapter" id="actuation">
+  <h2>4. Cross the output boundary</h2>
+  <p class="lead">A note is waiting: move clockwise, good for the next 750 ms. Will the pin now do what the note says?</p>
+  <p>Often it will not, or not yet. The direction task treats the note as a wish. What it does to the pin also depends on things the note knows nothing about: when the motor last ran, how long it has run today, where the dish is, whether the board is still on the network. So the firmware keeps two separate facts, what is <em>requested</em> and what is <em>applied</em>, and the dashboard always shows you the second.</p>
+  <p>The quickest way to see the difference is to try to make the pins misbehave. Hold a button. Let go, and press again straight away. Then try the other direction.</p>
+  <figure class="live" id="control-live">
+    <canvas id="control-live-canvas" role="img" aria-label="Strip chart of which button you hold and what pins GP10 and GP11 do."></canvas>
+    <div class="controls">
+      <button type="button" id="control-live-cw" aria-pressed="false" class="control-press">Hold ↻ clockwise</button>
+      <button type="button" id="control-live-ccw" aria-pressed="false" class="control-press">Hold ↺ counter-clockwise</button>
+      <button type="button" id="control-live-clear">Clear the chart</button>
+    </div>
+    <p id="control-live-readout" aria-live="polite" class="control-say"></p>
+    <figcaption>Hold with the mouse, a finger, or the Space or Enter key. The chart runs in real time and waits when nothing is happening. Simplified: one axis; messages arrive instantly and every hold earns the full 750 ms; the position, run-time and network checks described below always pass.</figcaption>
+  </figure>
+  <p>You will have found two things. Letting go is instant: the pin drops as soon as the direction task reads your stop. Starting is not. After a pin drops, that axis is shut for two seconds, the <span class="c-warn">off-time</span>, and it is shut in both directions. A press during the off-time is not refused. It waits, and the pin rises the moment the off-time ends, provided you are still holding.</p>
+  <p>The off-time is there for the machinery. A dish that has just lost power coasts on for a moment, and the code allows half a second for that. A position reading can be up to half a second old (<a href="#feedback">chapter 2</a>). Two seconds leaves room for both before the motor is driven again, perhaps the other way, and the firmware refuses to switch anything on if the wait before a reversal is ever set shorter than the two added together.</p>
+  <p>A matching rule sits at the other end. Once a pin goes high it is meant to stay high for at least 500 ms, the <strong>minimum on-time</strong>: a shorter click of the relays inside the G-5500 (the switches that feed its motors) moves nothing useful. This rule never holds a pin up against you: your release, a stop, or any failed check still cuts the pin at once, however short that makes the pulse. What it decides is whether a start is worth making. A pin goes high only if the request has at least 500 ms of lease left.</p>
+  <p>Those cases are hard to hit by hand, so here are four with the timing set up exactly. Step through each.</p>
+  <figure class="live" id="control-cases">
+    <canvas id="control-cases-canvas" role="img" aria-label="Strip chart of one scripted case."></canvas>
+    <div class="controls">
+      <label for="control-cases-case">Case
+        <select id="control-cases-case">
+          <option value="short">A start with too little lease left</option>
+          <option value="tracker">The tracker lets go early</option>
+          <option value="link">The board loses its Wi-Fi link</option>
+          <option value="race">A stop arrives just as a start falls due</option>
+        </select></label>
+      <label for="control-cases-step">Moment <output id="control-cases-step-value">1 of 6</output>
+        <input id="control-cases-step" type="range" min="0" max="5" step="1" value="0" aria-valuetext="moment 1"></label>
+    </div>
+    <p id="control-cases-readout" aria-live="polite" class="control-say"></p>
+    <figcaption>Each trace comes from the same model as the chart above, fed a scripted list of notes. The numbered marker is the moment being described. Beside it, a <span class="c-az">blue line</span> shows how long the request is good for at that moment, and a <span class="c-ok">green</span> or <span class="c-stop">red</span> bracket under a pin shows whether a 500 ms start fits inside it. In the second and third cases an <span class="c-warn">orange bracket</span> over the pin spans its 500 ms minimum on-time. A red triangle marks a pin cut while still asked for; a red cross, a start that did not happen.</figcaption>
+  </figure>
+  <p>The rule behind all four is twenty lines long.</p>
+  <figure class="code" data-src="crates/ezal-core/src/drive.rs" data-comments="omit">
+    <figcaption>Three numbers, and <code>AxisRelay::update</code>, which decides when one axis may change.</figcaption>
+    <pre data-from="pub const OUTPUT_MIN_ACTIVE_MS" data-to="pub const MOVEMENT_LEASE_MS"></pre>
+    <pre data-from="fn update(&amp;mut self, now_ms: u64, activation_limit_ms: u64)" data-to="^    }"></pre>
+    <ol>
+      <li data-at="pub const OUTPUT_MIN_ACTIVE_MS">The minimum on-time, the off-time and the movement lease.</li>
+      <li data-at="if self.actual == self.target"><code>target</code> is what is asked for and <code>actual</code> is what the pin is doing. If they agree there is nothing to do.</li>
+      <li data-at="if now_ms &lt; self.on_until_ms">The pin is on and something else is wanted. If the minimum on-time is not up, leave it on. Your own release never gets as far as this line: for a move made by hand, the caller has already cut the pin.</li>
+      <li data-at="self.release(now_ms);">Switch off, and start the two-second off-time.</li>
+      <li data-at="if now_ms &lt; self.inactive_until_ms()">Still inside the off-time: wait.</li>
+      <li data-at="on_until_ms &lt;= activation_limit_ms">Switch on only if 500 ms from now is still inside the lease. <code>activation_limit_ms</code> is the lease’s deadline.</li>
+    </ol>
+  </figure>
+
+  <h3>A tank of run-time</h3>
+  <p>The rotator’s motors are not built to run all day. Yaesu’s manual allows five minutes of running and then asks for fifteen of rest; the manual for the DC model allows three. ezal has not been told which it is driving, so it assumes the stricter: each motor gets 180 seconds of run-time, and only fifteen unbroken minutes of rest give it back.</p>
+  <figure class="live" id="control-tank">
+    <canvas id="control-tank-canvas" role="img" aria-label="A tank of motor run-time and a rest clock."></canvas>
+    <div class="controls" style="grid-template-columns:1fr 1fr">
+      <button type="button" id="control-tank-run">Run 30 s</button>
+      <button type="button" id="control-tank-rest1">Rest 1 min</button>
+      <button type="button" id="control-tank-rest5">Rest 5 min</button>
+      <button type="button" id="control-tank-skip">Skip startup rest</button>
+      <button type="button" id="control-tank-restart">Restart</button>
+    </div>
+    <p id="control-tank-readout" aria-live="polite" class="control-say"></p>
+    <figcaption>One motor’s budget; azimuth and elevation each have their own. The buttons jump time forward. The model is <code>AxisDuty::account</code>, shown below, with the numbers from <code>DutyConfig::DEFAULT</code>.</figcaption>
+  </figure>
+  <p>Three things to notice. The tank does not trickle back: a minute of rest returns nothing, fifteen return everything. Any running, however short, sets the rest clock to zero. And a restart empties the tank, because the board keeps no record across a restart and so assumes the motor has just been run hard. <strong>Skip startup rest</strong>, on the real dashboard, is you vouching that it has not. The board takes your word once per restart, only from the operator, only while nothing is moving. It never skips a rest that it has counted itself.</p>
+  <p>This is bookkeeping, not a thermometer. It counts the time ezal’s own pin was high, so it knows nothing about anyone working the switches on the front of the G-5500.</p>
+  <figure class="code" data-src="crates/ezal-core/src/duty.rs">
+    <figcaption>The tank, for one motor: what a stretch of time does to it, and how much is left.</figcaption>
+    <pre data-from="fn account(&amp;mut self, energized: bool, elapsed_ms: u64, config: DutyConfig)" data-to="^    }"></pre>
+    <pre data-from="const fn remaining(self, config: DutyConfig)" data-to="^    }"></pre>
+    <ol>
+      <li data-at="self.used_ms = self.used_ms.saturating_add(elapsed_ms);">While the pin was high, the time goes on the bill. (<code>saturating_add</code> is addition that cannot overflow.)</li>
+      <li data-at="self.idle_ms = 0;">And the rest clock goes back to zero.</li>
+      <li data-at="self.idle_ms = self.idle_ms.saturating_add(elapsed_ms);">While it was low, the rest clock runs.</li>
+      <li data-at="if self.idle_ms &gt;= config.rest_ms">At 900 000 ms, fifteen minutes, the bill is wiped.</li>
+      <li data-at="config.energized_ms.saturating_sub(self.used_ms)">What is left in the tank: 180 000 ms less the bill. A start needs 500 ms of it, the minimum on-time again; a motor already running may use the last drop.</li>
+    </ol>
+  </figure>
+
+  <h3>One look, in a fixed order</h3>
+  <p>Now we can read the function that decides. Each time the direction task wakes, it hands <code>Actuator::step</code> the note if there is one, the latest position reading, the state of the network and the time. It gets back which pins may be high. The order of the lines is the order of the checks.</p>
+  <figure class="code" data-src="crates/ezal-core/src/actuator.rs" data-comments="omit">
+    <figcaption><code>Actuator::step</code>, up to the point where the answer is known.</figcaption>
+    <pre data-from="pub fn step(&amp;mut self, input: ActuatorInput, now_ms: u64)" data-to="self.duty.applied(self.guard.actual());"></pre>
+    <ol>
+      <li data-at="self.duty.observe(self.guard.actual(), now_ms);">First the bill. Charge the tank for however long the pin has been high since the last look, before anything below can switch it off.</li>
+      <li data-at="self.enforce(&amp;interlock, now_ms);">Then whatever is already running is checked again. The position reading must be fresh and the dish clear of the end of its travel (chapter 2). The tank must not be dry. And the dish must be moving the way the pins say: after 5 seconds of running with no change in position, or any movement the wrong way or impossibly fast, both motors are switched off and stay off until the board is restarted.</li>
+      <li data-at="if !network_ready || self.network_generation">The board’s own Wi-Fi link unseen for 300 ms, or lost and found again since the last look: stop both axes.</li>
+      <li data-at="if let Some(envelope) = input.command">Only now is the note read.</li>
+      <li data-at="match interlock.guard_command(envelope.command, now_ms)">And trimmed. With the network down or a fault standing it becomes a stop. Otherwise any direction the position reading forbids is struck out, and then, in <code>guard_drive</code>, any direction the tank cannot afford. <code>Jog</code> is a move made by hand and <code>Drive</code> a move made by the tracker of chapter 6; they differ only in what letting go means, as the second case above showed.</li>
+      <li data-at=".command_until(permitted, now_ms, envelope.valid_until_ms);">What is left goes to the timing rules, with the note’s own deadline. Because the note is dealt with before any waiting start may go ahead, a stop always wins a tie. That was the fourth case.</li>
+      <li data-at="self.guard.update(now_ms);">No note: just move the clocks on. A lease that has run out is cut first; then a waiting start may go ahead.</li>
+    </ol>
+  </figure>
+
+  <h3>Writing the pins</h3>
+  <p><code>step</code> only returns an answer. The loop at the heart of the direction task turns it into voltages.</p>
+  <figure class="code" data-src="crates/ezal-firmware/src/drive.rs" data-comments="omit">
+    <figcaption>The direction task’s loop: decide, write the pins, and only then reset the watchdog.</figcaption>
+    <pre data-from="loop {" data-to="state.record_actuator(&amp;actuator, drain.as_millis());"></pre>
+    <pre data-from="watchdog.feed(crate::watchdog::WATCHDOG_TIMEOUT);"></pre>
+    <ol>
+      <li data-at="let update = state.service_actuator(&amp;mut actuator, now.as_millis());">Collect the note and the latest readings, and call <code>step</code>.</li>
+      <li data-at="outputs.apply_drive(update.output);">Set the four pins to match its answer.</li>
+      <li data-at="state.execute_tracking(now.as_millis());">If a satellite is being followed (chapter 6), the tracker leaves its own note now.</li>
+      <li data-at="let update = state.service_actuator(&amp;mut actuator, drain.as_millis());">It is read and applied straight away, through the same checks.</li>
+      <li data-at="watchdog.feed(">Only after both passes does the loop reset the watchdog, the 500 ms countdown from chapter 1 that restarts the chip if it is ever left to run out. Resetting it here and nowhere else means the watchdog is watching exactly the code that can switch a motor off.</li>
+    </ol>
+  </figure>
+  <p>Then the task sleeps until something changes, or a deadline that <code>step</code> reported comes due, or 100 ms pass (10 ms while tracking), whichever is first. If this loop ever stalls, no stop written in software can run. The watchdog’s reset is what is left, with the caution from <a href="#boot">chapter 1</a> that a pin can keep its level through that reset until startup takes it back.</p>
+  <figure class="code" data-src="crates/ezal-firmware/src/drive.rs">
+    <figcaption><code>apply_drive</code>: the only place the direction pins are written while the board is running.</figcaption>
+    <pre data-from="fn apply_drive(&amp;mut self, drive: DriveCommand)" data-to="if self.applied.elevation != drive.elevation {"></pre>
+    <pre data-from="self.applied = drive;"></pre>
+    <ol>
+      <li data-at="if self.applied.azimuth != drive.azimuth">Touch the pins only when the answer has changed.</li>
+      <li data-at="Some(AzimuthDirection::Clockwise) =&gt; self.cw.set_low()">First lower whichever pin was high.</li>
+      <li data-at="Some(AzimuthDirection::Clockwise) =&gt; self.cw.set_high()">Then raise the new one. The timing rules never ask for a straight swap, since a reversal passes through two seconds of off. If they ever did, GP10 and GP11 still could not be high together.</li>
+      <li data-at="if self.applied.elevation != drive.elevation">Elevation is the same again, with GP20 for up and GP21 for down.</li>
+      <li data-at="self.applied = drive;">Remember what the pins now are.</li>
+    </ol>
+  </figure>
+
+  <h3>The last few centimetres</h3>
+  <p>And so, at last, GP10 goes high. Here is everything connected to it. Switch it yourself.</p>
+  <figure class="live" id="control-circuit">
+    <div class="diagram" style="margin:0" tabindex="0" role="group" aria-label="Circuit drawing. On a narrow screen it scrolls sideways.">
+      <svg viewBox="0 0 820 330" style="min-width:700px;width:100%" role="img" aria-labelledby="control-circuit-title control-circuit-desc" font-size="14" fill="#20323e">
+        <title id="control-circuit-title">One of ezal’s four direction switches: pin GP10, a transistor, and pin 2 of the G-5500’s control socket.</title>
+        <desc id="control-circuit-desc">GP10 is low. The transistor is off and pin 2 is left alone.</desc>
+
+        <!-- Where current flows, drawn under the wires. -->
+        <g fill="none" stroke="#245bce" stroke-opacity=".22" stroke-width="11" stroke-linecap="round" stroke-linejoin="round">
+          <path data-when="high" style="display:none" d="M114 110H196V270H114"/>
+          <path data-when="high" style="display:none" d="M196 110H390M390 118L420 136V270H196"/>
+          <path data-when="turning" style="display:none" d="M600 104V60H420V84L390 102M420 270H600V190"/>
+          <path data-when="turning" style="display:none" d="M722 100V214"/>
+        </g>
+
+        <!-- The Pico. -->
+        <rect x="8" y="30" width="106" height="270" rx="8" fill="#edf4fa" stroke="#18354a" stroke-width="2"/>
+        <text x="61" y="58" text-anchor="middle" font-weight="bold" font-size="16" fill="#18354a">Pico 2 W</text>
+        <text x="102" y="115" text-anchor="end" font-weight="bold" fill="#18354a">GP10</text>
+        <text x="102" y="275" text-anchor="end" fill="#18354a">GND</text>
+        <text x="20" y="140" font-size="13" fill="#506574" data-when="low">low: 0 V</text>
+        <text x="20" y="140" font-size="13" font-weight="bold" fill="#245bce" data-when="high" style="display:none">high: 3.3 V</text>
+
+        <!-- Wires. -->
+        <g fill="none" stroke="#18354a" stroke-width="2" stroke-linejoin="round">
+          <path d="M114 110H240l4-7l8 14l8-14l8 14l8-14l8 14l8-14l4 7H390"/>
+          <path d="M196 110V124l-7 4l14 8l-14 8l14 8l-14 8l14 8l-14 8l7 4V190M196 210V270"/>
+          <path d="M184 210H208"/>
+          <path d="M352 110V134l-7 4l14 8l-14 8l14 8l-14 8l14 8l-14 8l7 4V270"/>
+          <path d="M390 102L420 84V60H534M390 118L420 136V270"/>
+          <path d="M114 270H534"/>
+          <path d="M390 90V130" stroke-width="5"/>
+          <circle cx="404" cy="110" r="31" stroke-width="1.5"/>
+        </g>
+        <path d="M420 136l-12-2l6-9z" fill="#18354a"/>
+        <path id="control-circuit-led" d="M184 190H208L196 210z" fill="#fff" stroke="#18354a" stroke-width="2" stroke-linejoin="round"/>
+        <g data-when="high" style="display:none" fill="none" stroke="#245bce" stroke-width="2" stroke-linecap="round"><path d="M214 194l9-6M216 204l10-2M213 212l8 4"/></g>
+        <circle cx="196" cy="110" r="4" fill="#18354a"/><circle cx="352" cy="110" r="4" fill="#18354a"/>
+        <circle cx="196" cy="270" r="4" fill="#18354a"/><circle cx="352" cy="270" r="4" fill="#18354a"/><circle cx="420" cy="270" r="4" fill="#18354a"/>
+        <rect x="109" y="105" width="10" height="10" fill="#18354a"/><rect x="109" y="265" width="10" height="10" fill="#18354a"/>
+
+        <!-- Parts and what they carry. -->
+        <text x="182" y="157" text-anchor="end">470 Ω</text>
+        <text x="178" y="206" text-anchor="end">LED</text>
+        <text x="268" y="92" text-anchor="middle">2.2 kΩ</text>
+        <text x="340" y="166" text-anchor="end">10 kΩ</text>
+        <text x="444" y="106" font-weight="bold" fill="#18354a">2N3904</text>
+        <text x="444" y="124" font-size="13" fill="#506574" data-when="low">transistor off</text>
+        <text x="444" y="124" font-size="13" font-weight="bold" fill="#245bce" data-when="high" style="display:none">transistor on</text>
+        <text x="300" y="292" text-anchor="middle" font-size="13" fill="#506574">ground, shared by both boxes</text>
+        <g data-when="high" style="display:none" font-size="13" fill="#245bce" font-weight="bold">
+          <text x="184" y="250" text-anchor="end">≈ 2.8 mA</text>
+          <text x="268" y="134" text-anchor="middle">≈ 1.1 mA</text>
+          <path d="M146 104l12 6l-12 6zM190 238l6 12l6-12zM314 104l12 6l-12 6z"/>
+        </g>
+        <g data-when="turning" style="display:none" font-size="13" fill="#245bce" font-weight="bold">
+          <text x="528" y="48" text-anchor="end">the controller’s current</text>
+          <path d="M486 54l-12 6l12 6zM474 264l12 6l-12 6z"/>
+        </g>
+
+        <!-- The plug on ezal's cable. -->
+        <rect x="534" y="40" width="22" height="250" rx="5" fill="#edf4fa" stroke="#18354a" stroke-width="2"/>
+        <circle cx="545" cy="60" r="4" fill="#18354a"/><circle cx="545" cy="270" r="4" fill="#18354a"/>
+        <text x="558" y="24" text-anchor="middle" font-size="13" fill="#506574">8-pin DIN plug and socket</text>
+
+        <!-- The G-5500, which slides away when unplugged. -->
+        <g id="control-circuit-rotator">
+          <rect x="582" y="36" width="200" height="278" rx="8" fill="#fff" stroke="#18354a" stroke-width="2" stroke-dasharray="7 5"/>
+          <rect x="560" y="40" width="22" height="250" rx="5" fill="#edf4fa" stroke="#18354a" stroke-width="2"/>
+          <circle cx="571" cy="60" r="4" fill="#18354a"/><circle cx="571" cy="270" r="4" fill="#18354a"/>
+          <path d="M556 60H560M556 270H560" stroke="#18354a" stroke-width="2"/>
+          <text x="770" y="60" text-anchor="end" font-weight="bold" font-size="16" fill="#18354a">G-5500 controller</text>
+          <g fill="none" stroke="#18354a" stroke-width="2">
+            <path d="M571 60H600V104M571 270H600V190"/>
+            <path d="M722 100V130M722 166V214"/>
+            <path d="M722 166L740 134" data-when="still"/>
+            <path d="M722 166V130" data-when="turning" style="display:none" stroke="#245bce" stroke-width="3"/>
+            <path d="M708 148H718" stroke-dasharray="3 3"/>
+          </g>
+          <circle cx="722" cy="130" r="3.5" fill="#18354a"/><circle cx="722" cy="166" r="3.5" fill="#18354a"/>
+          <text x="608" y="84" font-size="13" fill="#506574">pin 2</text>
+          <text x="608" y="216" font-size="13" fill="#506574">pin 8</text>
+          <rect x="590" y="104" width="118" height="86" rx="6" fill="#edf4fa" stroke="#18354a" stroke-width="1.5"/>
+          <text font-size="13" fill="#18354a"><tspan x="598" y="124">reads pin 2</tspan><tspan x="598" y="141">joined to pin 8</tspan><tspan x="598" y="158">as its own</tspan><tspan x="598" y="175">clockwise switch</tspan></text>
+          <rect x="668" y="72" width="108" height="28" rx="5" fill="#fff" stroke="#18354a" stroke-width="1.5"/>
+          <text x="722" y="91" text-anchor="middle" font-size="13" fill="#18354a">its own supply</text>
+          <circle cx="722" cy="240" r="26" fill="#fff" stroke="#18354a" stroke-width="2"/>
+          <circle cx="722" cy="240" r="26" fill="none" stroke="#245bce" stroke-width="4" data-when="turning" style="display:none"/>
+          <text x="722" y="246" text-anchor="middle" font-weight="bold" font-size="18" fill="#18354a">M</text>
+          <text x="722" y="284" text-anchor="middle" font-size="13" fill="#18354a">azimuth motor:</text>
+          <text x="722" y="301" text-anchor="middle" font-size="13" fill="#506574" data-when="still">no power</text>
+          <text x="722" y="301" text-anchor="middle" font-size="13" font-weight="bold" fill="#245bce" data-when="turning" style="display:none">turning clockwise</text>
+        </g>
+      </svg>
+    </div>
+    <div class="controls">
+      <label for="control-circuit-gp10" style="flex:0 1 auto"><input type="checkbox" id="control-circuit-gp10"> GP10 high</label>
+      <label for="control-circuit-plug" style="flex:0 1 auto"><input type="checkbox" id="control-circuit-plug" checked> Rotator plugged in</label>
+    </div>
+    <p id="control-circuit-readout" aria-live="polite" class="control-say"></p>
+    <figcaption>One of four identical channels, drawn from the project’s <a href="https://github.com/tteggel/ezal/blob/main/design/circuit.py#L132-L210">schematic</a>: GP11 goes to pin 4 for counter-clockwise, GP20 to pin 3 for up, GP21 to pin 5 for down. The inside of the G-5500 is a sketch of what it does, not of its circuit. The currents are the design’s estimates. On a narrow screen, slide the drawing sideways to reach the rotator.</figcaption>
+  </figure>
+  <p>A high pin is 3.3 volts, and here it does two small jobs. It lights an LED, so that you can see what the firmware is asking for. And it pushes about a milliamp through a 2.2 kΩ resistor into the base of a transistor, which is enough to switch the transistor fully on. The transistor is the whole trick. Switched on, it joins pin 2 of the G-5500’s control socket to pin 8, its ground. To the controller that is the same as someone pressing the clockwise switch on its front panel, so it does what it always does and feeds the motor from its own supply. No motor current comes anywhere near the Pico.</p>
+  <p>When the pin goes low, the 10 kΩ resistor pulls the transistor’s base to ground and the transistor lets go. The motor loses its power and the dish coasts to a stop.</p>
+  <p>One caution covers this whole chapter. None of it has yet been run on the real board and rotator. The timings are the code’s. How quickly the controller really lets go, how far the dish coasts, and whether that milliamp is enough for this particular G-5500 are still to be measured, and <a href="#bench">chapter 7</a> keeps the list.</p>
+  <p>A held button has become a closed switch, and you have seen each way it can fail to. Next we take the person away. <a href="#orbit">Chapter 5</a> works out where a satellite is, and <a href="#tracking">chapter 6</a> lets the board follow it, leaving its own notes in this same mailbox to pass through these same checks.</p>
+</section>

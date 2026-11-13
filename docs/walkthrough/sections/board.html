@@ -1,0 +1,287 @@
+<style>
+figure.live[id^="board-"],#boot details {max-width:46rem}
+#board-divider-view {cursor:ns-resize}
+#board-line-view {cursor:grab}
+#board-bands-view,#board-age-view,#board-budget-view,#board-room-view {cursor:ew-resize}
+.board-pick {flex:1 1 100%;min-width:0;margin:0;padding:0;border:0;font-size:.9rem}
+.board-pick legend {padding:0;font-weight:600}
+.controls .board-pick label {display:inline-flex;flex:none;align-items:center;gap:.4rem;margin:.35rem 1.2rem 0 0}
+.controls .board-slide {flex:1 1 100%}
+.board-slide span {font-weight:600;color:var(--navy);font-variant-numeric:tabular-nums}
+.board-slide input {display:block;max-width:none;margin-top:.3rem}
+.board-fine {display:flex;align-items:center;gap:.6rem;margin-top:.3rem}
+.board-fine input {flex:1;min-width:0;margin:0}
+.controls .board-fine button {flex:none;width:2.4rem;padding:.25rem 0;font-weight:600;line-height:1.3}
+.board-say {min-height:3.2em;max-width:none;margin:.8rem 0 0;font-size:.95rem;line-height:1.55}
+</style>
+<section class="chapter" id="boot">
+  <h2>1. A board wakes up</h2>
+  <p class="lead">What happens between power reaching the Pico and the dashboard appearing in your browser, and why does a perfect start leave the motors still?</p>
+  <p>Picture the dish parked wherever it was last left. You plug in the board. Shortly afterwards it has joined your Wi-Fi, it knows which way the dish is pointing, and a dashboard is waiting in your browser. Nothing has moved. That stillness is the first thing the program arranges, and to see how, we start with the only parts of the board that can move anything.</p>
+
+  <h3>Four pins that can move a dish</h3>
+  <p>The Pico is a small circuit board with a row of metal pins along each edge. A program running on it can put one of two voltages on a pin: 0 volts, called <em>low</em>, or 3.3 volts, called <em>high</em>. ezal uses four pins this way. Try them.</p>
+  <figure class="live" id="board-pins">
+    <canvas id="board-pins-view" role="img" aria-label="The Pico's pins GP10, GP11, GP20 and GP21, each wired to a light and to a switch that connects one input of the rotator's control box (right, left, up, down) to ground."></canvas>
+    <div class="controls">
+      <fieldset class="board-pick"><legend class="c-az">Azimuth</legend>
+        <label><input type="radio" name="board-pins-az" value="" checked> still</label>
+        <label><input type="radio" name="board-pins-az" value="0"> clockwise</label>
+        <label><input type="radio" name="board-pins-az" value="1"> counter-clockwise</label>
+      </fieldset>
+      <fieldset class="board-pick"><legend class="c-el">Elevation</legend>
+        <label><input type="radio" name="board-pins-el" value="" checked> still</label>
+        <label><input type="radio" name="board-pins-el" value="2"> up</label>
+        <label><input type="radio" name="board-pins-el" value="3"> down</label>
+      </fieldset>
+    </div>
+    <p class="board-say" id="board-pins-say" role="status" aria-live="polite"></p>
+    <figcaption>The wiring between the Pico and the rotator’s control box. The choices are the ones the firmware’s <code>DriveCommand</code> has: each axis is still or turning one way, so two opposing pins are never high together.</figcaption>
+  </figure>
+  <p>Each pin runs to an electronic switch on a second board, the interface board. A high pin closes its switch, and the closed switch connects one input of the control box to ground, the wire that carries the box’s 0 V. That connection is exactly what a button on the box’s front panel makes when you press it. The control box cannot tell the difference: it runs the motor for as long as the connection lasts. A small light on each wire shows which pins are high. Chapter 4 opens one of these switches up.</p>
+  <p>So the firmware, the program on the Pico, has a narrow job. Many times a second it decides whether each of GP10, GP11, GP20 and GP21 should be high or low. You just made that decision with a click. The firmware makes it only after a long list of things has been checked, and the rest of this walkthrough is that list.</p>
+
+  <h3>Startup, one part at a time</h3>
+  <p>When power arrives, nothing is in charge of those four pins. Startup is the business of taking charge: of the pins first, then of everything else the program needs, in an order chosen so that the pins are never left unattended. Drag the slider through a normal start. The dark name tags show which piece of the program holds each part of the board.</p>
+  <figure class="live" id="board-wake">
+    <canvas id="board-wake-view" role="img" aria-label="The Pico with its four direction pins, watchdog and radio; the position sensor; and the rotator's control box. Each part is tagged with the piece of the program that holds it at the chosen step of startup."></canvas>
+    <div class="controls">
+      <label class="board-slide" for="board-wake-step">Startup, step <span id="board-wake-step-value">0 of 7, power arrives</span>
+        <input id="board-wake-step" type="range" min="0" max="7" step="1" value="0"></label>
+      <fieldset class="board-pick"><legend>What goes wrong</legend>
+        <label><input type="radio" name="board-wake-case" value="" checked> nothing</label>
+        <label><input type="radio" name="board-wake-case" value="froze"> the last run froze</label>
+        <label><input type="radio" name="board-wake-case" value="sensor"> the sensor is silent</label>
+        <label><input type="radio" name="board-wake-case" value="wifi"> no Wi-Fi</label>
+      </fieldset>
+    </div>
+    <p class="board-say" id="board-wake-say" role="status" aria-live="polite"></p>
+    <figcaption>The order of <code>main</code> in the firmware’s <code>main.rs</code>. The steps are in sequence but not to scale: the figure shows what is held, not how long each step takes.</figcaption>
+  </figure>
+  <p>Then choose one of the three faults and drag again. Watch where startup stops, and look at the four pins. The rest of this chapter takes the steps one at a time.</p>
+
+  <h3>First, the pins</h3>
+  <p>For the first few milliseconds ezal is not running at all. A small loader built into the chip finds the program stored on the board and starts it. Until then nobody drives the four pins, and a resistor beside each switch holds it open.</p>
+  <details>
+    <summary>How the program got onto the board</summary>
+    <p>You build ezal on your own computer with Cargo, Rust’s build tool, which turns the source code into instructions for the Pico’s chip. Running <code>cargo run -p ezal-firmware --release</code> builds the program, writes it to the board through a debug probe (a small adapter wired to three of the board’s pins) and then shows the messages the running program logs. Without a probe, <code>./scripts/build-uf2.sh</code> produces a file that you copy to the Pico over USB while holding its BOOTSEL button; you get no log that way. Your Wi-Fi name and password are built into the program, so changing them means building it again. The <a href="https://github.com/tteggel/ezal/blob/main/docs/DEVELOPMENT.md">development guide</a> has the whole procedure.</p>
+  </details>
+  <p>The program’s first function is called <code>main</code>, and nearly the first thing it does is make one of these:</p>
+  <figure class="code" data-src="crates/ezal-firmware/src/drive.rs">
+    <figcaption>The four pins become one value, and all four start low.</figcaption>
+    <pre data-from="pub struct DirectionOutputs" data-to="}"></pre>
+    <pre data-from="pub fn new(" data-to=") -&gt; Self {"></pre>
+    <pre data-from="cw: Output::new" data-to="down: Output::new"></pre>
+    <ol>
+      <li data-at="pub struct DirectionOutputs">This is the only place in the program where the four pins live. In Rust a value has exactly one owner, so whichever piece of code holds a <code>DirectionOutputs</code> is the only code that can change a pin.</li>
+      <li data-at="cw: Peri">Each pin has its own type. Hand this function GP11 where it expects GP10 and the program does not compile.</li>
+      <li data-at="cw: Output::new">Start driving the pin, at 0 V from the first instant. There is no moment when the pin is driven but undecided.</li>
+    </ol>
+  </figure>
+
+  <h3>Then, a question about the last run</h3>
+  <p>The second thing <code>main</code> does is ask the chip why it restarted. The answer matters because of a safety device called a watchdog: a countdown inside the chip that restarts the whole board if it ever reaches zero. ezal sets it to <span class="c-warn">500 ms</span>, half a second, and the code that controls the pins puts it back to the top each time it finishes a round of work. If the program freezes, nothing resets the countdown, and half a second later the chip restarts.</p>
+  <p>A restart is the right answer to a freeze, but a poor moment to carry on as if nothing had happened: a motor may have been running when the program stopped. So if the chip reports that the watchdog caused this restart, <code>main</code> keeps the pins low and goes no further until a person resets the board.</p>
+  <figure class="code" data-src="crates/ezal-firmware/src/main.rs">
+    <figcaption>The first lines of <code>main</code>: steps 1 to 3 in the figure.</figcaption>
+    <pre data-from="let p = embassy_rp::init" data-to="    );"></pre>
+    <ol>
+      <li data-at="embassy_rp::init">Embassy is the library ezal uses to reach the chip’s hardware. <code>p</code> holds one value for every pin and device on the chip, and taking <code>p.PIN_10</code> out of it is how a piece of code comes to own that pin.</li>
+      <li data-at="DirectionOutputs::new(">Step 1: all four pins low.</li>
+      <li data-at="firmware_timeout_caused_reset">Step 2. This is true only if the countdown that ezal itself started ran out. Loading new firmware also restarts the board through the watchdog, and that must not look like a fault.</li>
+      <li data-at="park((directions, watchdog))"><code>park</code> waits forever and keeps hold of what it is given. The pins stay owned, and low.</li>
+      <li data-at="drive::direction_task(">Step 3. The pins and the watchdog move into the direction task and never come back out. The task first runs when <code>main</code> next has to wait for something, a few lines further on.</li>
+    </ol>
+  </figure>
+  <p>One thing the watchdog does not promise is how quickly a switch opens after a freeze. This chip can hold a pin at its last level through a restart, until the new start reaches the line marked 2 above. How long that takes has to be measured on the real board, and it has not been yet. Chapter 7 collects everything that is still unproven.</p>
+
+  <h3>One task keeps the pins</h3>
+  <p>ezal is built from a handful of <em>tasks</em>: independent loops that take turns, each running until it has to wait for something. The direction task is the one that matters most. Its loop is short. It looks at the latest request and the latest position, decides what each pin should be, sets the pins, resets the watchdog, and waits, never for longer than a tenth of a second. Then it goes round again.</p>
+  <p>Because this task alone owns the pins, there is exactly one place in the whole program where a pin can go high. And because the watchdog is reset only at the end of each round, a watchdog that stays quiet means that place is still doing its work.</p>
+
+  <h3>Next, the sensor</h3>
+  <p>The dish’s position arrives as two voltages, and a separate chip on the interface board measures them. The code calls it <code>adc</code>, for analog-to-digital converter, and chapter 2 is about what it measures. Before trusting it, <code>main</code> tests it. Does a chip answer at all? Does it remember settings written to it? Do two opposite test patterns survive being written and read back? Then it takes one reading from each input for the log. The whole test, which the code calls a POST (power-on self-test), must finish within <span class="c-warn">500 ms</span>.</p>
+  <figure class="code" data-src="crates/ezal-firmware/src/main.rs" data-comments="omit">
+    <figcaption>Steps 4 and 5: test the sensor, and start reading it only if it passed.</figcaption>
+    <pre data-from="match with_timeout(ADC_POST_TIMEOUT" data-to="spawner.spawn(feedback::run"></pre>
+    <ol>
+      <li data-at="with_timeout(ADC_POST_TIMEOUT">Run the self-test, but give up after 500 ms. A sensor that never answers must not hold up startup for ever.</li>
+      <li data-at="store_raw_feedback">Finished in time and passed. The two readings are kept so that the dashboard has something to show straight away.</li>
+      <li data-at="Ok(Err(e))">Finished in time and failed: nothing answered, for example. <code>main</code> parks, holding the sensor.</li>
+      <li data-at="Err(_) =&gt;">Ran out of time. A conversation with the sensor that is cut off halfway can leave its wires in an unknown state, so they are not used again before a reset.</li>
+      <li data-at="feedback::run(adc">Only a sensor that passed reaches this line, where the feedback task takes it over.</li>
+    </ol>
+  </figure>
+  <p>If the test fails, <code>main</code> stops for good. Notice what never happens: the radio is not switched on, so no dashboard appears, and the only record of the failure is a log message that takes a debug probe to read. Notice also what keeps happening. The direction task was started earlier, so the pins are still held low and the watchdog is still being reset. The board is running, unreachable, and still.</p>
+
+  <h3>Last, the radio</h3>
+  <p>Only now does <code>main</code> switch on the Pico’s radio and start the dashboard’s web server and the remaining tasks. Its work done, <code>main</code> ends, and the tasks run on. One of them joins your Wi-Fi network and asks it for an address. When it has both, it flashes the light on the Pico three times. That light is wired to the radio chip and has nothing to do with the four direction pins; three flashes mean only that startup is complete.</p>
+  <p>If there is no network to join, that task tries again, and goes on trying. Meanwhile the sensor is being read and the direction task is running, but it will not raise a pin while the network is down. A controller that nobody can reach has no business moving a dish, and chapter 3 returns to that.</p>
+
+  <h3>Why nothing moved</h3>
+  <p>Go back to the last step of a normal start. Everything is running, and all four pins are at 0 V. The direction task is holding them there because two things are missing. Nobody has asked for movement, and chapter 3 is about who may. And the firmware cannot know how recently the motors last ran, so it makes them rest for 15 minutes unless you tell it they already have; chapter 4 covers that.</p>
+  <p>A third thing is already arriving, about ten times a second: the dish’s position. The direction task will not raise a pin without a position that is both recent and believable. What makes a position believable is next.</p>
+</section>
+
+<section class="chapter" id="feedback">
+  <h2>2. Turn voltage into trustworthy position</h2>
+  <p class="lead">Before the firmware moves the dish it must know where the dish is. All it has to go on is two voltages. What turns a voltage into a position worth trusting?</p>
+  <p>The firmware never assumes that running a motor for one second turns the dish by a known amount. Motors slow under load, and a dish keeps moving after its power is cut. Instead, the firmware measures. Inside the rotator, each axis turns a variable resistor along with the dish, and the control box turns that into a voltage on a wire: one wire for <span class="c-az">azimuth</span>, the direction the dish faces around the horizon, and one for <span class="c-el">elevation</span>, its tilt above the horizon. As the dish moves, the voltages change.</p>
+
+  <h3>A voltage too big to measure</h3>
+  <p>The control box’s manual says each of those wires can carry up to 4.5 V. The sensor chip that has to measure them runs on 3.3 V and must not be shown more than that. So on its way to the sensor, each wire passes through a chain of resistors. A resistor resists the flow of electricity, and along a chain of them the voltage falls steadily, from whatever the control box supplies at one end to zero at the other. Measure part-way down the chain and you get a fixed fraction of the voltage. Drag the left end.</p>
+  <figure class="live" id="board-divider">
+    <canvas id="board-divider-view" role="img" aria-label="A graph of voltage along a chain of three resistors, 33, 68 and 82 kilo-ohms, from the control box's output down to ground. The sensor measures the voltage above the last resistor."></canvas>
+    <div class="controls">
+      <label class="board-slide" for="board-divider-v">The control box supplies <span id="board-divider-v-value">4.50 V</span>
+        <input id="board-divider-v" type="range" min="0" max="5" step="0.05" value="4.5"></label>
+    </div>
+    <p class="board-say" id="board-divider-say" role="status" aria-live="polite"></p>
+    <figcaption>The resistor values are the ones marked in <a href="https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md?plain=1#L169-L195">the hardware notes</a>; real parts differ from their markings by a percent or so. Each axis has its own identical chain.</figcaption>
+  </figure>
+  <p>The chain has three resistors: 33 kΩ inside the control box, then 68 kΩ and 82 kΩ on the interface board. (kΩ means thousands of ohms, the unit of resistance; only the proportions matter here.) The sensor measures above the last one, so it sees 82 parts out of 33 + 68 + 82 = 183, about 45 %. The manual’s 4.5 V arrives as 2.02 V.</p>
+
+  <h3>From voltage to number to angle</h3>
+  <p>The sensor measures a voltage and hands the Pico a whole number. ezal sets it up so that each count is worth 2 millivolts (thousandths of a volt, written mV). The sensor can say 772 mV or 774 mV and nothing in between.</p>
+  <p>A number of millivolts is not yet a position. The link between the two is made by measurement: drive the dish to each end of the travel you intend to use, and write down what the sensor reports there. The numbers checked into the code say that <span class="c-az">azimuth</span> reads 114 mV at 0° and 2033 mV at 360°, and that <span class="c-el">elevation</span> reads 1281 mV at 0° and 58 mV at 90°. Everything in between is taken to lie on a straight line. Drag the dish.</p>
+  <figure class="live" id="board-line">
+    <canvas id="board-line-view" role="img" aria-label="Three linked drawings: the dish at its current angle; a graph of sensor voltage against angle with one straight line for azimuth and one for elevation; and a close-up of the line showing the 2 millivolt steps the sensor reports."></canvas>
+    <div class="controls">
+      <fieldset class="board-pick"><legend>Axis</legend>
+        <label><input type="radio" name="board-line-axis" value="az" checked> <span class="c-az">azimuth</span></label>
+        <label><input type="radio" name="board-line-axis" value="el"> <span class="c-el">elevation</span></label>
+      </fieldset>
+      <div class="board-slide"><label for="board-line-deg">The dish points to <span id="board-line-deg-value">123.40°</span></label>
+        <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-line-deg" type="range" min="0" max="360" step="0.05" value="123.4"><button type="button" aria-label="One step more">+</button></div></div>
+    </div>
+    <p class="board-say" id="board-line-say" role="status" aria-live="polite"></p>
+    <figcaption>The lines are <code>HARD_CODED_CALIBRATION</code>. The figure assumes what the firmware assumes, that the voltage really does follow a straight line, and it rounds to the nearest step as an ideal sensor would. Drag inside the close-up, or press − and +, to move by less than one step.</figcaption>
+  </figure>
+  <p>Three things are worth noticing. <span class="c-az">Azimuth</span>’s voltage rises as the dish turns clockwise, but <span class="c-el">elevation</span>’s falls as the dish tilts up: its line slopes the other way. The firmware does not mind, because it only ever uses the two measured ends.</p>
+  <p>In the close-up, the sensor’s answer moves in steps. The dish has to turn about 0.375° in azimuth, or 0.147° in elevation, before the number changes at all, and the angle the firmware computes is always the middle of a step.</p>
+  <p>And the lines end at 360° and 90° because those are the ends that were measured for this installation. The rotator itself can turn further, 450° around and 180° over the top, but using that travel means measuring new ends first.</p>
+  <figure class="code" data-src="crates/ezal-core/src/position.rs">
+    <figcaption>The whole calibration: two angles and two voltages for each axis.</figcaption>
+    <pre data-from="pub const HARD_CODED_CALIBRATION" data-to="};"></pre>
+    <ol>
+      <li data-at="voltage_min_mv: 114">Not the smaller voltage: the voltage measured at <code>angle_min_deg</code>.</li>
+      <li data-at="voltage_min_mv: 1_281">Which is why elevation’s “min” voltage is the larger of its two.</li>
+    </ol>
+  </figure>
+  <p>These numbers are not stored anywhere else. To recalibrate, you measure again, edit them, and rebuild the firmware.</p>
+
+  <h3>Readings that cannot be believed</h3>
+  <p>Not every number is a position. A wire can work loose, short to ground, or touch the 3.3 V supply, and the sensor will faithfully report whatever voltage results. So before converting a reading, the firmware asks whether a working rotator could have produced it. Drag the reading along the sensor’s whole range.</p>
+  <figure class="live" id="board-bands">
+    <canvas id="board-bands-view" role="img" aria-label="A line of sensor readings from 0 to 3300 millivolts, coloured by what the firmware makes of each: refused, counted as the nearest end of travel, or converted to a position. Two close-ups show the 25 millivolt band beyond each measured end."></canvas>
+    <div class="controls">
+      <fieldset class="board-pick"><legend>Axis</legend>
+        <label><input type="radio" name="board-bands-axis" value="az" checked> <span class="c-az">azimuth</span></label>
+        <label><input type="radio" name="board-bands-axis" value="el"> <span class="c-el">elevation</span></label>
+      </fieldset>
+      <div class="board-slide"><label for="board-bands-mv">The sensor reports <span id="board-bands-mv-value">1074 mV</span></label>
+        <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-bands-mv" type="range" min="0" max="3300" step="2" value="1074"><button type="button" aria-label="One step more">+</button></div></div>
+    </div>
+    <p class="board-say" id="board-bands-say" role="status" aria-live="polite"></p>
+    <figcaption>One axis at a time. In the firmware both readings must pass before there is a position at all. Drag inside a close-up, or press − and +, for fine control.</figcaption>
+  </figure>
+  <p>A reading of 0 mV, or of <span class="c-warn">3200 mV</span> and above, sits at an edge of what a sensor powered from 3.3 V can measure. It might be a real voltage or a broken wire, and there is no telling which, so it is <span class="c-stop">refused</span>. A reading between the measured ends is fine. Just outside them there is a judgement to make. Real signals wobble by a few millivolts, so a reading up to <span class="c-warn">25 mV</span> past a measured end is accepted and counted as exactly that end. Anything further out is refused.</p>
+  <p>Refusal is not a small thing. If either voltage is refused there is no position, and with no position no pin may go high.</p>
+  <figure class="code" data-src="crates/ezal-core/src/position.rs" data-comments="omit">
+    <figcaption>Millivolts to degrees, in <code>AxisMapping::voltage_to_angle</code>. The edges at 0 and 3200 mV are checked just before this, in <code>validate_adc_readings</code>.</figcaption>
+    <pre data-from="let millivolts = i64::from(millivolts);" data-to="Ok(self.min_deg + fraction * self.span_deg)"></pre>
+    <ol>
+      <li data-at="if millivolts &lt; self.low_mv">More than 25 mV outside either measured end: no angle, and the caller treats it as a fault.</li>
+      <li data-at="millivolts.clamp(">Inside the band: pulled back to the end.</li>
+      <li data-at="as f32 / self.span_mv">How far along the line the reading lies, as a fraction from 0 to 1. <code>start_mv</code> is the voltage at the low angle, and for elevation <code>span_mv</code> is negative. That is all it takes to handle a line that slopes the other way.</li>
+      <li data-at="self.min_deg + fraction">The same fraction of the way along the angles.</li>
+    </ol>
+  </figure>
+
+  <h3>A reading is a statement about the past</h3>
+  <p>A believable reading still has a flaw: by the time anyone uses it, it is old. Measuring two voltages takes time, and then the result waits until the direction task next looks at it. The dish may have been moving all the while.</p>
+  <p>So every reading carries a time, and the firmware is careful about which time. The feedback task notes the clock <em>before</em> it starts measuring the first voltage, not after it finishes the second, and a reading’s age is counted from that earlier moment. Drag “now”.</p>
+  <figure class="live" id="board-age">
+    <canvas id="board-age-view" role="img" aria-label="A timeline of one sensor reading, from the moment the clock is noted, through the read, to now. A band underneath shows when the reading may be used: after the read finishes and until the reading is 500 milliseconds old."></canvas>
+    <div class="controls">
+      <div class="board-slide"><label for="board-age-now">Now is <span id="board-age-now-value">120 ms</span> after the read began</label>
+        <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-age-now" type="range" min="0" max="600" step="1" value="120"><button type="button" aria-label="One step more">+</button></div></div>
+      <div class="board-slide"><label for="board-age-read">The read takes <span id="board-age-read-value">20 ms</span></label>
+        <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-age-read" type="range" min="0" max="200" step="1" value="20"><button type="button" aria-label="One step more">+</button></div></div>
+    </div>
+    <p class="board-say" id="board-age-say" role="status" aria-live="polite"></p>
+    <figcaption>One reading, with its replacement held back so that you can watch it age. Normally a new reading arrives every tenth of a second or so and takes its place.</figcaption>
+  </figure>
+  <p>Two rules use these times. A read that takes more than <span class="c-warn">150 ms</span> is thrown away the moment it arrives; try 151. And any reading stops counting once it is more than <span class="c-warn">500 ms</span> old; try 501.</p>
+  <figure class="code" data-src="crates/ezal-firmware/src/feedback.rs">
+    <figcaption>The feedback task’s loop.</figcaption>
+    <pre data-from="Timestamp before the oldest channel" data-to="Timer::after(FEEDBACK_PERIOD).await;"></pre>
+    <ol>
+      <li data-at="let sample_started_ms">The clock is noted first.</li>
+      <li data-at="reader.read().await">Then both voltages are measured, elevation first. The task waits here while the sensor works, and other tasks take their turns.</li>
+      <li data-at="monitor.update(">Every check you have met so far happens in here: the edges, the bands, the calibration, and whether <code>now_ms</code> is more than 150 past <code>sample_started_ms</code>.</li>
+      <li data-at="state.publish_feedback(">The result replaces the previous one, good or bad. A failed read does not leave the old position in place: it removes it.</li>
+      <li data-at="Timer::after(FEEDBACK_PERIOD)">Pause for 100 ms, then go round again.</li>
+    </ol>
+  </figure>
+  <p>A read can also hang, if a wire to the sensor breaks in the middle of one, for instance. After 500 ms the feedback task gives up on it and does not talk to the sensor again until the board is reset, for the same reason as at startup: a conversation cut off halfway can leave the wires in an unknown state. With no new readings, nothing moves.</p>
+
+  <h3>Why 150 ms?</h3>
+  <p>The two limits are related. A reading has to last until its replacement arrives, and in the worst case the replacement is slow as well. Drag the read time.</p>
+  <figure class="live" id="board-budget">
+    <canvas id="board-budget-view" role="img" aria-label="A timeline from the start of one read: the read, a 100 millisecond pause, the next read, and the time to spare before the first reading turns 500 milliseconds old."></canvas>
+    <div class="controls">
+      <div class="board-slide"><label for="board-budget-read">Each read takes <span id="board-budget-read-value">150 ms</span></label>
+        <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-budget-read" type="range" min="0" max="200" step="1" value="150"><button type="button" aria-label="One step more">+</button></div></div>
+    </div>
+    <p class="board-say" id="board-budget-say" role="status" aria-live="polite"></p>
+    <figcaption>The worst case that the limits are chosen for. A healthy read is far quicker: each of the two measurements waits about a millisecond for the sensor.</figcaption>
+  </figure>
+  <p>With both reads at the limit, the replacement arrives when the first reading is 400 ms old. The last 100 ms is left for tasks waiting their turn. The numbers are tied together in the code, so that changing one without the others stops the firmware from building:</p>
+  <figure class="code" data-src="crates/ezal-core/src/feedback.rs">
+    <figcaption>The timing limits, and the sum that holds them together.</figcaption>
+    <pre data-from="/// Maximum lifetime of a sample" data-to=");"></pre>
+    <ol>
+      <li data-at="FEEDBACK_MAX_AGE_MS: u64">The 500 ms line in both figures.</li>
+      <li data-at="FEEDBACK_READ_TIMEOUT_MS: u64">A different 500: when to give up on a read that hangs.</li>
+      <li data-at="const _: () = assert!(">Checked when the firmware is built, not while it runs: 2 × 150 + 100 + 100 must not exceed 500.</li>
+    </ol>
+  </figure>
+  <p>The value 500 ms turns up several more times in ezal: in the watchdog, in the sensor test at startup, and in the next section. They are separate settings that happen to share a number, and chapter 7 lists them side by side.</p>
+
+  <h3>Room to stop</h3>
+  <p>One more thing can go wrong with a perfectly good reading: the dish can be near one end of the travel that the calibration covers. Past that end the firmware would no longer know where the dish is, and its cables may not reach. A reading says where the dish <em>was</em>. Before driving it further towards an end, the firmware works out where it could be by now, and where it would end up if the power were cut this instant.</p>
+  <p>The reasoning is pessimistic at every step. Since the reading began, assume the motor has been running flat out towards the end: 7° a second in azimuth, 3° in elevation. When the switch opens, assume the dish coasts on at that speed for another <span class="c-warn">500 ms</span>. And allow for the reading being off by one sensor step. If all of that added together could reach the end, the direction is <span class="c-stop">refused</span>. Drag the reading’s age.</p>
+  <figure class="live" id="board-room">
+    <canvas id="board-room-view" role="img" aria-label="The last few degrees before the end of travel. From the measured position, three lengths are laid one after another towards the end: how far the dish could have turned since the reading began, how far it could coast, and one sensor step. When they reach the end, travel towards it is refused."></canvas>
+    <div class="controls">
+      <fieldset class="board-pick"><legend>Axis</legend>
+        <label><input type="radio" name="board-room-axis" value="az" checked> <span class="c-az">azimuth</span></label>
+        <label><input type="radio" name="board-room-axis" value="el"> <span class="c-el">elevation</span></label>
+      </fieldset>
+      <div class="board-slide"><label for="board-room-age">The reading is <span id="board-room-age-value">100 ms</span> old</label>
+        <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-room-age" type="range" min="0" max="500" step="1" value="100"><button type="button" aria-label="One step more">+</button></div></div>
+      <div class="board-slide"><label for="board-room-mv">The sensor reported <span id="board-room-mv-value">2006 mV, 354.93°</span></label>
+        <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-room-mv" type="range" min="0" max="31" step="1" value="18"><button type="button" aria-label="One step more">+</button></div></div>
+    </div>
+    <p class="board-say" id="board-room-say" role="status" aria-live="polite"></p>
+    <figcaption>The high-angle end of each axis; the other end works the same way in mirror image. The firmware rounds the time down to whole milliseconds, so it can refuse up to a millisecond before the lengths in the drawing quite touch.</figcaption>
+  </figure>
+  <p>With the dish measured at 354.93°, the reading <span class="c-ok">allows</span> clockwise travel at 155 ms old and <span class="c-stop">refuses</span> it at 156 ms. Nothing about the dish changed in that millisecond, only how long ago we looked. The other direction, away from the end, stays allowed throughout. The direction task does not wait for a new reading to find this out: it works out the moment at which the reading in hand will stop allowing a direction that is running, and wakes at that moment to cut it.</p>
+  <p>The two speeds and the coast are estimates: the fastest figures in the rotator’s manual with a margin added, and a guess at how long the dish coasts. None of them has been measured on this dish yet.</p>
+  <figure class="code" data-src="crates/ezal-core/src/interlock.rs" data-comments="omit">
+    <figcaption>Three pieces of the feedback interlock: how old a reading may be before a direction is refused, whether it may be used at all, and the test itself.</figcaption>
+    <pre data-from="let room_deg = if increases_angle {" data-to="travel.coast_ms as f32;"></pre>
+    <pre data-from="(room_deg / speed_deg_per_ms) as u64"></pre>
+    <pre data-from="let feedback = self.feedback?;" data-to=".then_some((limits, position, age_ms))"></pre>
+    <pre data-from="azimuth: drive.azimuth.filter" data-to="}),"></pre>
+    <ol>
+      <li data-at="self.max_deg - self.code_deg - position_deg">The degrees left before the end of travel, less one sensor step.</li>
+      <li data-at="travel.coast_ms as f32">Less the coast.</li>
+      <li data-at="(room_deg / speed_deg_per_ms) as u64">What remains, turned into time at full speed and rounded down to whole milliseconds. If nothing remains, the answer is 0.</li>
+      <li data-at="age_ms &lt;= FEEDBACK_MAX_AGE_MS">No reading older than 500 ms allows anything.</li>
+      <li data-at="&lt; limits.azimuth.refusal_age_ms(">A direction is kept only while the reading is younger than the age worked out above. The elevation test, not shown, is the same.</li>
+    </ol>
+  </figure>
+  <p>The firmware now has a position that knows how old it is and how far it can be trusted. That is half of what the direction task needs. The other half is a request, and the question of who is allowed to make one.</p>
+</section>

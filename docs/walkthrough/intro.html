@@ -1,0 +1,63 @@
+<header id="start">
+<p class="metadata">An illustrated guide to <a href="https://github.com/tteggel/ezal">ezal</a> · no embedded experience needed · seven chapters</p>
+<h1>From power-on to pointing.</h1>
+<p class="lead">ezal is the program inside a small box that turns a dish antenna toward passing weather satellites. This page follows one request to move, from the moment the board gets power to the moment a motor turns. Then it hands the buttons to a satellite.</p>
+<p>Here is the whole machine. Hold a button and watch what it sets off.</p>
+<figure class="live" id="hero">
+<div class="hero-loop">
+<div class="hero-stage">
+<p class="hero-step"><b>1</b> You hold a button</p>
+<div class="hero-pad" role="group" aria-label="Direction buttons">
+<button type="button" data-hero="up" aria-label="Tilt up">Up</button>
+<button type="button" data-hero="ccw" aria-label="Turn counter-clockwise">↺ CCW</button>
+<button type="button" data-hero="cw" aria-label="Turn clockwise">CW ↻</button>
+<button type="button" data-hero="down" aria-label="Tilt down">Down</button>
+</div>
+</div>
+<div class="hero-stage">
+<p class="hero-step"><b>2</b> ezal raises one pin</p>
+<svg viewBox="0 0 180 170" role="img" aria-label="The Pico 2 W with four output pins, one for each direction. A lit dot marks a pin that is on.">
+<rect x="6" y="8" width="168" height="154" rx="10" fill="#edf4fa" stroke="#18354a" stroke-width="2"/>
+<rect x="20" y="58" width="52" height="54" rx="4" fill="#18354a"/>
+<text x="46" y="82" text-anchor="middle" font-size="13" fill="#fff">Pico</text><text x="46" y="99" text-anchor="middle" font-size="13" fill="#fff">2 W</text>
+<g fill="none" stroke="#18354a" stroke-width="1.5"><path d="M72 68H84V34H96"/><path d="M72 79H90V68H96"/><path d="M72 91H90V102H96"/><path d="M72 102H84V136H96"/></g>
+<g stroke="#18354a" stroke-width="1.5" fill="#fff"><circle id="hero-led-cw" cx="105" cy="34" r="9"/><circle id="hero-led-ccw" cx="105" cy="68" r="9"/><circle id="hero-led-up" cx="105" cy="102" r="9"/><circle id="hero-led-down" cx="105" cy="136" r="9"/></g>
+<g font-size="13" fill="#20323e"><text x="120" y="39">CW</text><text x="120" y="73">CCW</text><text x="120" y="107">Up</text><text x="120" y="141">Down</text></g>
+</svg>
+</div>
+<div class="hero-stage">
+<p class="hero-step"><b>3</b> The control box powers a motor</p>
+<svg viewBox="0 0 180 170" role="img" aria-label="The rotator’s control box, with a meter for each motor.">
+<rect x="6" y="30" width="168" height="110" rx="8" fill="#edf4fa" stroke="#18354a" stroke-width="2"/>
+<g fill="#fff" stroke="#18354a" stroke-width="1.5"><path d="M22 100A34 34 0 0 1 90 100Z"/><path d="M96 100A34 34 0 0 1 164 100Z"/></g>
+<line id="hero-az-needle" x1="56" y1="100" x2="56" y2="71" stroke="#245bce" stroke-width="3" stroke-linecap="round"/>
+<line id="hero-el-needle" x1="130" y1="100" x2="130" y2="71" stroke="#087e83" stroke-width="3" stroke-linecap="round" transform="rotate(-20 130 100)"/>
+<text id="hero-power" x="90" y="126" text-anchor="middle" font-size="13" fill="#20323e">Both motors off</text>
+<text x="90" y="160" text-anchor="middle" font-size="13" fill="#506574">Yaesu G-5500</text>
+</svg>
+</div>
+<div class="hero-stage">
+<p class="hero-step"><b>4</b> The dish turns</p>
+<svg viewBox="0 0 180 170" role="img" aria-label="The dish’s direction: a compass seen from above for azimuth, and a side view for elevation.">
+<circle cx="60" cy="76" r="40" fill="#edf4fa" stroke="#18354a" stroke-width="2"/>
+<g font-size="13" fill="#506574" text-anchor="middle"><text x="60" y="30">N</text><text x="110" y="81">E</text><text x="60" y="132">S</text><text x="10" y="81">W</text></g>
+<line id="hero-az-pointer" x1="60" y1="76" x2="60" y2="42" stroke="#245bce" stroke-width="4" stroke-linecap="round" transform="rotate(180 60 76)"/>
+<circle cx="60" cy="76" r="4" fill="#18354a"/>
+<path d="M124 120H178M128 120V72M172 120A44 44 0 0 0 128 76" fill="none" stroke="#18354a" stroke-width="2"/>
+<line id="hero-el-pointer" x1="128" y1="120" x2="166" y2="120" stroke="#087e83" stroke-width="4" stroke-linecap="round" transform="rotate(-30 128 120)"/>
+<circle cx="128" cy="120" r="4" fill="#18354a"/>
+<text id="hero-az-deg" x="60" y="160" text-anchor="middle" font-size="14" font-weight="bold" fill="#245bce">180.0°</text>
+<text id="hero-el-deg" x="150" y="160" text-anchor="middle" font-size="14" font-weight="bold" fill="#087e83">30.0°</text>
+</svg>
+</div>
+</div>
+<p class="hero-return"><b>5</b> Two voltages come back to ezal, and they are all it knows about the dish: <span class="c-az">azimuth <output id="hero-az-mv">1074 mV</output></span>, <span class="c-el">elevation <output id="hero-el-mv">874 mV</output></span>.</p>
+<p class="sr-only" id="hero-status" role="status"></p>
+<figcaption>A toy at the rotator’s true pace: a full turn takes 70 seconds. The voltages follow the calibration checked into the code.</figcaption>
+</figure>
+<p>The antenna sits on a rotator, a Yaesu G-5500, with two motors. One turns it round like a compass needle; that angle is the <span class="c-az">azimuth</span>. The other tilts it up from the horizon; that angle is the <span class="c-el">elevation</span>. The motors take their power from the rotator’s own control box. ezal runs on a Raspberry Pi Pico 2 W wired to that box, and all it can do is close four switches, one per direction, as a finger would press the box’s four buttons. A motor is either on or off. There is no speed control.</p>
+<p>Coming back the other way are two voltages that rise and fall as the antenna moves. They tell ezal where the dish is pointing, which is not always where it was told to point.</p>
+<p>Four switches out, two voltages back: that loop is the entire machine. Everything else in ezal decides <em>when closing a switch is allowed</em>. The toy above asks none of those questions. It never checks that the position reading is recent, that your finger is still on the button, or that the motor has had a rest. Chapters 1 to 4 add those questions one at a time. Chapters 5 and 6 let a satellite do the asking, and chapter 7 looks at what has and has not been proven.</p>
+<p class="metadata">Every figure runs inside this page and none can reach a board. The explanation was written against <code>main</code> at <a href="https://github.com/tteggel/ezal/tree/79046c17e90caf0ed6f90e919111a353ba931085"><code>79046c1</code></a>, 5 November 2026. The code excerpts are copied from the repository each time the page is built, so they are the current source. The other links follow live <code>main</code>, and their line numbers may drift. ezal’s rules are tested on a developer’s computer; tests on the board and the installed rotator are still to come.</p>
+<noscript>The explanations and code are all here without JavaScript. Enable JavaScript to operate the figures.</noscript>
+</header>

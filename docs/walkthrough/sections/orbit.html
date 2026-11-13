@@ -1,0 +1,238 @@
+<style>
+#orbit figure.live{max-width:46rem}
+#orbit .orbit-3d{aspect-ratio:3/2;cursor:grab}
+#orbit .orbit-3d:active{cursor:grabbing}
+#orbit .orbit-chart{aspect-ratio:5/2;cursor:crosshair}
+#orbit .controls label{flex:1 1 300px}
+#orbit .controls input[type=range]{display:block}
+#orbit .controls fieldset{flex:1 1 300px;margin:0;padding:0;border:0;font-size:.9rem;min-width:0}
+#orbit .controls fieldset label{display:inline-flex;align-items:center;gap:.4rem;margin:.3rem 1.2rem .3rem 0}
+#orbit .controls legend{padding:0}
+#orbit .orbit-out{margin:.7rem 0 0;font-size:.95rem;line-height:1.55;font-variant-numeric:tabular-nums;max-width:none}
+#orbit .orbit-tle{margin:0 0 .5rem;padding:.6rem .9rem;border-left-color:var(--sat);font:13.5px/1.8 'Cascadia Code','DejaVu Sans Mono',monospace;white-space:pre;overflow-wrap:normal;overflow-x:auto}
+#orbit .orbit-tle:focus-visible{outline:3px solid #be6b00;outline-offset:2px}
+#orbit .orbit-tle i{font-style:normal;color:var(--muted)}
+#orbit .orbit-tle b{font-weight:normal;border-radius:2px}
+#orbit .orbit-tle .f{background:#ead8f1;box-shadow:0 0 0 2px #ead8f1;color:#4f1a63}
+#orbit .orbit-tle .d{background:#d5e3f0;box-shadow:0 0 0 2px #d5e3f0}
+#orbit .orbit-tle .k{box-shadow:0 0 0 1.5px var(--muted)}
+#orbit .orbit-sum{width:auto;margin-top:.8rem;font-variant-numeric:tabular-nums}
+#orbit .orbit-sum caption{caption-side:bottom;text-align:left;padding-top:.5rem;font-size:.86rem;color:var(--muted)}
+#orbit .orbit-sum td,#orbit .orbit-sum thead th{text-align:right;min-width:4.6rem}
+#orbit .orbit-sum th,#orbit .orbit-sum td{padding:.35rem .7rem}
+#orbit .orbit-sum tbody th{background:none;font-weight:normal}
+#orbit .orbit-sum tr:last-child>*{border-top:2px solid var(--navy);font-weight:bold}
+@media(max-width:600px){#orbit .orbit-3d{aspect-ratio:1/1}#orbit .orbit-chart,#orbit #orbit-local-canvas,#orbit #orbit-dome-canvas{aspect-ratio:4/3}#orbit .orbit-sum td,#orbit .orbit-sum thead th{min-width:0}#orbit .orbit-sum th,#orbit .orbit-sum td{padding:.35rem .4rem}}
+</style>
+<section class="chapter" id="orbit">
+  <h2>5. Find the satellite in the sky</h2>
+  <p class="lead">The dashboard lists passes hours before they happen. How does a small board that cannot see the sky know where a satellite will be?</p>
+  <p>It works it out. Soon after it starts, and every six hours after that, the board downloads a short description of each satellite’s orbit. From that description and the date and time, it calculates where the satellite is, where the dish is, and the direction from one to the other. Every step is geometry you can watch happen. This chapter follows one weather satellite, METOP-B, through those steps. By the end you will be able to read the function that does the work and recognise each line.</p>
+
+  <h3>Two lines of text</h3>
+  <p>Here is everything the board is told about METOP-B’s orbit. It is one record from the file ezal’s own tests use, and it describes the orbit as it was at 07:42:59 UTC on 7 October 2026. A record in this format is called a two-line element set, or TLE.</p>
+  <figure class="live" id="orbit-fig-ring">
+    <pre class="orbit-tle" id="orbit-tle" tabindex="0" aria-label="The two-line record for METOP-B, with five fields marked: the record’s date, tilt, facing, where and laps a day">1 38771U 12049A   26280.32152257  .00000049  00000+0  42027-4 0  9998
+2 38771  98.6378 329.5145 0002825  45.3235 314.8172 14.21463054729191</pre>
+    <canvas class="orbit-3d" id="orbit-ring-canvas" tabindex="0" role="img" aria-label="A globe with a purple ring around it: the satellite’s orbit. Marked angles show the ring’s tilt from the equator and the direction it faces. Drag, or use the arrow keys, to turn the view."></canvas>
+    <div class="controls">
+      <label for="orbit-ring-tilt">Tilt: <output id="orbit-ring-tilt-out"></output><input id="orbit-ring-tilt" type="range" min="0" max="180" step="0.5" value="98.6378"></label>
+      <label for="orbit-ring-facing">Facing: <output id="orbit-ring-facing-out"></output><input id="orbit-ring-facing" type="range" min="0" max="360" step="1" value="329.5145"></label>
+      <label for="orbit-ring-where">Where along the ring: <output id="orbit-ring-where-out"></output><input id="orbit-ring-where" type="range" min="0" max="360" step="1" value="314.8172"></label>
+      <label for="orbit-ring-laps">Laps a day: <output id="orbit-ring-laps-out"></output><input id="orbit-ring-laps" type="range" min="12" max="16" step="0.05" value="14.21463054"></label>
+      <button type="button" id="orbit-ring-reset">Back to the real record</button>
+    </div>
+    <p class="orbit-out" id="orbit-ring-out" aria-live="polite"></p>
+    <figcaption>The two lines start as the real record, and the sliders rewrite four of its fields. The picture is this page’s drawing of what those numbers mean. Drag it to turn it.</figcaption>
+  </figure>
+  <p>Most of the characters are bookkeeping: a catalogue number, a launch code, a count of laps flown. Six numbers describe the orbit itself, and four of them shape the picture. Try each slider.</p>
+  <ul>
+    <li><strong>Tilt</strong> is how steeply the <span class="c-sat">ring</span> leans away from the equator. At 0° the satellite would circle above the equator for ever. At 90° it would pass over both poles. METOP-B leans a little beyond that, so as the Earth turns inside the ring, the satellite sees nearly all of it.</li>
+    <li><strong>Facing</strong> says which way round the tilted ring sits. It is an angle around the equator, from a direction that stays fixed among the stars to the place where the satellite crosses the equator heading north.</li>
+    <li><strong>Where</strong> is how far round the ring the <span class="c-sat">satellite</span> had got at the record’s date, counted from the mark labelled 0°.</li>
+    <li><strong>Laps a day</strong> sets the size of the ring. Gravity ties the two together: the closer a satellite is, the faster it must go round. Slide it and watch the ring shrink and grow.</li>
+  </ul>
+  <p>The other two numbers hardly change this picture. <code>0002825</code> means 0.0002825 and says how far the ring is from a perfect circle: almost not at all. <code>45.3235</code> says where on the ring its lowest point is, and that is where the 0° mark sits.</p>
+  <p>Watch the last digit of the second line as you drag. It is a check digit: add up every digit in the line, count each minus sign as 1, and keep the last digit of the total. If a character gets damaged on the way, the sum usually stops matching.</p>
+  <p>That matters, because these lines arrive over the network from a public catalogue, and the board does not trust them. Before anything else reads a line, <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/orbit.rs#L289-L317"><code>well_formed</code></a> requires exactly 69 characters, the right kind of character in every column, and a check digit that matches. Then the numbers themselves must make sense:</p>
+  <figure class="code" data-src="crates/ezal-core/src/orbit.rs" data-comments="omit">
+    <figcaption>The range checks in <code>Orbit::from_tle</code>. A record that fails any of them is not used.</figcaption>
+    <pre data-from="let angle = |degrees: f64|"></pre>
+    <pre data-from="if elements.norad_id != satellite.norad_id" data-to="}"></pre>
+    <ol>
+      <li data-at="let angle =">A helper for the lines below: is this number of degrees between 0 and 360?</li>
+      <li data-at="elements.norad_id != satellite.norad_id">The record must be for the satellite we asked about, matched by catalogue number rather than by name.</li>
+      <li data-at="within(elements.inclination">Tilt, from 0° to 180°: the whole range of the first slider.</li>
+      <li data-at="angle(elements.right_ascension)">Facing, then the low point, then where: each a whole turn at most. <code>||</code> means “or”, and <code>!</code> means “not”.</li>
+      <li data-at="within(elements.mean_motion">Between 9.6 and 18 laps a day, and nearly circular. Real records exist outside these limits, but the pass search later in this chapter is built for low, round orbits like this one.</li>
+      <li data-at="return None;">Any failure and the function hands back nothing. The board keeps the last good record it had.</li>
+    </ol>
+  </figure>
+
+  <h3>Time passes</h3>
+  <p>The record says where the satellite was at one moment. To find it at any other, ezal hands the record to a library called <code>sgp4</code>, named after the standard method for these records, along with one number: how many minutes have passed since the record’s date. Back come three numbers.</p>
+  <figure class="live" id="orbit-fig-time">
+    <canvas class="orbit-3d" id="orbit-time-canvas" tabindex="0" role="img" aria-label="The globe and ring again, with three axes x, y and z from Earth’s centre. A dark path from the centre to the satellite runs along x, then y, then z. Drag, or use the arrow keys, to turn the view."></canvas>
+    <div class="controls">
+      <label for="orbit-time-minutes">Minutes: <output id="orbit-time-minutes-out"></output><input id="orbit-time-minutes" type="range" min="0" max="1440" step="1" value="11"></label>
+      <label for="orbit-time-days">Plus whole days: <output id="orbit-time-days-out"></output><input id="orbit-time-days" type="range" min="0" max="7" step="1" value="0"></label>
+      <button type="button" id="orbit-time-play">Play</button>
+    </div>
+    <p class="orbit-out" id="orbit-time-out" aria-live="polite"></p>
+    <figcaption>Minutes in; x, y and z out. The dark path shows the three numbers as a route from Earth’s centre: along x, then y, then z. It is dotted where the globe hides it. The minutes are counted as <code>Orbit::look_at</code> counts them; the position comes from this page’s simpler model.</figcaption>
+  </figure>
+  <p>The three numbers are distances in kilometres from the centre of the Earth, measured along three axes that cross there at right angles. z runs up through the north pole. x and y lie in the plane of the equator, and x is the fixed direction from the first figure. These axes do not turn with the Earth: move the minutes slider and the land slides past them. The code calls this set of axes TEME.</p>
+  <p>Now step through the days. The dashed ring is where the orbit was at the record’s date. A satellite circling a perfectly round planet would keep to that ring for ever. The real Earth bulges at the equator, and the bulge’s extra pull swings the ring steadily round: about one degree a day for this orbit. (That rate is chosen. One degree a day keeps pace with the Earth’s year-long trip round the Sun, so the satellite comes over at the same time of day all year.)</p>
+  <p>There is also a trace of air, even 820 km up, and it slowly drags the satellite down. The record carries a number for that too. For METOP-B it adds up to about two kilometres in a week. The library allows for the bulge, the drag and several smaller effects. Nobody can predict the air perfectly, though, so a record goes stale, and ezal will not forecast more than <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/orbit.rs#L319-L327">seven days past a record’s date</a>.</p>
+  <p class="note">The figures on this page do not run the library. They move the satellite round a plain ellipse and add only the steady swing from the bulge. For the pass we are about to follow, that simpler model points within half a degree of what ezal calculates, and finds the same rise and set times to within two seconds. Everything after this step, from the turning Earth to the final angles, is the same arithmetic as ezal’s and gives the same answers.</p>
+  <figure class="code" data-src="crates/ezal-core/src/orbit.rs" data-comments="omit">
+    <figcaption>From <code>Orbit::look_at</code>: ask the library where the satellite is.</figcaption>
+    <pre data-from="let prediction = self" data-to=".ok()?;"></pre>
+    <pre data-from="let look = station.look_at(prediction.position, unix_s);"></pre>
+    <ol>
+      <li data-at="sgp4::MinutesSinceEpoch">Seconds since the record’s date, divided by 60. <code>unix_s</code> is the date and time as one number: seconds since the start of 1970. So this calculation needs to know the real date and time. Where the board gets them is the next chapter’s business.</li>
+      <li data-at=".ok()?;">If the library reports a failure, stop here and return nothing rather than a made-up position.</li>
+      <li data-at="station.look_at(">The three numbers, and the time, go on to the function the rest of this chapter explains.</li>
+    </ol>
+  </figure>
+
+  <h3>The Earth turns underneath</h3>
+  <p>The satellite’s ring is fixed to the stars. The dish is bolted to a planet that turns. Before one can be compared with the other, both must be measured along the same axes.</p>
+  <figure class="live" id="orbit-fig-spin">
+    <canvas class="orbit-3d" id="orbit-spin-canvas" tabindex="0" role="img" aria-label="The globe with the Greenwich meridian marked. One x axis is fixed to the stars and another passes through the Greenwich meridian; an arc between them is the angle theta. The satellite trails a purple line showing where it has been. Drag, or use the arrow keys, to turn the view."></canvas>
+    <div class="controls">
+      <fieldset>
+        <legend>Hold still</legend>
+        <label><input type="radio" name="orbit-spin-hold" value="stars" checked> the stars</label>
+        <label><input type="radio" name="orbit-spin-hold" value="earth"> the Earth</label>
+      </fieldset>
+      <label for="orbit-spin-time">Time: <output id="orbit-spin-time-out"></output><input id="orbit-spin-time" type="range" min="0" max="1440" step="1" value="130"></label>
+      <button type="button" id="orbit-spin-play">Play</button>
+    </div>
+    <p class="orbit-out" id="orbit-spin-out" aria-live="polite"></p>
+    <figcaption>One scene, watched from two places. The thick purple line is where the satellite has been over its last two laps, as seen from whichever you are holding still. θ comes from the same formula as the library routine ezal calls.</figcaption>
+  </figure>
+  <p>Hold the stars still and press Play. The Earth spins, and the satellite keeps to its ring. Now hold the Earth still. Nothing in the scene has changed, only where we watch it from, yet the satellite no longer retraces its path: each lap crosses the equator further west, because the ground has moved on underneath.</p>
+  <p>One angle separates the two views: how far the Greenwich meridian (the thick line down the globe) has turned past the fixed x axis. The code calls it the sidereal angle, and the figure marks it θ. The slider starts at the moment it was zero.</p>
+  <p>Drag the slider to its far end, 24 hours later, and read θ. It has not gone round once but slightly more: 361°. The Earth turns once against the stars in 23 hours 56 minutes. A day is longer because it runs from noon to noon, and by the next noon the Earth has moved along its path round the Sun and has to turn a little extra to face it again. So θ cannot be read off a clock. It needs the date as well.</p>
+  <p>To move a position from the axes fixed to the stars to the axes riding on the Earth, turn it back by θ about the z axis. Compare the two rows of numbers under the figure: x and y differ, and z never does.</p>
+
+  <h3>Where we are standing</h3>
+  <p>From here on we ride with the Earth. The dish’s position is given the way a map gives it: latitude 51.44266° north, longitude 2.84053° west, and a height. For the next step it has to become x, y and z as well, along the axes that turn with the Earth: x out through the equator on the Greenwich meridian, y out through the equator a quarter turn east, z through the north pole.</p>
+  <figure class="live" id="orbit-fig-station">
+    <canvas class="orbit-3d" id="orbit-station-canvas" tabindex="0" role="img" aria-label="The globe seen from the side, with the dish marked near its edge. A teal arrow points up from the dish and a dotted teal line continues it down to Earth’s axis. A dashed grey line runs from Earth’s centre through the dish. Drag, or use the arrow keys, to turn the view."></canvas>
+    <div class="controls">
+      <label for="orbit-station-lat">Latitude of the dish: <output id="orbit-station-lat-out"></output><input id="orbit-station-lat" type="range" min="-90" max="90" step="0.5" value="51.44266"></label>
+      <label for="orbit-station-squash">Exaggerate the flattening: <output id="orbit-station-squash-out"></output><input id="orbit-station-squash" type="range" min="1" max="100" step="1" value="1"></label>
+      <button type="button" id="orbit-station-reset">Back to Clevedon on the real Earth</button>
+    </div>
+    <p class="orbit-out" id="orbit-station-out" aria-live="polite"></p>
+    <figcaption>The dish’s position as a route from the centre, as before. <span class="c-el">Up</span> is drawn square to the ground under the dish. The numbers follow the shape drawn, so they are ezal’s only with the second slider at its left end. Mirrors <code>GroundStation::new</code>.</figcaption>
+  </figure>
+  <p>If the Earth were a ball, this would take one radius and some trigonometry. But the Earth is slightly flattened: its centre is 21 km nearer to the poles than to the equator. You cannot see that at true scale, so drag the second slider to exaggerate it.</p>
+  <p>Look at <span class="c-el">up</span>. It stays square to the ground, the way a mast stands. On a flattened Earth that line no longer points away from the centre (the dashed grey line does that). Followed downward, it misses the centre and meets the Earth’s axis a little beyond it.</p>
+  <p>The code follows that dotted teal line. It works out the line’s length from the dish down to the axis and calls it <code>n</code>. How far the line reaches sideways gives x and y. How far it reaches vertically, less the stretch beyond the centre, gives z.</p>
+  <figure class="code" data-src="crates/ezal-core/src/orbit.rs" data-comments="omit">
+    <figcaption>From <code>GroundStation::new</code>: latitude, longitude and height become x, y and z in kilometres.</figcaption>
+    <pre data-from="let e2 = 6.694" data-to="let height ="></pre>
+    <pre data-from="position: [" data-to="],"></pre>
+    <ol>
+      <li data-at="let e2 =">How flattened the Earth is, as one number from the standard model of its shape, WGS84. Zero would be a ball.</li>
+      <li data-at="let n =">The length of the dotted line. At the equator it is the Earth’s radius there, 6378.137 km. At Clevedon it is 6,391 km.</li>
+      <li data-at="let height =">The setting is in metres and everything else here is in kilometres. ezal’s height is zero because nobody has surveyed it. A hundred metres would shift the final direction by four thousandths of a degree.</li>
+      <li data-at="(n + height) * cos_lat * cos_lon">The sideways reach, <code>n</code> times the cosine of the latitude, shared between x and y by the longitude.</li>
+      <li data-at="n * (1.0 - e2)">The vertical reach, with the stretch beyond the centre taken off.</li>
+    </ol>
+  </figure>
+  <p>At true scale the lean is small, 0.19° at Clevedon, but it is not nothing. Treat the Earth as a ball and the dish’s position comes out 22 km wrong, which points the dish more than a degree off when this satellite passes. The function runs once. The dish does not move, so its position and the sines and cosines of its latitude and longitude are kept for every calculation that follows.</p>
+
+  <h3>The arrow from the dish to the satellite</h3>
+  <p>With both positions measured along the same axes, the direction from one to the other is a subtraction.</p>
+  <figure class="live" id="orbit-fig-arrow">
+    <canvas class="orbit-3d" id="orbit-arrow-canvas" tabindex="0" role="img" aria-label="The globe with a line from its centre to the dish, a line from its centre to the satellite, and a thick purple arrow from the dish to the satellite. Drag, or use the arrow keys, to turn the view."></canvas>
+    <div class="controls">
+      <label for="orbit-arrow-time">Time: <output id="orbit-arrow-time-out"></output><input id="orbit-arrow-time" type="range" min="0" max="1380" step="5" value="600"></label>
+      <button type="button" id="orbit-arrow-play">Play</button>
+    </div>
+    <table class="orbit-sum" aria-live="polite">
+      <caption>Kilometres along the axes that ride on the Earth, on 7 October 2026. The arrow is <span id="orbit-arrow-length"></span> km long.</caption>
+      <thead><tr><td></td><th scope="col">x</th><th scope="col">y</th><th scope="col">z</th></tr></thead>
+      <tbody>
+        <tr><th scope="row"><span class="c-sat">Satellite</span></th><td id="orbit-arrow-cell-00"></td><td id="orbit-arrow-cell-01"></td><td id="orbit-arrow-cell-02"></td></tr>
+        <tr><th scope="row">Dish</th><td id="orbit-arrow-cell-10"></td><td id="orbit-arrow-cell-11"></td><td id="orbit-arrow-cell-12"></td></tr>
+        <tr><th scope="row"><span class="c-sat">Arrow</span>: satellite − dish</th><td id="orbit-arrow-cell-20"></td><td id="orbit-arrow-cell-21"></td><td id="orbit-arrow-cell-22"></td></tr>
+      </tbody>
+    </table>
+    <figcaption>The evening pass of 7 October. Take the dish’s three numbers from the satellite’s, column by column, and what is left is the <span class="c-sat">arrow</span> between them. Mirrors the first half of <code>GroundStation::look_at</code>.</figcaption>
+  </figure>
+  <p>These are the first lines of the function this chapter has been heading for. The two steps you have just watched, turning back by θ and subtracting the dish, happen together.</p>
+  <figure class="code" data-src="crates/ezal-core/src/orbit.rs" data-comments="omit">
+    <figcaption>The first half of <code>GroundStation::look_at</code>: into the Earth’s axes, then subtract.</figcaption>
+    <pre data-from="let sidereal = sgp4::afspc_epoch_to_sidereal_time" data-to="let (s, c)"></pre>
+    <pre data-from="let x = c * teme_km[0]" data-to="let z = teme_km[2]"></pre>
+    <ol>
+      <li data-at="let sidereal =">θ, from the library. Its routine wants years since noon on 1 January 2000, so the date is converted on the way in: 946,728,000 is that moment in seconds since 1970, and 31,557,600 is the seconds in a year.</li>
+      <li data-at="let (s, c)">The sine and cosine of θ. These two numbers do the turning.</li>
+      <li data-at="let x = c">Turn the satellite’s x and y back by θ, then take away the dish. <code>teme_km</code> holds the three numbers from the library, and <code>self.position</code> the three from <code>GroundStation::new</code>.</li>
+      <li data-at="let z =">The Earth turns about its z axis, so z needs no turning: only the subtraction.</li>
+    </ol>
+  </figure>
+
+  <h3>East, north and up</h3>
+  <p>The arrow is right, but not yet useful. Its three numbers are measured along axes through Greenwich and the pole, and the rotator knows nothing of those. As chapter 2 described, it turns about a vertical mast (<span class="c-az">azimuth</span>) and tilts up from level (<span class="c-el">elevation</span>). So the last step measures the same arrow along three directions the dish does know: east, north and up.</p>
+  <figure class="live" id="orbit-fig-local">
+    <canvas class="orbit-3d" id="orbit-local-canvas" tabindex="0" role="img" aria-label="A close view of the dish on the curved Earth. A flat blue sheet is the level ground extended outward, with north and east arrows on it and an up arrow rising from it. The purple arrow to the satellite casts a blue shadow on the sheet; a blue arc marks the azimuth and a teal arc the elevation. Drag, or use the arrow keys, to turn the view."></canvas>
+    <div class="controls">
+      <label for="orbit-local-time">Time: <output id="orbit-local-time-out"></output><input id="orbit-local-time" type="range" min="0" max="1380" step="5" value="600"></label>
+      <button type="button" id="orbit-local-play">Play</button>
+    </div>
+    <p class="orbit-out" id="orbit-local-out" aria-live="polite"></p>
+    <figcaption>The same arrow, the same pass, seen from close by. The blue sheet is level ground at the dish, carried outward. Mirrors the second half of <code>GroundStation::look_at</code>.</figcaption>
+  </figure>
+  <p>The sheet is flat and the Earth is not, so the ground curves away beneath it. The satellite is above the horizon exactly while it is above this sheet. Play the pass and watch it come up through the sheet in the south-east and go back down through it in the north.</p>
+  <p>The arrow has not changed. The figure only breaks it into three new legs: so far east, so far north, so far up. The pale blue path lays the first two on the sheet, and it ends directly beneath the satellite, at the end of the arrow’s <span class="c-az">shadow</span>.</p>
+  <p>The two angles the rotator wants come straight from the legs. <span class="c-az">Azimuth</span> is the compass bearing of the shadow: start facing north and turn clockwise until you face along it. <span class="c-el">Elevation</span> is how far the arrow tilts up from its shadow.</p>
+  <p>How do you measure an arrow along a new direction? Multiply each of the arrow’s three numbers by the matching number of the direction, and add up. East at Clevedon, written along the Earth’s axes, is (0.0496, 0.9988, 0). At 19:46:00 the arrow is (858, 840, 322). So the arrow reaches 0.0496 × 858 + 0.9988 × 840 + 0 × 322 = 881 km east. Both figures open at 19:46:00, so you can check that against them.</p>
+  <figure class="code" data-src="crates/ezal-core/src/orbit.rs" data-comments="omit">
+    <figcaption>The second half of <code>GroundStation::look_at</code>: three legs, then two angles.</figcaption>
+    <pre data-from="let east = -self.sin_lon" data-to="self.cos_lat * self.cos_lon * x"></pre>
+    <pre data-from="let azimuth = atan2" data-to="elevation_deg: atan2"></pre>
+    <ol>
+      <li data-at="let east =">East has only two terms. Walking east never takes you nearer a pole, so the direction has no z part to multiply.</li>
+      <li data-at="let north =">North and up use all three. The numbers that make up each direction come from the sines and cosines kept by <code>GroundStation::new</code>, and this <code>up</code> is the one from that figure: square to the ground.</li>
+      <li data-at="let azimuth =">Azimuth. <code>atan2</code> takes two sides of a right-angled triangle and gives back the angle between them. Given the east leg and the north leg, it gives the turn from north toward east.</li>
+      <li data-at="azimuth + 360.0"><code>atan2</code> answers between −180° and 180°, so a bearing to the west comes out negative. Adding a full turn gives the compass’s 0° to 360°.</li>
+      <li data-at="elevation_deg: atan2">Elevation. The shadow’s length comes from the east and north legs by Pythagoras. The up leg over that length gives the tilt.</li>
+    </ol>
+  </figure>
+  <p>That is all of <code>look_at</code>: turn, subtract, measure. Its answer is the straight line from the dish to the satellite. It takes no account of hills and buildings on the skyline or of the slight bending of radio waves in the air. And exactly overhead the shadow has no length, so the bearing means nothing there.</p>
+
+  <h3>Twelve hours of asking</h3>
+  <p>That is one direction for one moment. The dashboard wants to know when the satellite will next be in view, so ezal asks the same question for moment after moment and watches one of the two answers: the <span class="c-el">elevation</span>.</p>
+  <figure class="live" id="orbit-fig-day">
+    <canvas class="orbit-chart" id="orbit-day-canvas" role="img" aria-label="A chart of METOP-B’s elevation from Clevedon between noon and midnight UTC on 7 October 2026. The curve swings up and down seven times; three of the upswings rise above the horizon far enough to be listed as passes."></canvas>
+    <div class="controls">
+      <label for="orbit-day-time">Time: <output id="orbit-day-time-out"></output><input id="orbit-day-time" type="range" min="0" max="43200" step="30" value="27990"></label>
+    </div>
+    <p class="orbit-out" id="orbit-day-out" aria-live="polite"></p>
+    <figcaption><span class="c-el">Elevation</span> of METOP-B from Clevedon, noon to midnight UTC on 7 October 2026: the twelve hours one forecast covers. Filled bumps are the passes found by the search in <code>passes.rs</code>, run here on this page’s simpler orbit. Drag across the chart, or use the slider, to read any moment.</figcaption>
+  </figure>
+  <p>Most of the time the elevation is far below zero: the satellite is round the other side of the planet. Once a lap it swings back toward us, and on a few laps the Earth has turned Clevedon near enough to the ring for the bump to clear the horizon. Those are the passes.</p>
+  <p>With <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/passes.rs#L88-L95">ezal’s default settings</a>, a pass is listed if it climbs to at least 10°, and it is timed from when it rises through 5° to when it sinks back through 5°: the <span class="c-warn">amber line</span>.</p>
+  <p>The <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/passes.rs#L285-L314">search</a> does not try every second. It takes a sample every 30 seconds. Where one sample is higher than its neighbours, a peak lies between them, and the search closes in on it by throwing away a third of the gap at a time. From the peak it steps outward a minute at a time until the elevation is under 5°, then halves that last minute, again and again, until each crossing is pinned down to a quarter of a second. It does this a little at a time, at most two positions per step, so the rest of the firmware keeps running.</p>
+  <p>Run on a computer for this chapter, ezal’s own search finds three passes in these twelve hours: 18:04:46 to 18:12:41 peaking at 11.7°, 19:41:26 to 19:53:57 peaking at 51.3°, and 21:22:12 to 21:33:55 peaking at 29.1°. The chart runs the same search on this page’s simpler orbit.</p>
+  <p>Follow one of them across the sky.</p>
+  <figure class="live" id="orbit-fig-dome">
+    <canvas class="orbit-3d" id="orbit-dome-canvas" tabindex="0" role="img" aria-label="The sky drawn as a dome over the dish, with compass points round its rim. A purple line across the dome is the satellite’s path during one pass, and a purple arrow from the dish points at the satellite. Drag, or use the arrow keys, to turn the view."></canvas>
+    <div class="controls">
+      <label>Pass: <select id="orbit-dome-pass"></select></label>
+      <label for="orbit-dome-time">Time: <output id="orbit-dome-time-out"></output><input id="orbit-dome-time" type="range" min="0" max="753" step="5" value="375"></label>
+      <button type="button" id="orbit-dome-play">Play</button>
+    </div>
+    <p class="orbit-out" id="orbit-dome-out" aria-live="polite"></p>
+    <figcaption>The sky as a dome over the dish, which stands at the centre. Distance has dropped out: only the two angles are left. Each point on the purple path is one answer from <code>look_at</code>. The <span class="c-warn">amber ring</span> is 5° up.</figcaption>
+  </figure>
+  <p>This is what the board has at the end of the calculation. For any moment of a pass it can work out an <span class="c-az">azimuth</span> and an <span class="c-el">elevation</span>. In the highest pass of the evening, the satellite rises in the south-east, climbs to 51° in the east-north-east, and sets in the north twelve and a half minutes later.</p>
+  <p>A direction for every moment is still only a list of numbers. The motors turn slowly, they cannot turn for ever, and they must not be started by accident. The next chapter turns the list into a route the motors can follow, and explains where the board gets the date and time that every step here depended on.</p>
+  <p class="primer">Optional: <a href="https://celestrak.org/columns/v04n03/">CelesTrak’s column on the two-line format</a> goes through every column of the record. <a href="https://github.com/tteggel/ezal/blob/main/docs/PASS_PREDICTION.md#L150-L342">docs/PASS_PREDICTION.md</a> gives the same steps as equations, with references.</p>
+</section>

@@ -1,0 +1,175 @@
+:root{--ink:#20323e;--navy:#18354a;--blue:#245bce;--teal:#087e83;--pale:#edf4fa;--amber:#925100;--line:#c7d8e5;--paper:#fff;--muted:#506574;color-scheme:light}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:2rem}
+body{margin:0;background:var(--paper);color:var(--ink);font:18px/1.65 'Trebuchet MS','Segoe UI',sans-serif}
+a{color:var(--blue);text-underline-offset:.2em}
+a:hover{color:var(--teal)}
+button,input,select{font:inherit}
+button,select{border:1px solid #91aabd;border-radius:5px;padding:.48rem .75rem;background:#fff;color:var(--navy)}
+button{cursor:pointer}
+button:hover{background:#e2edf9}
+button:disabled,button[aria-disabled="true"]{cursor:default;opacity:.55}
+button:disabled:hover,button[aria-disabled="true"]:hover{background:#fff}
+input[type=range]{accent-color:var(--blue);width:100%;max-width:34rem}
+input[type=checkbox],input[type=radio]{accent-color:var(--blue);width:1.1rem;height:1.1rem}
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #be6b00;outline-offset:4px}
+.skip{position:absolute;left:1rem;top:-5rem;background:white;padding:.5rem;z-index:10}
+.skip:focus{top:.5rem}
+.layout{display:grid;grid-template-columns:230px minmax(0,1fr);max-width:1460px;margin:auto}
+.rail{position:sticky;top:0;height:100vh;padding:2rem 1.5rem;background:#f2f6fa;border-right:1px solid var(--line);overflow-y:auto}
+.brand{display:block;font-size:1.8rem;font-weight:bold;color:var(--navy);text-decoration:none}
+.rail small{display:block;color:var(--muted);line-height:1.4;margin:.3rem 0 2rem}
+.rail ol{list-style:none;padding:0;margin:0;counter-reset:chapters}
+.rail li{margin:.25rem 0}
+.rail li a{display:flex;gap:.7rem;align-items:baseline;padding:.55rem .45rem;color:var(--ink);text-decoration:none;font-size:.9rem;border-left:3px solid transparent}
+.rail li a::before{counter-increment:chapters;content:counter(chapters,decimal-leading-zero);font-size:.75rem;color:var(--muted)}
+.rail a[aria-current=true]{border-color:var(--blue);background:#e2ecf7;color:var(--blue)}
+.rail .extras{font-size:.8rem;margin-top:2rem;display:grid;gap:.6rem}
+.rail .extras a{color:var(--muted)}
+main{min-width:0;padding:0 clamp(1.2rem,5vw,5rem)}
+header{padding:4.5rem 0 3rem}
+h1,h2,h3{color:var(--navy);line-height:1.17;font-weight:700}
+h1{font-size:clamp(2.65rem,4.8vw,4.8rem);letter-spacing:-.055em;margin:.6rem 0 1.5rem;max-width:12ch}
+h2{font-size:clamp(1.9rem,3vw,2.8rem);letter-spacing:-.035em;margin:0 0 1.5rem;max-width:25ch}
+h3{font-size:1.35rem;margin:2rem 0 .75rem}
+p,li{max-width:70ch}
+p{margin:1rem 0}
+li{margin:.5rem 0}
+.lead{font-size:1.2rem;line-height:1.55;max-width:58ch}
+.metadata{color:var(--muted);font-size:.8rem;max-width:75ch}
+.chapter{padding:3.5rem 0;border-top:2px solid var(--line);scroll-margin-top:2rem}
+code{font: .86em/1.5 'Cascadia Code','DejaVu Sans Mono',monospace;background:#edf2f6;padding:.1rem .25rem;border-radius:3px;overflow-wrap:anywhere}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:1.2rem;background:var(--pale);border-left:4px solid var(--blue);font-size:.9rem}
+pre code{padding:0}
+.diagram,figure{margin:1.8rem 0}
+.diagram svg,figure svg{display:block;max-width:100%;height:auto}
+.diagram{overflow-x:auto}
+figcaption{font-size:.86rem;color:var(--muted);line-height:1.5;margin-top:.7rem}
+.controls{display:flex;flex-wrap:wrap;gap:1rem;align-items:end;margin:1rem 0}
+.controls label{flex:1 1 210px;display:block;font-size:.9rem}
+.controls label select{display:block;max-width:100%;margin:.35rem 0}
+.note,.primer{border-left:3px solid var(--teal);padding:.3rem 0 .3rem 1rem;margin:1.5rem 0;font-size:.95rem}
+.note p:first-child,.primer p:first-child{margin-top:0}
+.note p:last-child,.primer p:last-child{margin-bottom:0}
+.primer{border-color:var(--line);color:var(--muted)}
+.code-links{font-size:.88rem;line-height:1.65;color:var(--muted)}
+.code-links a{display:inline;overflow-wrap:anywhere}
+.table-wrap{overflow-x:auto;margin:1.5rem 0}
+table{border-collapse:collapse;width:100%;font-size:.88rem;line-height:1.5}
+th,td{text-align:left;padding:.75rem .8rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:#e6eff7;color:var(--navy)}
+td code{font-size:.95em}
+details{margin:1.2rem 0;padding:1rem 1.2rem;border:1px solid var(--line);border-radius:5px}
+summary{cursor:pointer;font-weight:bold;color:var(--navy)}
+details[open] summary{margin-bottom:1rem}
+.endnote{padding:2rem 0 4rem;font-size:.85rem;color:var(--muted)}
+svg text{font-family:'Trebuchet MS','Segoe UI',sans-serif}
+noscript{display:block;border:2px solid var(--amber);padding:1rem}
+@media(min-width:1400px){
+  .layout{grid-template-columns:250px minmax(0,1fr)}
+}
+@media(max-width:850px){
+  .layout{display:block}
+  .rail{position:relative;height:auto;padding:1rem 1.2rem;border-right:0;border-bottom:1px solid var(--line)}
+  .brand{font-size:1.4rem}
+  .rail small{margin:.1rem 0 1rem}
+  .rail ol{display:grid;grid-template-columns:repeat(3,1fr);gap:.1rem}
+  .rail li a{font-size:.8rem;padding:.3rem;gap:.3rem}
+  .rail .extras{display:flex;flex-wrap:wrap;gap:1rem;margin-top:.7rem}
+  header{padding:2.5rem 0 2rem}
+  main{padding:0 1.3rem}
+  .chapter{padding:2.5rem 0}
+}
+@media(max-width:500px){
+  body{font-size:17px}
+  .rail ol{grid-template-columns:repeat(2,1fr)}
+  .controls{display:grid;grid-template-columns:1fr}
+  .controls label{min-width:0}
+  .controls button,.controls select{width:100%}
+  th,td{padding:.6rem .4rem}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *{animation:none!important;transition:none!important}
+}
+@media print{
+  .layout{display:block}
+  .rail,.skip{display:none}
+  main{padding:0}
+  body{font-size:11pt}
+  h1{font-size:32pt}
+  .chapter{break-before:page}
+  a{color:inherit}
+  button,input,select{display:none}
+  details{display:block}
+  .endnote{padding-bottom:0}
+}
+
+/* Native select intrinsic width must not widen the mobile viewport. */
+select{max-width:100%;min-width:0}
+label{min-width:0}
+.controls>*{max-width:100%}
+
+/* One meaning per colour, shared by figures and the words that describe them. */
+:root{--az:var(--blue);--el:var(--teal);--sat:#9b3fb5;--warn:var(--amber);--ok:#11643e;--stop:#a33317}
+.c-az{color:var(--az)}
+.c-el{color:var(--el)}
+.c-sat{color:var(--sat)}
+.c-warn{color:var(--warn)}
+.c-ok{color:var(--ok)}
+.c-stop{color:var(--stop)}
+.c-az,.c-el,.c-sat,.c-warn,.c-ok,.c-stop{font-weight:600}
+
+/* A figure the reader operates: the drawing, its controls, one short caption. */
+figure.live{max-width:60rem;margin:2.2rem 0}
+figure.live canvas,figure.live>svg{display:block;width:100%;height:auto;touch-action:pan-y}
+figure.live canvas:focus-visible{outline:3px solid #be6b00;outline-offset:4px}
+figure.live .controls{margin:.7rem 0 0}
+figure.live output{font-variant-numeric:tabular-nums;font-weight:600;color:var(--navy)}
+
+/* Source excerpts; build.py fills them in from the repository's files. */
+figure.code{max-width:62rem}
+figure.code figcaption{margin:0 0 .5rem;font-size:.9rem;color:var(--ink)}
+figure.code .src{font-size:.8rem;color:var(--muted)}
+figure.code pre{margin:0;padding:.9rem 1.1rem;white-space:pre;overflow-x:auto;font-size:.8rem;line-height:1.6}
+figure.code pre+pre{padding-top:.3rem}
+figure.code pre+pre::before{content:'⋮';display:block;color:var(--muted);margin-bottom:.3rem}
+figure.code pre code{background:none;overflow-wrap:normal;white-space:inherit}
+figure.code pre:focus-visible{outline:3px solid #be6b00;outline-offset:2px}
+.tc{color:#5a6f7e;font-style:italic}
+.tk{color:var(--navy);font-weight:bold}
+.ts{color:var(--warn)}
+.tn{color:var(--el)}
+figure.code .mark,figure.code ol li::before{display:inline-block;width:1.5em;height:1.5em;border-radius:50%;background:var(--blue);color:#fff;font:bold .72rem/1.5em 'Trebuchet MS','Segoe UI',sans-serif;text-align:center;user-select:none}
+figure.code .mark{margin-left:.9em}
+figure.code ol{list-style:none;counter-reset:note;padding:0;margin:.8rem 0 0;font-size:.95rem}
+figure.code ol li{counter-increment:note;position:relative;padding-left:2.2rem;margin:.5rem 0}
+figure.code ol li::before{content:counter(note);position:absolute;left:0;top:.2em}
+@media print{
+  figure.code pre{white-space:pre-wrap}
+}
+
+/* The opening figure: the whole loop, one numbered stage per column. */
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+#hero .hero-loop{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1.2rem;align-items:start}
+#hero .hero-step,#hero .hero-return{max-width:none;font-size:.95rem;line-height:1.35}
+#hero .hero-step{margin:0 0 .5rem;min-height:2.7em}
+#hero .hero-step b,#hero .hero-return b{display:inline-block;width:1.5em;height:1.5em;margin-right:.3em;border-radius:50%;background:var(--navy);color:#fff;font-size:.8rem;line-height:1.5em;text-align:center}
+#hero svg{display:block;width:100%;height:auto}
+#hero .hero-pad{display:grid;grid-template:". up ." 1fr "ccw . cw" 1fr ". down ." 1fr/1fr 1fr 1fr;gap:.3rem;aspect-ratio:18/17}
+#hero .hero-pad button{padding:0;font-size:.85rem;font-weight:bold;touch-action:none;user-select:none;-webkit-user-select:none}
+#hero .hero-pad button.is-held{background:var(--navy);color:#fff}
+#hero [data-hero=up]{grid-area:up}
+#hero [data-hero=ccw]{grid-area:ccw}
+#hero [data-hero=cw]{grid-area:cw}
+#hero [data-hero=down]{grid-area:down}
+#hero .hero-return{margin:1rem 0 0;padding-top:.8rem;border-top:2px dashed #9db8ca}
+@media(max-width:700px){
+  #hero .hero-loop{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #hero svg text{font-size:16px}
+}
+
+/* The closing list of questions; each ends with its entry in CONCERNS.md. */
+.questions{padding-left:1.2rem}
+.questions li{margin:.9rem 0}
+.ref{font-size:.75rem;font-weight:bold;color:var(--muted);white-space:nowrap}
