@@ -3,7 +3,8 @@
 mod common;
 
 use common::{
-    full_travel_installed, full_travel_sample, nominal, resting_start, FULL_TRAVEL_CALIBRATION,
+    full_travel_installed, full_travel_sample, nominal, resting_start, strict_speed_resting_start,
+    FULL_TRAVEL_CALIBRATION,
 };
 use ezal_core::actuator::ActuatorInput;
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
@@ -268,7 +269,8 @@ fn recorded_pass_includes_real_sky_error_and_reports_noisy_preparation_failure()
         duration_ms: 777_000,
         ..window(1)
     };
-    let start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 10.0), [0, 0]);
+    let start =
+        strict_speed_resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 10.0), [0, 0]);
     let quiet = run(Planner::new(
         Track {
             orbit,

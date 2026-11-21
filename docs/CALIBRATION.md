@@ -295,7 +295,9 @@ duty specification in [HARDWARE.md](HARDWARE.md#published-specifications).
 travel, motion and duty settings. `MotionConfig::DEFAULT` starts with the
 [contract's](CONTROL_CONTRACT.md#ownership-and-recovery) budget of accumulated
 energized time without resolvable progress, three calibrated ADC codes to prove
-movement, and two codes of measurement tolerance. `TravelProfile::DEFAULT`
+movement, and two codes of measurement tolerance. The implausible-speed check
+allows four codes instead (`speed_noise_codes`): azimuth feedback spikes by
+more than two codes when the AC motor starts. `TravelProfile::DEFAULT`
 uses 7°/s azimuth and 3°/s elevation with the contract's release/coast on both
 axes. The same travel profile governs endpoint margins and implausible-speed
 checks.

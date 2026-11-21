@@ -267,6 +267,7 @@ fn network_loss_cannot_erase_elapsed_motion_or_its_latched_fault() {
                 progress_timeout_ms: 1_000,
                 progress_codes: 3,
                 noise_codes: 2,
+                speed_noise_codes: 4,
             },
             ..ActuatorConfig::DEFAULT
         },

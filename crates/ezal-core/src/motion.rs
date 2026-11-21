@@ -32,24 +32,33 @@ pub struct MotionConfig {
     /// Minimum displacement, in calibrated ADC codes, that proves progress.
     /// Must exceed `noise_codes`; a lone code transition is not sufficient.
     pub progress_codes: u16,
-    /// Allowed feedback noise/quantization in direction and speed comparisons.
+    /// Allowed feedback noise/quantization in direction comparisons.
     /// Each code includes the interlock's millivolt rounding allowance.
     pub noise_codes: u16,
+    /// Allowed feedback noise in implausible-speed comparisons. Kept separate
+    /// from `noise_codes` so tolerating motor-start transients on the pot
+    /// lines does not also raise the displacement needed to prove progress.
+    /// Must be at least `noise_codes`.
+    pub speed_noise_codes: u16,
 }
 
 impl MotionConfig {
     /// Initial commissioning values: 5 s without movement, three codes to
-    /// prove progress, and two codes of measurement tolerance.
+    /// prove progress, two codes of measurement tolerance, and four codes of
+    /// tolerance in the speed check. Two codes proved too tight for speed:
+    /// azimuth feedback spikes when an AC motor starts.
     pub const DEFAULT: Self = Self {
         progress_timeout_ms: 5_000,
         progress_codes: 3,
         noise_codes: 2,
+        speed_noise_codes: 4,
     };
 
     pub(crate) const fn is_valid(self) -> bool {
         self.progress_timeout_ms > 0
             && self.noise_codes > 0
             && self.progress_codes > self.noise_codes
+            && self.speed_noise_codes >= self.noise_codes
     }
 }
 
@@ -165,13 +174,14 @@ impl AxisMonitor {
                 .is_none_or(|last| sample.timestamp_ms > last.timestamp_ms)
         }) {
             let noise_deg = code_deg * f32::from(config.noise_codes);
+            let speed_noise_deg = code_deg * f32::from(config.speed_noise_codes);
             if self.last_direction.is_some() {
                 // Physical speed remains bounded during startup, coast and idle.
                 // Preserve the longer baseline across every output transition.
                 for baseline in [self.sample, self.speed_anchor].into_iter().flatten() {
                     let elapsed_s = (sample.timestamp_ms - baseline.timestamp_ms) as f32 / 1_000.0;
                     let travelled = (sample.position_deg - baseline.position_deg).abs();
-                    if travelled > travel.max_speed_deg_per_s * elapsed_s + noise_deg {
+                    if travelled > travel.max_speed_deg_per_s * elapsed_s + speed_noise_deg {
                         return Some(AxisFault::ImplausibleSpeed);
                     }
                 }
