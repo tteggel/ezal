@@ -324,14 +324,14 @@ pub const HARD_CODED_CALIBRATION: PositionCalibration = PositionCalibration {
     azimuth: AxisCalibration {
         angle_min_deg: 0.0,
         angle_max_deg: 360.0,
-        voltage_min_mv: 114,
-        voltage_max_mv: 2_033,
+        voltage_min_mv: 136,
+        voltage_max_mv: 1_898,
     },
     elevation: AxisCalibration {
         angle_min_deg: 0.0,
         angle_max_deg: 90.0,
-        voltage_min_mv: 1_281,
-        voltage_max_mv: 58,
+        voltage_min_mv: 1_170,
+        voltage_max_mv: 84,
     },
 };
 
