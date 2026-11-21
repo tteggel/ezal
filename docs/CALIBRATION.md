@@ -22,10 +22,10 @@ prediction.
 The single source of truth is `HARD_CODED_CALIBRATION` in
 [`crates/ezal-core/src/position.rs`](../crates/ezal-core/src/position.rs).
 
-| ADC channel | G-5500 signal | mechanical range | placeholder ADC range |
-|-------------|---------------|------------------|-----------------------|
-| A0          | elevation     | 0°–90°           | 1281 mV at 0°, 58 mV at 90° |
-| A1          | azimuth       | 0°–360°          | 114 mV at 0°, 2033 mV at 360° |
+| ADC channel | G-5500 signal | mechanical range | measured ADC range |
+|-------------|---------------|------------------|--------------------|
+| A0          | elevation     | 0°–90°           | 1170 mV at 0°, 84 mV at 90° |
+| A1          | azimuth       | 0°–360°          | 136 mV at 0°, 1898 mV at 360° |
 
 These checked-in installation values govern manual and tracking movement.
 The mapping accepts at most 25 mV of endpoint noise before declaring feedback
@@ -132,7 +132,7 @@ them point in the same sky direction. Similarly, keep azimuth 360°–450° as
 continuous travel if that overlap is available on this installation.
 
 Do not obtain the new calibration by changing the current `90.0` endpoint
-to `180.0` while retaining its voltage. In particular, the current 58 mV
+to `180.0` while retaining its voltage. In particular, the current 84 mV
 reading at 90° cannot be extrapolated to infer the far endpoint. Measure the
 entire feedback chain at the actual angles. If the readings reach a rail
 before the allowed mechanical endpoint, investigate the feedback interface

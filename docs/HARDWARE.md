@@ -195,14 +195,15 @@ The interface circuit (canonical version in
   [ADS1015 datasheet Table 7-1](https://www.ti.com/lit/ds/symlink/ads1015.pdf).
 
   Runtime calibration uses measured ADC millivolts, rather than those
-  nominal ranges. The checked-in installation maps azimuth **114–2033 mV
-  to 0–360°**, and elevation **1281–58 mV to 0–90°**. Its resolution is
-  approximately **0.375° per code in azimuth** and **0.147° per code in
+  nominal ranges. The checked-in installation maps azimuth **136–1898 mV
+  to 0–360°**, and elevation **1170–84 mV to 0–90°**. Its resolution is
+  approximately **0.409° per code in azimuth** and **0.166° per code in
   elevation**. The reversed elevation voltage scale is intentional.
 
-  The wider ADC range leaves room around the measured 2033 mV endpoint
+  The wider ADC range leaves room above the measured 1898 mV endpoint
   for the **25 mV endpoint margin** and observable overrange readings.
-  The ±2.048 V range would saturate at 2047 mV, inside that accepted margin.
+  The ±2.048 V range would saturate at 2047 mV, only 124 mV beyond that
+  margin and barely beyond the nominal model's 2.02 V top plus the margin.
   The installed calibration model validates that its entire band sits above zero
   and below **3200 mV**, the lower of the ±4.096 V saturation code (4094 mV)
   and the 3.3 V supply-rail ceiling. The ceiling matters because the ADS1015

@@ -117,7 +117,7 @@
   const REFERENCE = [360 / 70, 180 / 80];  // degrees per second the follower assumes: azimuth, elevation
   const MOTORS = {nominal: REFERENCE, slow: [4, 1.8], fast: [7, 3]};
   // Each axis spreads its travel over a voltage range (mV); the converter resolves 2 mV.
-  const CALIBRATION = [{span: 360, low: 114, high: 2033}, {span: 90, low: 1281, high: 58}];
+  const CALIBRATION = [{span: 360, low: 136, high: 1898}, {span: 90, low: 1170, high: 84}];
   // How far the shortest pulse carries the dish.
   const hop = axis => REFERENCE[axis] * (MIN_ON - STARTUP + COAST) / 1000;
 

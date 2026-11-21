@@ -21,8 +21,8 @@
   const COAST_MS = 500;      // interlock.rs TravelProfile::DEFAULT
   // position.rs HARD_CODED_CALIBRATION and interlock.rs TravelProfile::DEFAULT.
   const AXES = {
-    az: { name: 'azimuth', color: AZ, minDeg: 0, maxDeg: 360, mvAtMin: 114, mvAtMax: 2033, speed: 7, out: 'clockwise', back: 'counter-clockwise', window: 12 },
-    el: { name: 'elevation', color: EL, minDeg: 0, maxDeg: 90, mvAtMin: 1281, mvAtMax: 58, speed: 3, out: 'up', back: 'down', window: 5 },
+    az: { name: 'azimuth', color: AZ, minDeg: 0, maxDeg: 360, mvAtMin: 136, mvAtMax: 1898, speed: 7, out: 'clockwise', back: 'counter-clockwise', window: 12 },
+    el: { name: 'elevation', color: EL, minDeg: 0, maxDeg: 90, mvAtMin: 1170, mvAtMax: 84, speed: 3, out: 'up', back: 'down', window: 5 },
   };
   // The firmware computes in 32-bit floats; rounding the same way keeps whole-millisecond results identical.
   const f32 = Math.fround;

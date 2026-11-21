@@ -34,12 +34,12 @@ Covers chapters 1 and 2. Every entry was re-checked on 2026-11-13 against local 
 - Consequence: the "end" that chapter 2's last figure guards is the end of calibrated travel, not a hard stop. An earlier draft of the chapter called it a stop where "the rotator and its cables can go no further"; the source does not support that, and the text now says "end of travel". A fresh reading from a miscalibrated installation would still look plausible.
 - What would settle it: measured ends, speeds and coast for this dish, recorded in the worksheet in CALIBRATION.md.
 
-### B5 — Are the checked-in calibration voltages measurements or placeholders?
-- Status: question.
+### B5 — The measured calibration voltages do not match the manual's signal
+- Status: question, narrowed. On 2026-11-21 the owner confirmed that the checked-in voltages are measurements, and CALIBRATION.md now heads its column "measured ADC range".
 - Source: [CALIBRATION.md L22–30](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md?plain=1#L22-L30); [position.rs L320–336](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/position.rs#L320-L336); [HARDWARE.md L190–194](https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md?plain=1#L190-L194).
-- Evidence: the table in CALIBRATION.md heads the column "placeholder ADC range", while the sentence under it and the doc comment in position.rs call the same numbers the current installed values. The numbers also disagree with the nominal model in HARDWARE.md, which expects 0.90–2.02 V at the sensor for the manual's 2.0–4.5 V: azimuth's 114 mV at 0° implies about 0.25 V at the control box, and elevation falls from 1281 mV to 58 mV as the angle rises, where the manual's signal rises.
-- Consequence: chapter 2 shows the divider with the manual's 4.5 V and then a calibration line whose low end is far below what that divider would give. A careful reader will notice. The chapter says only "the numbers checked into the code say", which is true either way.
-- What would settle it: the owner confirming whether these four voltages were measured on the installed rotator (and whether the control box's output trimmers explain the difference), then correcting whichever of the two documents is wrong.
+- Evidence: the nominal model in HARDWARE.md expects 0.90–2.02 V at the sensor for the manual's 2.0–4.5 V. Azimuth's measured 136 mV at 0° implies about 0.30 V at the control box, and elevation falls from 1170 mV to 84 mV as the angle rises, where the manual's signal rises.
+- Consequence: chapter 2 shows the divider with the manual's 4.5 V and then a calibration line whose low end is far below what that divider would give. A careful reader will notice. The firmware uses only the measured ends, so nothing it does depends on the model.
+- What would settle it: whether the control box's output trimmers explain the difference.
 
 ### B6 — How long a healthy read takes is not known
 - Status: confirmed limitation (unmeasured).
@@ -51,7 +51,7 @@ Covers chapters 1 and 2. Every entry was re-checked on 2026-11-13 against local 
 ### B7 — The step figure draws an ideal sensor, and "one sensor step" has two sizes
 - Status: confirmed limitation (of the walkthrough's figures; no source defect).
 - Source: [position.rs L165–176](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/position.rs#L165-L176); [interlock.rs L22](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L22) and [L147](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L147).
-- Evidence: the figure under "From voltage to number to angle" rounds the true voltage to the nearest 2 mV and assumes the voltage follows the straight line exactly. A real converter adds offset, gain error and noise, and a real potentiometer is not perfectly linear. Separately, the text gives the plain step as 0.375° and 0.147°, while the end-of-travel guard allows 2.5 mV (one count plus a 0.5 mV rounding margin), which is 0.47° and 0.18°.
+- Evidence: the figure under "From voltage to number to angle" rounds the true voltage to the nearest 2 mV and assumes the voltage follows the straight line exactly. A real converter adds offset, gain error and noise, and a real potentiometer is not perfectly linear. Separately, the text gives the plain step as 0.409° and 0.166°, while the end-of-travel guard allows 2.5 mV (one count plus a 0.5 mV rounding margin), which is 0.51° and 0.21°.
 - Consequence: the figure's "firmware computes" value is exact only for an ideal sensor. The last figure labels its allowance "one sensor step, rounded up" to account for the larger number; a reader comparing the two sections may still wonder.
 - What would settle it: the worksheet row "Feedback noise at rest and position residual" (TBD) would say how far the ideal is from this installation.
 
