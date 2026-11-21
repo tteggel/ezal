@@ -73,8 +73,8 @@ The direction buttons stay disabled when the controller reports unusable
 feedback, with the reason shown below the pad. `feedback-invalid` means at
 least one ADC voltage is outside the accepted calibrated range or at an ADC
 rail; being online and owning control does not clear that block. With the
-current values and the 25 mV margin, A0 must be 33–1306 mV and A1 must be
-89–2058 mV. If feedback becomes invalid during a hold, the dashboard stops
+current values and the 25 mV margin, A0 must be 59–1195 mV and A1 must be
+111–1923 mV. If feedback becomes invalid during a hold, the dashboard stops
 the request; recovery requires releasing and pressing again.
 
 For initial measurements, keep the Pico's four direction leads disconnected
