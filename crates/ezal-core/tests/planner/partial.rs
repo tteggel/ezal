@@ -397,7 +397,7 @@ fn partial_admission_does_not_bypass_noisy_scenario_motion_faults() {
         keyhole,
         window(90_000),
         cal,
-        resting_start(cal, Pointing::new(120.0, 80.0), [1000; 2]),
+        strict_speed_resting_start(cal, Pointing::new(120.0, 80.0), [1000; 2]),
         PlanningConfig::default(),
     )
     .unwrap());

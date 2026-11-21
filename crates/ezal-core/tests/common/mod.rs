@@ -10,6 +10,7 @@ use ezal_core::catalog::{CompletedOrbitalDownload, OrbitalDownload};
 use ezal_core::duty::{DutyConfig, DutyHistory};
 use ezal_core::feedback::FeedbackSample;
 use ezal_core::interlock::FeedbackInterlock;
+use ezal_core::motion::MotionConfig;
 use ezal_core::network::NetworkGate;
 use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
 use ezal_core::tracking::{PlanningConfig, RestingStart, Scenario};
@@ -91,14 +92,49 @@ pub fn resting_start(
     pose: Pointing,
     used: [u64; 2],
 ) -> RestingStart {
-    let installed = InstalledCalibration::new(calibration, FEEDBACK_FULL_SCALE).unwrap();
-    let mut actuator = Actuator::with_config(
+    resting_start_with(
+        calibration,
+        pose,
+        used,
         ActuatorConfig {
             duty: DutyConfig::CONFIRMED_AC,
             ..ActuatorConfig::DEFAULT
         },
-        DutyHistory::Known(used),
-    );
+    )
+}
+
+/// [`resting_start`] whose speed check allows only the direction checks' noise,
+/// so the planner's noisy rehearsals at the speed limit still fault. Planner
+/// tests use it to prove motion faults in any scenario block the plan.
+pub fn strict_speed_resting_start(
+    calibration: PositionCalibration,
+    pose: Pointing,
+    used: [u64; 2],
+) -> RestingStart {
+    resting_start_with(
+        calibration,
+        pose,
+        used,
+        ActuatorConfig {
+            duty: DutyConfig::CONFIRMED_AC,
+            motion: MotionConfig {
+                speed_noise_codes: MotionConfig::DEFAULT.noise_codes,
+                ..MotionConfig::DEFAULT
+            },
+            ..ActuatorConfig::DEFAULT
+        },
+    )
+}
+
+/// [`resting_start`] with an explicit actuator configuration.
+pub fn resting_start_with(
+    calibration: PositionCalibration,
+    pose: Pointing,
+    used: [u64; 2],
+    config: ActuatorConfig,
+) -> RestingStart {
+    let installed = InstalledCalibration::new(calibration, FEEDBACK_FULL_SCALE).unwrap();
+    let mut actuator = Actuator::with_config(config, DutyHistory::Known(used));
     let mut network = NetworkGate::new();
     let mut feedback = None;
     for at_ms in [0, 2000] {

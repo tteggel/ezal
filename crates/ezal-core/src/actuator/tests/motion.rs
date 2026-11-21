@@ -380,9 +380,9 @@ fn speed_checks_apply_to_the_first_short_pulse_and_its_coast() {
                 actuator.command(Command::Inhibit, &gate(START, 50), 50);
             }
             let position = if azimuth {
-                Pointing::new(182.0, 45.0)
+                Pointing::new(184.0, 45.0)
             } else {
-                Pointing::new(180.0, 46.0)
+                Pointing::new(180.0, 47.0)
             };
             actuator.service(&gate(position, 100), 100);
             assert_eq!(
@@ -407,9 +407,9 @@ fn small_fast_samples_cannot_reuse_the_noise_allowance_indefinitely() {
             // Each individual change fits below the per-sample speed+noise
             // allowance. The longer comparison still detects the excess rate.
             let position = if azimuth {
-                Pointing::new(180.0 + seconds * 9.0, 45.0 + seconds)
+                Pointing::new(180.0 + seconds * 10.0, 45.0 + seconds)
             } else {
-                Pointing::new(180.0 + seconds * 3.0, 45.0 + seconds * 4.0)
+                Pointing::new(180.0 + seconds * 3.0, 45.0 + seconds * 5.0)
             };
             refresh(&mut actuator, now_ms, position, BOTH);
         }
@@ -453,6 +453,10 @@ fn unusable_thresholds_inhibit_before_activation() {
         },
         MotionConfig {
             noise_codes: 0,
+            ..MotionConfig::DEFAULT
+        },
+        MotionConfig {
+            speed_noise_codes: 1,
             ..MotionConfig::DEFAULT
         },
     ] {
