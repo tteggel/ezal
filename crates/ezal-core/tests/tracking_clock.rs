@@ -224,6 +224,22 @@ fn reversed_time_latches_and_deadline_conversions_never_wrap() {
     assert_eq!(anchor.unix_ms(u64::MAX), Some(UTC + 1000));
 }
 
+/// The anchor maps uptimes before its sample too, but a window cannot open
+/// before uptime zero: a device that started mid-pass cannot join it.
+#[test]
+fn a_window_that_opened_before_boot_is_refused() {
+    let anchor = clock(2000, UTC).anchor().unwrap();
+    assert_eq!(anchor.unix_ms(1), Some(UTC - 1999));
+    assert_eq!(
+        execution_window(anchor, UTC - 2000, UTC + 30_000).map(|window| window.aos_at_ms),
+        Ok(0)
+    );
+    assert_eq!(
+        execution_window(anchor, UTC - 2001, UTC + 30_000),
+        Err(TimingError::BeforeBoot)
+    );
+}
+
 #[test]
 fn clock_cannot_spend_alignment_reserve_or_accept_invalid_policy() {
     let anchor = clock(2000, UTC).anchor().unwrap();

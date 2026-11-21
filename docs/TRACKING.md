@@ -363,7 +363,9 @@ missed interval ends at the latest join plus the recovery dwell and the
 feedback age allowance. For late acquisition the entry is
 `max(AOS, snapshot time + 5 s)`; arming allows the device to freeze and begin
 recovery at that entry with no preparation movement, and a missed entry
-expires the plan rather than shifting it. At a planned gap the run enters
+expires the plan rather than shifting it. A pass that rose before the device
+started cannot be joined: its AOS has no uptime, so capture refuses it with
+`TimingError::BeforeBoot`. At a planned gap the run enters
 Reacquiring, clears queued following commands and revalidates a live intercept
 from actual settled feedback; an earlier unexpected recovery keeps its own
 token and deadline. Summaries keep the original window and the complete or

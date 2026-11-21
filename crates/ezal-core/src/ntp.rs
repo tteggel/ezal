@@ -162,11 +162,16 @@ impl UtcAnchor {
     pub const fn sample(self) -> TimeSample {
         self.sample
     }
-    /// Fractional UTC mapping; never truncates to whole seconds internally.
+    /// Fractional UTC mapping, with checked arithmetic in either direction;
+    /// never truncates to whole seconds internally.
     pub fn unix_ms(self, monotonic_ms: u64) -> Option<u64> {
-        let elapsed = monotonic_ms.checked_sub(self.monotonic_ms)?;
-        let unix = self.sample.unix_ms.checked_add(elapsed)?;
-        (unix < MAX_UNIX_MS).then_some(unix)
+        let (sample_ms, sampled_at) = (self.sample.unix_ms, self.monotonic_ms);
+        let unix = if monotonic_ms >= sampled_at {
+            sample_ms.checked_add(monotonic_ms - sampled_at)?
+        } else {
+            sample_ms.checked_sub(sampled_at - monotonic_ms)?
+        };
+        (MIN_UNIX_MS..MAX_UNIX_MS).contains(&unix).then_some(unix)
     }
     /// Convert an absolute UTC deadline using this exact anchor, with checked
     /// arithmetic in either direction. No live clock or integer seconds involved.

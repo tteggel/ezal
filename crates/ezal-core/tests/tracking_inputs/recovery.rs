@@ -13,6 +13,7 @@ struct Rig {
     feedback: FeedbackSnapshot,
     pending: VecDeque<(u64, FeedbackSample)>,
     now: u64,
+    clock: UtcClock,
 }
 
 impl Rig {
@@ -48,9 +49,17 @@ impl Rig {
             feedback,
             pending: VecDeque::new(),
             now: AOS,
+            clock: clock(UTC),
         };
         rig.tick(AOS);
         rig
+    }
+
+    fn observe(&self, at: u64) -> RuntimeObservation {
+        RuntimeObservation {
+            clock: self.clock,
+            ..observation(at)
+        }
     }
 
     fn tick(&mut self, at: u64) {
@@ -67,7 +76,7 @@ impl Rig {
         }
         let mut interlock = FeedbackInterlock::new(full_travel_installed());
         interlock.publish(self.feedback.last_valid);
-        let obs = observation(at);
+        let obs = self.observe(at);
         // A coherent snapshot is serviced before planning; GPIO would be applied
         // only after the command/stop has also passed through this same owner.
         self.actuator.step(
@@ -108,7 +117,7 @@ impl Rig {
         let mut work = 0;
         while self
             .runtime
-            .step_reacquisition(observation(self.now))
+            .step_reacquisition(self.observe(self.now))
             .unwrap()
         {
             work += 1;
@@ -120,14 +129,35 @@ impl Rig {
 
 #[test]
 fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_los() {
+    joins_late_and_follows_to_los(2000);
+}
+
+/// The board re-samples its clock every five minutes, so a pass that has been
+/// up for a while usually rose before the latest sample.
+#[test]
+fn a_pass_that_rose_before_the_latest_clock_sample_is_joined_late() {
+    joins_late_and_follows_to_los(AOS + 500);
+}
+
+/// Admit the fixture's pass a second after AOS, from a clock sampled at uptime
+/// `synced`, and run it to LOS.
+fn joins_late_and_follows_to_los(synced: u64) {
     let at = AOS + 1000;
-    let (mut runtime, owner) = selected(EVENT, observation(at));
+    let mut current = UtcClock::new();
+    current
+        .synchronize(synced, sample(UTC + synced - 2000))
+        .unwrap();
+    let observe = |now| RuntimeObservation {
+        clock: current,
+        ..observation(now)
+    };
+    let (mut runtime, owner) = selected(EVENT, observe(at));
     let inputs = ExecutionInputs::capture(
         runtime.planning_ticket().unwrap(),
         catalog().snapshot(EVENT.norad_id).unwrap(),
         InputSettings::default(),
-        clock(UTC),
-        execution_window(clock(UTC).anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
+        current,
+        execution_window(current.anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
         &nominal(),
         at,
     )
@@ -148,7 +178,7 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         actuator.step(
             ActuatorInput {
                 interlock,
-                network: observation(now).network,
+                network: observe(now).network,
                 command: None,
             },
             now,
@@ -158,7 +188,7 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         at_ms: at,
         feedback: full_travel_sample(pose, at),
         actuator,
-        network: observation(at).network,
+        network: observe(at).network,
     };
     let mut planner = Planner::new(
         inputs.clone(),
@@ -177,15 +207,13 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
     let gap = coverage.gap().unwrap();
     assert!(gap.late_acquisition);
     runtime
-        .publish_plan(inputs.ticket(), Ok(report), inputs, observation(at))
+        .publish_plan(inputs.ticket(), Ok(report), inputs, observe(at))
         .unwrap();
     assert_eq!(runtime.snapshot().plan, PlanStatus::SupportedPartial);
-    action(&mut runtime, owner, 2, TrackingAction::Arm, observation(at)).unwrap();
-    runtime
-        .service(observation(gap.recovery_at_ms - 1))
-        .unwrap();
+    action(&mut runtime, owner, 2, TrackingAction::Arm, observe(at)).unwrap();
+    runtime.service(observe(gap.recovery_at_ms - 1)).unwrap();
     assert_eq!(runtime.snapshot().phase, TrackingPhase::Armed);
-    runtime.service(observation(gap.recovery_at_ms)).unwrap();
+    runtime.service(observe(gap.recovery_at_ms)).unwrap();
     let run = runtime.snapshot().run.unwrap();
     let mut rig = Rig {
         runtime,
@@ -196,6 +224,7 @@ fn an_admitted_late_real_pass_executes_recovery_and_retains_partial_coverage_at_
         feedback: healthy(full_travel_sample(pose, gap.recovery_at_ms)),
         pending: VecDeque::new(),
         now: gap.recovery_at_ms,
+        clock: current,
     };
     rig.tick(gap.recovery_at_ms);
     assert_eq!(

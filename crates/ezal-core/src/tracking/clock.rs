@@ -36,6 +36,9 @@ pub enum TimingError {
     LeapPending,
     /// Invalid drift, age, angular reserve, sky rate or time span.
     Configuration,
+    /// AOS precedes uptime zero: the device started mid-pass, so the window
+    /// has no uptime to start at and the pass cannot be joined.
+    BeforeBoot,
     /// Sample uncertainty plus oscillator drift exceeds its pointing allocation.
     Uncertainty,
     /// A new sample disagrees with the frozen timeline beyond the same allocation.
@@ -214,6 +217,9 @@ pub fn execution_window(
         .ok_or(TimingError::Configuration)?;
     if !(1..=u64::from(PlanningWindow::MAX_DURATION_MS)).contains(&duration) {
         return Err(TimingError::Configuration);
+    }
+    if aos_unix_ms < anchor.unix_ms(0).ok_or(TimingError::ClockOrder)? {
+        return Err(TimingError::BeforeBoot);
     }
     let aos_at_ms = anchor
         .monotonic_at(aos_unix_ms)
