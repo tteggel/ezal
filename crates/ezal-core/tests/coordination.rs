@@ -188,6 +188,9 @@ fn rest_at(state: &mut CoordinationState, actuator: &mut Actuator, mv: FeedbackV
     state.record_actuator(actuator, now);
 }
 
+/// The test calibration's azimuth code is 0.4°, so the 2° start tolerance
+/// (`coordination::START_TOLERANCE_DEG`) is five codes; the bench's flicker
+/// at an end stop is four.
 #[test]
 fn idle_feedback_noise_keeps_the_planning_start_and_drift_from_it_replaces_it() {
     let mut state = CoordinationState::new();
@@ -202,19 +205,19 @@ fn idle_feedback_noise_keeps_the_planning_start_and_drift_from_it_replaces_it() 
     rest_at(&mut state, &mut actuator, rest, 0);
     rest_at(&mut state, &mut actuator, rest, 2000);
     let start = state.start_revision();
-    // Motion supervision treats two 2 mV codes as measurement noise.
-    for (now, codes) in (2100..4000).step_by(100).zip([2, -2].into_iter().cycle()) {
+    for (now, codes) in (2100..4000).step_by(100).zip([4, -4].into_iter().cycle()) {
         rest_at(&mut state, &mut actuator, offset(codes), now);
     }
     assert_eq!(state.start_revision(), start);
     // Creeping a code at a time is measured from the start, not the last sample.
-    rest_at(&mut state, &mut actuator, offset(1), 4000);
-    rest_at(&mut state, &mut actuator, offset(2), 4100);
+    for (now, codes) in [(4000, 2), (4100, 3), (4200, 4)] {
+        rest_at(&mut state, &mut actuator, offset(codes), now);
+    }
     assert_eq!(state.start_revision(), start);
-    rest_at(&mut state, &mut actuator, offset(3), 4200);
+    rest_at(&mut state, &mut actuator, offset(6), 4300);
     let moved = state.start_revision();
     assert!(moved > start);
     // The moved pose is the new start.
-    rest_at(&mut state, &mut actuator, offset(1), 4300);
+    rest_at(&mut state, &mut actuator, offset(3), 4400);
     assert_eq!(state.start_revision(), moved);
 }

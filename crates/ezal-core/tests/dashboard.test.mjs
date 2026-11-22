@@ -1180,6 +1180,8 @@ test("partial reception and automatic plan replacement are visible before arming
   assert.equal(ui.ids.get("tracking-reception").textContent, "", "never retain an older successful preview");
   ui.freshness({ tracking: { ...t, revision: "9007199254741004", plan: { status: "blocked", reason: "Inputs(Timing(BeforeBoot))", preview: null } } });
   assert.match(ui.ids.get("tracking-plan").textContent, /Tracking blocked: Pass rose before the device started/);
+  ui.freshness({ tracking: { ...t, revision: "9007199254741005", plan: { status: "blocked", reason: "Inputs(RevisionChanged)", preview: null } } });
+  assert.match(ui.ids.get("tracking-plan").textContent, /Tracking blocked: The rotator moved from the pose planning started from/);
   ui.freshness({ tracking: { ...t, revision: "9007199254741003", plan: { status: "blocked", reason: "Unsupported(Some(Simulation(TravelLimit(Azimuth))))", preview: null } } });
   assert.match(ui.ids.get("tracking-plan").textContent, /Tracking blocked: Unsupported Some Simulation Travel Limit Azimuth\./, "an unexplained leaf shows its full path");
 });

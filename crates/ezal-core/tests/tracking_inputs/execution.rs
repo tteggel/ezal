@@ -597,8 +597,9 @@ fn changed_start_invalidates_preview_before_a_simultaneous_preparation_deadline(
         .assessment
         .prepare_at_ms;
     device.until(prep - 10);
+    // Beyond the 2° start tolerance.
     let mut pose = device.model.position();
-    pose.azimuth_deg += 1.0;
+    pose.azimuth_deg += 3.0;
     let old_ticket = device.state.tracking().bound_plan().unwrap().ticket();
     device.feedback(full_travel_sample(pose, prep - 10), prep);
     device.state.publish_network(true, prep);

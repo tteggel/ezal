@@ -221,10 +221,13 @@ immediately withdraws the previous plan's permission to prepare; only the
 latest job can publish, even if an older job finishes later; an unsupported or
 failed replacement never falls back to an older success. A change in feedback
 health, consumed duty or network generation invalidates a preview's starting
-state, and so does a measured pose more than the motion monitor's two codes of
-noise from the pose planning started from. Manual movement therefore does too;
-fresh ADC timestamps and an idle reading's flicker do not, while slow drift
-adds up until it does.
+state, and so does any output the device drives, and a measured pose more than
+2° from the pose planning started from (or the motion monitor's two codes of
+noise, if larger). Idle feedback flickers by up to five codes near an end stop,
+1.6° of azimuth on the bench; a 2° error lengthens the preparation slew by under
+0.75 s, inside the 20 s scheduled beyond the slowest rehearsal. Fresh ADC
+timestamps and that flicker do not restart planning, while slow drift adds up
+until it does.
 
 Each published plan carries an exclusive `freeze_before_ms` deadline: its own
 admission deadline, AOS or one millisecond after a late-acquisition entry. The
