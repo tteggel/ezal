@@ -78,8 +78,15 @@ template and fill it in:
 
 ```bash
 cp .env.example .env
-$EDITOR .env          # set EZAL_WIFI_SSID and EZAL_WIFI_PASSWORD
+$EDITOR .env          # set EZAL_WIFI_SSID, EZAL_WIFI_PASSWORD and EZAL_N2YO_KEY
 ```
+
+The board downloads orbital elements from N2YO, which needs a free API key:
+register at [n2yo.com](https://www.n2yo.com/login/register/), generate a key
+on your profile page and set it as `EZAL_N2YO_KEY`. The firmware refuses at
+compile time a key that is not letters, digits and dashes, since anything else
+could change its request. Without a key the build still compiles, with a
+warning, and every download fails until one is set.
 
 `.env` is git-ignored. `crates/ezal-firmware/build.rs` reads it at compile
 time and is its only parser; the dev shell does not export it, so a build
@@ -92,8 +99,8 @@ credentials are set. The CYW43439's own firmware blobs are vendored in-tree
 (`crates/ezal-firmware/cyw43-firmware/`), so there's nothing else to fetch.
 
 An explicitly set environment variable overrides `.env`, including an empty
-value. To build an artifact without local network credentials, set both
-`EZAL_WIFI_SSID=` and `EZAL_WIFI_PASSWORD=` on the build command. Build images
+value. To build an artifact without local credentials, set
+`EZAL_WIFI_SSID=`, `EZAL_WIFI_PASSWORD=` and `EZAL_N2YO_KEY=` on the build command. Build images
 and Cargo's cached build-script output contain any supplied credentials;
 handle them accordingly. Unreadable files and credentials that cannot fit the
 single-line build format fail the build instead of being silently truncated.

@@ -33,6 +33,7 @@ embassy-sync     = { workspace = true }
 embassy-time     = { workspace = true }
 heapless         = { workspace = true }
 picoserve        = { workspace = true, features = ["embassy", "ws", "defmt"] }
+embedded-tls     = { workspace = true }
 
 # WiFi (Pico 2 W CYW43439). See the workspace manifest for why each is here
 # and why cyw43-pio's version is kept in lock-step with embassy-rp.

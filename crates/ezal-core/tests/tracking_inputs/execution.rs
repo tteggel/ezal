@@ -432,10 +432,7 @@ fn device_prepares_follows_and_finishes_after_browser_disconnect_under_backgroun
     let station = ezal_core::orbit::GroundStation::new(Observer::CLEVEDON).unwrap();
     let mut prediction =
         Job::new(&catalog, &station, Config::DEFAULT, (UTC / 1000) as i64).unwrap();
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{TLES}",
-        TLES.len()
-    );
+    let response = common::n2yo_reply(TLES);
     let mut download = OrbitalDownload::new((UTC / 1000) as i64);
     let mut bytes = response.as_bytes().chunks(17);
     let mut forecast_finished = false;

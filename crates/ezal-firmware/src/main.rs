@@ -30,8 +30,9 @@ use embassy_rp::clocks::RoscRng;
 use embassy_rp::dma;
 use embassy_rp::i2c::InterruptHandler as I2cInterruptHandler;
 use embassy_rp::i2c::{self, I2c};
-use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0};
+use embassy_rp::peripherals::{DMA_CH0, I2C0, PIO0, TRNG};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
+use embassy_rp::trng::{self, Trng};
 use embassy_time::{with_timeout, Duration};
 use static_cell::StaticCell;
 
@@ -53,6 +54,7 @@ bind_interrupts!(struct Irqs {
     I2C0_IRQ => I2cInterruptHandler<I2C0>;
     PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
+    TRNG_IRQ => trng::InterruptHandler<TRNG>;
 });
 
 // ─── tunables ───────────────────────────────────────────────────────────
@@ -149,7 +151,7 @@ async fn main(spawner: Spawner) {
         Wifi::init(spawner, pio, dma, p.PIN_23, p.PIN_25, p.PIN_24, p.PIN_29).await;
 
     // ─── TCP/IP: run DHCP over the CYW43439 data plane ──────────────────
-    // Eight web sockets, DHCP, DNS, NTP UDP and a catalog HTTP client, plus spare.
+    // Eight web sockets, DHCP, DNS, NTP UDP and the catalog's TLS client, plus spare.
     static NET_RESOURCES: StaticCell<StackResources<14>> = StaticCell::new();
     let net_config = embassy_net::Config::dhcpv4(Default::default());
     let mut rng = RoscRng;
@@ -166,7 +168,9 @@ async fn main(spawner: Spawner) {
         wifi::supervise(wifi, stack, creds, &state::STATE).expect("static task pool exhausted"),
     );
     spawner.spawn(time::synchronize(stack).expect("static task pool exhausted"));
-    spawner.spawn(prediction::run(stack).expect("static task pool exhausted"));
+    // The catalog download's TLS key exchange draws on the hardware TRNG.
+    let trng = Trng::new(p.TRNG, Irqs, trng::Config::default());
+    spawner.spawn(prediction::run(stack, trng).expect("static task pool exhausted"));
     spawner.spawn(tracking::run(&state::STATE).expect("static task pool exhausted"));
 
     // Start acceptors while offline. They remain registered across reconnects,

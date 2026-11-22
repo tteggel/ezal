@@ -14,21 +14,26 @@ export CARGO_MANIFEST_DIR="$TEST_ROOT/workspace/crates/firmware"
 export OUT_DIR="$TEST_ROOT/out"
 unset EZAL_LATITUDE_DEG EZAL_LONGITUDE_DEG EZAL_ALTITUDE_M
 unset EZAL_MIN_ELEVATION_DEG EZAL_MIN_PEAK_ELEVATION_DEG EZAL_INCLUDE_EXPERIMENTAL
+unset EZAL_N2YO_KEY
 cat > "$TEST_ROOT/workspace/.env" <<'EOF'
 EZAL_WIFI_SSID=fixture-network
 EZAL_WIFI_PASSWORD=fixture-password
+EZAL_N2YO_KEY=fixture-key
 EOF
 
 # Absent process values use .env; explicitly empty values must override it.
 output=$(env -u EZAL_WIFI_SSID -u EZAL_WIFI_PASSWORD "$TEST_ROOT/build-script")
 [[ "$output" == *'cargo:rustc-env=EZAL_WIFI_SSID=fixture-network'* ]]
 [[ "$output" == *'cargo:rustc-env=EZAL_WIFI_PASSWORD=fixture-password'* ]]
-output=$(EZAL_WIFI_SSID=override EZAL_WIFI_PASSWORD= "$TEST_ROOT/build-script")
+[[ "$output" == *$'\ncargo:rustc-env=EZAL_N2YO_KEY=fixture-key' ]] # credentials print last
+output=$(EZAL_WIFI_SSID=override EZAL_WIFI_PASSWORD= EZAL_N2YO_KEY= "$TEST_ROOT/build-script")
 [[ "$output" == *$'cargo:rustc-env=EZAL_WIFI_SSID=override\n'* ]]
-[[ "$output" == *$'\ncargo:rustc-env=EZAL_WIFI_PASSWORD=' ]] # credentials print last
-[[ "$output" != *fixture-password* ]]
-output=$(EZAL_WIFI_SSID= EZAL_WIFI_PASSWORD= "$TEST_ROOT/build-script")
+[[ "$output" == *$'\ncargo:rustc-env=EZAL_WIFI_PASSWORD=\ncargo:rustc-env=EZAL_N2YO_KEY=' ]]
+[[ "$output" != *fixture-password* && "$output" != *fixture-key* ]]
+[[ "$output" == *'EZAL_N2YO_KEY is empty'* ]]
+output=$(EZAL_WIFI_SSID= EZAL_WIFI_PASSWORD= EZAL_N2YO_KEY= "$TEST_ROOT/build-script")
 [[ "$output" != *fixture-network* && "$output" != *fixture-password* ]]
+[[ "$output" != *fixture-key* ]]
 
 # Station defaults are ezal-core's, by name, and the peak default follows the
 # mask; .env provisioning and process overrides produce literals.
@@ -55,7 +60,7 @@ config=$(cat "$OUT_DIR/prediction_config.rs")
 [[ "$config" == *'longitude_deg: 181.0'* && "$config" == *'min_peak_elevation_deg: 7.0'* ]]
 
 # Text that is not a finite number or boolean fails in the build script, and
-# the failure must not make Cargo echo either credential from .env.
+# the failure must not make Cargo echo any credential from .env.
 for invalid in EZAL_LATITUDE_DEG=NaN EZAL_ALTITUDE_M=inf EZAL_LONGITUDE_DEG=east \
     EZAL_INCLUDE_EXPERIMENTAL=yes EZAL_MIN_ELEVATION_DEG='5 degrees'; do
     if env -u EZAL_WIFI_SSID -u EZAL_WIFI_PASSWORD "$invalid" "$TEST_ROOT/build-script" \
@@ -65,7 +70,7 @@ for invalid in EZAL_LATITUDE_DEG=NaN EZAL_ALTITUDE_M=inf EZAL_LONGITUDE_DEG=east
     fi
     output=$(cat "$TEST_ROOT/output" "$TEST_ROOT/error")
     if [[ "$output" == *fixture-network* || "$output" == *fixture-password* \
-        || "$output" == *cargo:rustc-env=* ]]; then
+        || "$output" == *fixture-key* || "$output" == *cargo:rustc-env=* ]]; then
         echo "FAIL: $invalid echoed a credential before failing" >&2
         exit 1
     fi
@@ -82,7 +87,7 @@ EOF
 output=$(env -u EZAL_WIFI_SSID -u EZAL_WIFI_PASSWORD "$TEST_ROOT/build-script")
 config=$(cat "$OUT_DIR/prediction_config.rs")
 [[ "$config" == *'latitude_deg: 40.5'* && "$config" == *'altitude_m: 12.0'* ]]
-[[ "$output" == *$'\ncargo:rustc-env=EZAL_WIFI_PASSWORD=quoted # secret' ]]
+[[ "$output" == *$'\ncargo:rustc-env=EZAL_WIFI_PASSWORD=quoted # secret\n'* ]]
 [[ "$output" == *$'cargo:rustc-env=EZAL_WIFI_SSID=hash#inside\n'* ]]
 printf '%s\n' "EZAL_WIFI_SSID='closed' then text" >> "$TEST_ROOT/workspace/.env"
 if env -u EZAL_WIFI_SSID -u EZAL_WIFI_PASSWORD "$TEST_ROOT/build-script" \
@@ -95,15 +100,18 @@ EZAL_WIFI_SSID=fixture-network
 EZAL_WIFI_PASSWORD=fixture-password
 EOF
 
-# A line break must fail before either credential reaches Cargo's stdout.
-if EZAL_WIFI_SSID=fixture EZAL_WIFI_PASSWORD=$'secret\ncargo:warning=injected' \
-    "$TEST_ROOT/build-script" > "$TEST_ROOT/output" 2> "$TEST_ROOT/error"; then
-    echo 'FAIL: accepted a multiline credential' >&2
-    exit 1
-fi
-output=$(cat "$TEST_ROOT/output" "$TEST_ROOT/error")
-[[ "$output" != *secret* && "$output" != *injected* ]]
-[[ "$output" != *cargo:rustc-env=* ]]
+# A line break must fail before any credential reaches Cargo's stdout.
+injected=$'secret\ncargo:warning=injected'
+for credential in EZAL_WIFI_PASSWORD EZAL_N2YO_KEY; do
+    if env EZAL_WIFI_SSID=fixture "$credential=$injected" \
+        "$TEST_ROOT/build-script" > "$TEST_ROOT/output" 2> "$TEST_ROOT/error"; then
+        echo "FAIL: accepted a multiline $credential" >&2
+        exit 1
+    fi
+    output=$(cat "$TEST_ROOT/output" "$TEST_ROOT/error")
+    [[ "$output" != *secret* && "$output" != *injected* ]]
+    [[ "$output" != *cargo:rustc-env=* ]]
+done
 
 # The single-line dotenv format rejects quoted multiline credentials too;
 # splitting lines must not silently turn a malformed secret into a new value.

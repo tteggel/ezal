@@ -193,11 +193,33 @@ pub fn ntp_sample(utc_ms: u64) -> ntp::TimeSample {
     ntp::reply_sample(&packet, [1; 8], 0).unwrap()
 }
 
-pub fn download(body: &str, now_unix_s: i64) -> CompletedOrbitalDownload {
-    let response = format!(
+/// An N2YO-shaped HTTP reply whose `tle` string is `lines`. Tests about the
+/// catalog rather than the source put a whole fixture in one reply, which the
+/// reader and TLE parser accept as readily as N2YO's one element set.
+pub fn n2yo_reply(lines: &str) -> String {
+    let mut tle = String::new();
+    for c in lines.chars() {
+        match c {
+            '\n' => tle.push_str("\\n"),
+            '\r' => tle.push_str("\\r"),
+            '\t' => tle.push_str("\\t"),
+            '"' => tle.push_str("\\\""),
+            '\\' => tle.push_str("\\\\"),
+            c => tle.push(c),
+        }
+    }
+    let body = format!(
+        r#"{{"info":{{"satid":0,"satname":"fixture","transactionscount":0}},"tle":"{tle}"}}"#
+    );
+    format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
-    );
+    )
+}
+
+/// A completed one-reply download of `lines`, read in small pieces.
+pub fn download(lines: &str, now_unix_s: i64) -> CompletedOrbitalDownload {
+    let response = n2yo_reply(lines);
     let mut download = OrbitalDownload::new(now_unix_s);
     for bytes in response.as_bytes().chunks(17) {
         download.push(bytes).unwrap();

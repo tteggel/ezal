@@ -86,19 +86,30 @@ confirmed; check forecast capacity if significantly enlarging it.
   be synchronized server replies, and have sane timestamps and RTT ≤2 seconds.
   UTC advances from Embassy uptime; six hours without a good sample invalidates
   it. The codec handles the 2036 NTP era rollover, for dates in 2020–2099.
-- The public [CelesTrak weather feed](https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle)
-  is downloaded once at boot and every six hours, with a fifteen-minute retry
-  after failure. DNS, connection and response share a thirty-second deadline,
-  and every socket read awaits, so the deadline always fires. The response
-  streams from a 512-byte read buffer through `ezal_core::http` (Content-Length,
-  chunked or close-delimited framing, at most 64 KiB) straight into the TLE
-  parser; there is no response buffer. Truncated, oversized, ambiguously framed
-  or non-200 responses fail the download without touching the catalog, and
-  bytes after a complete body are ignored rather than counted.
-- The Pico uses the feed's HTTP endpoint without TLS. NTP is also unauthenticated.
-  On 2026-10-11 the operator explicitly accepted this transport risk for tracking.
-  Checksums, ID matching and age checks validate data but cannot establish its
-  authenticity. Tracking requires no TLS stack or additional gateway service.
+- Elements come from [N2YO's TLE API](https://www.n2yo.com/api/), which relays
+  Space-Track: one request per catalogued satellite, all on one TLS connection,
+  once at boot and every six hours, with a fifteen-minute retry after failure.
+  A refresh spends seven of the API key's 1000 requests an hour, so frequent
+  reboots are harmless. No download starts in Tracking mode: the TLS key
+  exchange runs for tens of milliseconds without yielding, which a pass's
+  control steps cannot absorb, and an armed or running plan holds its own
+  elements. DNS, connection, handshake and every reply share a thirty-second
+  deadline, and every socket read awaits, so the deadline always fires. Each
+  reply streams from a 512-byte read buffer through `ezal_core::http`
+  (Content-Length, chunked or close-delimited framing, at most 64 KiB) and
+  `ezal_core::n2yo`'s reader for the JSON `tle` member straight into the TLE
+  parser; there is no reply buffer. Truncated, oversized, ambiguously framed or
+  non-200 replies, and replies without elements (N2YO's answer to a bad key),
+  fail the whole download without touching the catalog, and bytes after a
+  complete body are ignored rather than counted.
+- The Pico speaks TLS 1.3 to N2YO but does not verify its certificate, so the
+  elements are private on the way but no more authenticated than over plain
+  HTTP. NTP is also unauthenticated. On 2026-10-11 the operator explicitly
+  accepted unauthenticated element data for tracking, and on 2026-11-21 moved
+  from CelesTrak's HTTP feed to N2YO after CelesTrak blocked the installation's
+  address for repeated boot-time downloads. Checksums, ID matching and age
+  checks validate data but cannot establish its authenticity. The API key is
+  baked into the firmware image in the clear, like the WiFi credentials.
 - Each line's fixed-width layout and checksum are checked before the `sgp4`
   library sees it: lines must be 69 ASCII characters, and numeric columns admit
   only digits, spaces, `.`, `+` and `-`, so `nan`/`inf` cannot parse and the

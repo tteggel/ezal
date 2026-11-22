@@ -8,7 +8,7 @@ use common::{
 };
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::catalog::{Catalog, OrbitalDownload, SourceOrder};
+use ezal_core::catalog::{Catalog, DownloadError, OrbitalDownload, SourceOrder};
 use ezal_core::drive::{Command, CommandEnvelope};
 use ezal_core::duty::{DutyConfig, DutyHistory};
 use ezal_core::feedback::{FeedbackHealth, FeedbackSample, FeedbackSnapshot};
@@ -269,11 +269,14 @@ fn framed_downloads_are_atomic_and_failed_older_or_malformed_updates_retain_meta
             .as_bytes(),
         )
         .unwrap();
-    assert!(matches!(truncated.finish(), Err(http::Error::Truncated)));
+    assert!(matches!(
+        truncated.finish(),
+        Err(DownloadError::Http(http::Error::Truncated))
+    ));
     let mut failed = OrbitalDownload::new((UTC / 1000) as i64);
     assert_eq!(
         failed.push(b"HTTP/1.1 500 Error\r\n\r\n"),
-        Err(http::Error::Status)
+        Err(DownloadError::Http(http::Error::Status))
     );
     assert!(failed.push(TLES.as_bytes()).is_err());
     assert!(failed.finish().is_err());
