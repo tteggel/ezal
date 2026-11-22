@@ -204,7 +204,12 @@ The host suite checks that your calibration is one the feedback ADC can
 supervise: endpoints in order, and both 15 mV fault margins clear of ground
 and of the supply-rail ceiling. The policy tests use their own fixture rather
 than the installed numbers, so a correct measurement cannot fail them — a
-failure here means the calibration needs another look, not the tests.
+failure here means the calibration needs another look, not the tests. One test
+does use the installed numbers: `tests/end_to_end.rs` runs a recorded pass
+through the device's planning worker with this calibration and the
+[installed motion settings](../crates/ezal-core/src/installation.rs). That
+pass suits both full and 360°/90° travel, so a failure there means the
+installation cannot track it.
 
 Then stop at 0%, 25%, 50%, 75%, and 100% of
 each scale. Compare the dashboard angle with the G-5500 meter or a trusted

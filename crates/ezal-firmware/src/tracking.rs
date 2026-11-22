@@ -5,13 +5,12 @@ use core::cell::Cell;
 use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
 use embassy_time::{Duration, Instant, Timer};
+use ezal_core::coordination::{PlanningUnit, PlanningWorker};
 use ezal_core::installation;
 use ezal_core::position::HARD_CODED_CALIBRATION;
-use ezal_core::tracking::{
-    execution_window, ExecutionInputs, InputError, InputSettings, PlanRevisions, PlanTicket,
-    Planner, PlanningConfig, RestingStart, TimingError,
-};
+use ezal_core::tracking::InputSettings;
 
+use crate::prediction;
 use crate::state::SharedState;
 
 #[derive(Clone, Copy, Default)]
@@ -50,117 +49,23 @@ pub fn record_control(elapsed_us: u64, gap_us: u64, tracking: bool) {
     });
 }
 
-/// Called both on atomic forecast/source publication and by the worker. A
-/// browser cannot supply revisions, source data, motor policy or a start pose.
+/// Called both on atomic forecast/source publication and by the worker.
 pub fn refresh_inputs(state: &SharedState) {
-    let selected = state.with(|s| s.tracking().snapshot().selection);
-    let Some(selected) = selected else { return };
-    let Some((source, events)) = crate::prediction::tracking_source(selected.original.norad_id)
-    else {
-        return;
-    };
-    state.with(|s| {
-        let start = s.start_revision();
-        s.tracking_operation(Instant::now().as_millis(), |runtime, observation| {
-            let revisions = PlanRevisions {
-                orbit: source.publication().revision,
-                clock: observation.clock.anchor().map_or(0, |a| a.revision()),
-                start,
-            };
-            let _ = runtime.refresh(&events, revisions, observation);
-        });
-    });
-}
-
-struct Captured {
-    inputs: ExecutionInputs,
-    start: RestingStart,
-    config: PlanningConfig,
-}
-
-fn capture(state: &SharedState, ticket: PlanTicket) -> Result<Option<Captured>, InputError> {
-    let Some((source, _)) = crate::prediction::tracking_source(ticket.pass().norad_id) else {
-        return Err(InputError::MissingOrbit);
-    };
-    let Some(start) = state.with(|s| s.resting_start()) else {
-        return Ok(None);
-    };
-    let config = PlanningConfig {
-        preparation_timing: ticket.preparation_timing(),
-        ..installation::planning_config()
-    };
-    let inputs = state.with(|s| {
-        s.tracking_operation(Instant::now().as_millis(), |_, observation| {
-            let anchor = observation.clock.anchor().ok_or(TimingError::Unavailable)?;
-            let pass = ticket.pass();
-            let window = execution_window(
-                anchor,
-                pass.aos_unix_s as u64 * 1000,
-                pass.los_unix_s as u64 * 1000,
-            )?;
-            ExecutionInputs::capture(
-                ticket,
-                source,
-                InputSettings {
-                    observer: crate::prediction::observer(),
-                    ..InputSettings::default()
-                },
-                observation.clock,
-                window,
-                &config,
-                observation.now_ms,
-            )
-        })
-    })?;
-    Ok(Some(Captured {
-        inputs,
-        start,
-        config,
-    }))
-}
-
-/// Capture a ticket's inputs and build its planner into `work`, or publish the
-/// refusal to the runtime. `work` stays empty without a publication while the
-/// start pose is not yet resting; the next poll tries again. The planner is
-/// written into the task's slot, not returned, so its workspace never takes a
-/// second copy in the caller's stack frame.
-fn start_job(state: &SharedState, ticket: PlanTicket, work: &mut Option<Planner<ExecutionInputs>>) {
-    let captured = match capture(state, ticket) {
-        Ok(Some(captured)) => captured,
-        Ok(None) => return,
-        Err(error) => {
-            state.with(|s| {
-                s.tracking_operation(Instant::now().as_millis(), |runtime, observation| {
-                    let _ = runtime.reject_inputs(ticket, error, observation);
-                })
-            });
-            return;
-        }
-    };
-    let inputs = captured.inputs;
-    match Planner::new(
-        inputs.clone(),
-        inputs.window(),
-        HARD_CODED_CALIBRATION,
-        captured.start,
-        captured.config,
-    ) {
-        Ok(planner) => *work = Some(planner),
-        Err(error) => {
-            state.with(|s| {
-                s.tracking_operation(Instant::now().as_millis(), |runtime, observation| {
-                    let _ = runtime.publish_plan(ticket, Err(error), inputs, observation);
-                })
-            });
-        }
-    }
+    state.with(|s| s.refresh_tracking(prediction::tracking_source, Instant::now().as_millis()));
 }
 
 #[embassy_executor::task]
 pub async fn run(state: &'static SharedState) -> ! {
     // Embassy stores this bounded planner in the task's static future, not a
     // heap or the live output task. Never put it inside an IRQ-masking mutex.
-    let mut work: Option<Planner<ExecutionInputs>> = None;
+    let mut worker = PlanningWorker::new(
+        HARD_CODED_CALIBRATION,
+        installation::planning_config(),
+        InputSettings {
+            observer: prediction::observer(),
+            ..InputSettings::default()
+        },
+    );
     let mut next_refresh = Instant::now();
     let mut next_log = Instant::now() + Duration::from_secs(60);
     loop {
@@ -175,57 +80,33 @@ pub async fn run(state: &'static SharedState) -> ! {
                 timing.control_us, timing.control_gap_us, timing.planning_step_us, timing.recovery_step_us, timing.worker_poll_us, timing.planning_steps);
             next_log = now + Duration::from_secs(60);
         }
-        let ticket = state.with(|s| s.tracking().planning_ticket());
-        if work
-            .as_ref()
-            .is_some_and(|job| Some(job.source().ticket()) != ticket)
-        {
-            work = None;
-        }
+        // Thread-mode locking leaves IRQs enabled through the unit.
         let begin = Instant::now();
-        let recovery = state.with(|s| {
-            s.tracking_operation(begin.as_millis(), |runtime, observation| {
-                runtime.step_reacquisition(observation).unwrap_or(false)
+        let unit = state.with(|s| {
+            worker.poll(s, prediction::tracking_source, || {
+                Instant::now().as_millis()
             })
         });
-        let recovery_us = begin.elapsed().as_micros();
-        record(|timing| timing.recovery_step_us = timing.recovery_step_us.max(recovery_us));
-        // A reacquisition step takes this poll; planning resumes when it is idle.
-        if !recovery && work.is_none() {
-            if let Some(ticket) = ticket {
-                start_job(state, ticket, &mut work);
-            }
-        }
-        let planning = if recovery { None } else { work.as_mut() };
-        let busy = recovery || planning.is_some();
-        if let Some(job) = planning {
-            let begin = Instant::now();
-            let _ = job.step();
-            let elapsed = begin.elapsed().as_micros();
-            record(|timing| {
-                timing.planning_step_us = timing.planning_step_us.max(elapsed);
-                timing.planning_steps = timing.planning_steps.saturating_add(1);
-            });
-            if job.is_finished() {
-                let inputs = job.source().clone();
-                let result = job.take_report();
-                state.with(|s| {
-                    s.tracking_operation(Instant::now().as_millis(), |runtime, observation| {
-                        let _ = runtime.publish_plan(inputs.ticket(), result, inputs, observation);
-                    })
-                });
-                work = None;
-            }
-        }
+        let unit_us = begin.elapsed().as_micros();
         record(|timing| {
-            timing.worker_poll_us = timing.worker_poll_us.max(now.elapsed().as_micros())
+            match unit {
+                PlanningUnit::Idle => {}
+                PlanningUnit::Recovery => {
+                    timing.recovery_step_us = timing.recovery_step_us.max(unit_us)
+                }
+                PlanningUnit::Planning => {
+                    timing.planning_step_us = timing.planning_step_us.max(unit_us);
+                    timing.planning_steps = timing.planning_steps.saturating_add(1);
+                }
+            }
+            timing.worker_poll_us = timing.worker_poll_us.max(now.elapsed().as_micros());
         });
-        if busy {
+        if unit == PlanningUnit::Idle {
+            Timer::after_millis(10).await;
+        } else {
             // No millisecond timer per simulation step: millions of bounded
             // units still cooperate without imposing hours of artificial delay.
             yield_now().await;
-        } else {
-            Timer::after_millis(10).await;
         }
     }
 }

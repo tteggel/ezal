@@ -3,7 +3,7 @@
 mod common;
 
 use common::{
-    download, full_travel_installed, full_travel_sample, nominal, resting_start,
+    download, full_travel_installed, full_travel_sample, nominal, ntp_sample, resting_start,
     FULL_TRAVEL_CALIBRATION,
 };
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
@@ -40,22 +40,9 @@ const REVISIONS: PlanRevisions = PlanRevisions {
     clock: 1,
     start: 1,
 };
-fn sample(utc: u64) -> ntp::TimeSample {
-    let mut stamp = [0; 8];
-    stamp[..4].copy_from_slice(&((utc / 1000 + 2_208_988_800) as u32).to_be_bytes());
-    stamp[4..].copy_from_slice(&((((utc % 1000) << 32).div_ceil(1000)) as u32).to_be_bytes());
-    let mut packet = [0; 48];
-    packet[0] = 0x24;
-    packet[1] = 2;
-    packet[3] = (-20i8) as u8;
-    packet[24..32].fill(1);
-    packet[32..40].copy_from_slice(&stamp);
-    packet[40..48].copy_from_slice(&stamp);
-    ntp::reply_sample(&packet, [1; 8], 0).unwrap()
-}
 fn clock(utc: u64) -> UtcClock {
     let mut clock = UtcClock::new();
-    clock.synchronize(2000, sample(utc)).unwrap();
+    clock.synchronize(2000, ntp_sample(utc)).unwrap();
     clock
 }
 fn observation(at: u64) -> RuntimeObservation {
@@ -379,7 +366,7 @@ fn input_snapshot_propagates_fractional_time_and_binds_clock_satellite_and_plan(
     plan.window.aos_at_ms += 1;
     assert!(!inputs.matches(&plan, inputs.ticket()));
     let mut changed = clock(UTC);
-    changed.synchronize(2000, sample(UTC)).unwrap();
+    changed.synchronize(2000, ntp_sample(UTC)).unwrap();
     assert!(matches!(
         capture(&runtime, &catalog, changed, UTC + 120_000, UTC + 150_000),
         Err(InputError::Binding)
@@ -476,7 +463,7 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
         .look_at_uptime(AOS + 10);
     let mut obs = observation(AOS + 10);
     obs.clock
-        .synchronize(AOS + 10, sample(UTC + AOS + 10 - 2000 + 100))
+        .synchronize(AOS + 10, ntp_sample(UTC + AOS + 10 - 2000 + 100))
         .unwrap();
     runtime
         .refresh(
@@ -534,7 +521,7 @@ fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacemen
     let old_inputs = runtime.bound_plan().unwrap().inputs().clone();
     let mut obs = observation(prep);
     obs.clock
-        .synchronize(prep, sample(UTC + prep - 2000))
+        .synchronize(prep, ntp_sample(UTC + prep - 2000))
         .unwrap();
     runtime
         .refresh(
@@ -594,7 +581,7 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
         obs.clock
             .synchronize(
                 now,
-                sample((UTC as i64 + now as i64 - 2000 + correction) as u64),
+                ntp_sample((UTC as i64 + now as i64 - 2000 + correction) as u64),
             )
             .unwrap();
         assert_eq!(runtime.take_command(obs), Some(CommandEnvelope::INHIBIT));
@@ -802,7 +789,7 @@ fn runtime_cancel_at_preparation_prevents_a_freeze_and_stale_clock_publications_
     let mut updated = observation(AOS + 10);
     updated
         .clock
-        .synchronize(AOS + 10, sample(UTC + AOS + 10 - 2000))
+        .synchronize(AOS + 10, ntp_sample(UTC + AOS + 10 - 2000))
         .unwrap();
     runtime.service(updated).unwrap();
     assert!(is_drive(runtime.take_command(updated)));

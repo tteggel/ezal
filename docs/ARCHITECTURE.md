@@ -42,7 +42,7 @@ returns values. It has no peripherals, global runtime state or Embassy tasks.
 | Installation | `position::InstalledCalibration`, `installation` | Validate immutable geometry and ADC observability once; reuse checked conversion math; hold the installed motion settings |
 | Observations | `feedback::FeedbackMonitor` | Calibrate timestamped samples, reject bad acquisitions, retain diagnostic readings |
 | Source admission | `session::CommandFreshness` | Bound source age and sequence; distinguish a new press from a continued hold |
-| Coordination | `coordination::CoordinationState` | Exclusive operator lease, tracking runtime, input revisions and coherent command delivery |
+| Coordination | `coordination::CoordinationState`, `coordination::PlanningWorker` | Exclusive operator lease, tracking runtime, input revisions and coherent command delivery; background planning of the selected pass |
 | Output decision | `actuator::Actuator` | Apply all final permissions, physical supervision, leases and relay timing in one step |
 | Representation | `protocol`, `dashboard` | Decode manual/tracking intent, encode telemetry, provide the browser asset and shared timing configuration |
 

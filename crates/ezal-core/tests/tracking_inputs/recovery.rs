@@ -145,7 +145,7 @@ fn joins_late_and_follows_to_los(synced: u64) {
     let at = AOS + 1000;
     let mut current = UtcClock::new();
     current
-        .synchronize(synced, sample(UTC + synced - 2000))
+        .synchronize(synced, ntp_sample(UTC + synced - 2000))
         .unwrap();
     let observe = |now| RuntimeObservation {
         clock: current,

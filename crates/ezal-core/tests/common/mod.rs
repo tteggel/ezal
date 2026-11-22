@@ -12,6 +12,7 @@ use ezal_core::feedback::FeedbackSample;
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::motion::MotionConfig;
 use ezal_core::network::NetworkGate;
+use ezal_core::ntp;
 use ezal_core::position::{AxisCalibration, InstalledCalibration, Pointing, PositionCalibration};
 use ezal_core::tracking::{PlanningConfig, RestingStart, Scenario};
 
@@ -177,6 +178,21 @@ pub fn nominal() -> PlanningConfig {
 /// Frame `body` as a complete Content-Length response and stream it through
 /// the device's download boundary in small reads, staging elements fresh at
 /// `now_unix_s`.
+/// A server reply stamped `utc_ms`, for synchronizing a test clock.
+pub fn ntp_sample(utc_ms: u64) -> ntp::TimeSample {
+    let mut stamp = [0; 8];
+    stamp[..4].copy_from_slice(&((utc_ms / 1000 + 2_208_988_800) as u32).to_be_bytes());
+    stamp[4..].copy_from_slice(&((((utc_ms % 1000) << 32).div_ceil(1000)) as u32).to_be_bytes());
+    let mut packet = [0; 48];
+    packet[0] = 0x24;
+    packet[1] = 2;
+    packet[3] = (-20i8) as u8;
+    packet[24..32].fill(1);
+    packet[32..40].copy_from_slice(&stamp);
+    packet[40..48].copy_from_slice(&stamp);
+    ntp::reply_sample(&packet, [1; 8], 0).unwrap()
+}
+
 pub fn download(body: &str, now_unix_s: i64) -> CompletedOrbitalDownload {
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",

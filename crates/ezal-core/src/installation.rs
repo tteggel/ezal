@@ -1,6 +1,6 @@
 //! Motion settings for the installed rotator. Its feedback calibration is
 //! [`HARD_CODED_CALIBRATION`](crate::position::HARD_CODED_CALIBRATION). The
-//! firmware runs these values.
+//! firmware runs these values, and the end-to-end host test rehearses them.
 
 use crate::actuator::ActuatorConfig;
 use crate::drive::RelayConfig;

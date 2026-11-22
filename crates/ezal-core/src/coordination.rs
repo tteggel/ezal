@@ -1,5 +1,6 @@
-//! Device ownership, independent tracking and coherent actuator delivery.
-//! Reads never renew leases or drain commands. Firmware serializes mutations.
+//! Device ownership, independent tracking and coherent actuator delivery, with
+//! the selected pass's background planning in [`PlanningWorker`]. Reads never
+//! renew leases or drain commands. Firmware serializes mutations.
 
 use crate::actuator::{Actuator, ActuatorInput, ActuatorUpdate};
 use crate::drive::{CommandEnvelope, DriveCommand};
@@ -14,6 +15,10 @@ use crate::position::{FeedbackVoltages, Pointing};
 use crate::tracking::{
     RestingStart, RuntimeObservation, TrackingMode, TrackingRuntime, TrackingStop,
 };
+
+mod planning;
+
+pub use planning::{PlanningUnit, PlanningWorker, TrackingSource};
 
 struct StartupRestOverride {
     operator: OperatorToken,

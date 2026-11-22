@@ -219,7 +219,7 @@ Surveyed 2026-11-05 and re-verified 2026-11-13 against main 79046c17e90caf0ed6f9
 ### T2 — Whether the Pico can plan a recovery in time is unmeasured
 
 - Status: confirmed limitation (documented by the repository).
-- Source: [CALIBRATION.md, known model limits](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L456-L463); [`WORK_PER_TICK` in the acceptance test](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs#L15-L17); [`INTERCEPT_PLANNING_LEAD_MS`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/recovery.rs#L50-L56); [the firmware's planning worker](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/tracking.rs#L158-L229).
+- Source: [CALIBRATION.md, known model limits](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L456-L463); [`WORK_PER_TICK` in the acceptance test](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs#L15-L17); [`INTERCEPT_PLANNING_LEAD_MS`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/recovery.rs#L50-L56); [the device's planning worker](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/coordination/planning.rs#L81-L120).
 - Consequence: the recorded successful recovery search takes 398,964 work units. The test grants 2,048 units per virtual 10 ms, which is a test setting and not a measurement of the board; at 128 units it misses every launch. A board too slow to finish a search inside the 2 s lead would stop at its deadline rather than recover.
 - Would settle it: timing whole searches on the Pico with browsers connected and a forecast running.
 

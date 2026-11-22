@@ -616,7 +616,7 @@ fn changed_start_invalidates_preview_before_a_simultaneous_preparation_deadline(
 fn a_disarmed_clock_publication_blocks_preview_and_stops_a_run() {
     let mut disarmed = clock(UTC);
     assert_eq!(
-        disarmed.synchronize(1000, sample(UTC)),
+        disarmed.synchronize(1000, ntp_sample(UTC)),
         Err(ntp::ClockDisarmed)
     );
     let unavailable = InputError::Timing(TimingError::Unavailable);

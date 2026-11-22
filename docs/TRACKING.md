@@ -417,13 +417,14 @@ its episode. A stalled executor cannot cut output until it resumes or the
 watchdog resets the board, so that interval is an execution requirement, not a
 physical release guarantee.
 
-The separate `tracking` task owns a statically bounded preview planner and
-steps preview and recovery work (`step_reacquisition`) cooperatively, yielding
-after each bounded unit. It never touches GPIO or the watchdog. Downloads yield
+The separate `tracking` task polls a `coordination::PlanningWorker`, which
+owns the statically bounded preview planner. Each poll performs one bounded
+unit of recovery work (`step_reacquisition`) or, when there is none, of preview
+planning, and the task yields after each. It never touches GPIO or the watchdog. Downloads yield
 after every bounded parsing chunk and forecasting keeps its own task; complete
 forecasts and their orbital snapshots publish atomically. A once-per-minute
 `tracking timing maxima` log reports output service time, active service gap,
-planner and recovery step times, worker poll time and planner steps.
+planning and recovery unit times, worker poll time and planning units.
 
 ## Dashboard
 
@@ -504,6 +505,12 @@ runtime with synthetic and recorded passes covering:
   commands;
 - lease expiry and transfer with tracking continuing, clock steps, duty
   exhaustion and LOS.
+
+[`end_to_end.rs`](../crates/ezal-core/tests/end_to_end.rs) runs a recorded
+pass through the device's planning worker, coordination, feedback validation
+and actuator with the installed settings, while the readings flicker by an ADC
+code. It also checks that Cancel clears the selection and Return to Manual
+keeps it replanning.
 
 Dashboard tests must preserve the deviation and recovery displays, stale
 deviation removal and Cancel staying available. Commissioning repeats the

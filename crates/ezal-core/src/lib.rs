@@ -24,7 +24,8 @@
 //! [`tracking`] supplies bounded planning, a device-owned lifecycle, following
 //! and offline simulation. Its execution-input boundary owns orbital/clock
 //! snapshots and enforces source/timing/network validity. [`operator`] supplies
-//! its exclusive controller lease.
+//! its exclusive controller lease, and [`coordination::PlanningWorker`] the
+//! background planning that firmware polls from its own task.
 //! Firmware services tracking independently through that same output boundary.
 //! [`installation`] holds the installed rotator's motion settings.
 
