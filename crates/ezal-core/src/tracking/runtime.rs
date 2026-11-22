@@ -250,7 +250,7 @@ impl TrackingRuntime {
                 .invalidate_inputs(error, observation.now_ms)?;
             return Err(error.into());
         }
-        let deadline = inputs.freeze_before_ms()?;
+        let deadline = inputs.freeze_before_ms();
         self.lifecycle
             .publish_plan(ticket, result, inputs, deadline, observation.now_ms)?;
         self.service(observation)?;

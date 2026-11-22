@@ -162,7 +162,7 @@ fn joins_late_and_follows_to_los(synced: u64) {
         at,
     )
     .unwrap();
-    assert_eq!(inputs.freeze_before_ms().unwrap(), LOS);
+    assert_eq!(inputs.freeze_before_ms(), LOS);
     let look = inputs.look_at_uptime(at).unwrap();
     let pose = Pointing::new(look.azimuth_deg as f32, look.elevation_deg as f32 + 5.0);
     let mut actuator = Actuator::with_config(

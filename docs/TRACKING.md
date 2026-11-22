@@ -199,9 +199,12 @@ pose and consumed duty. Cancellation or a fault never rearms it.
 ### Updating and freezing the plan
 
 Before preparation the device replans the selected pass automatically, in
-either mode, whenever orbital elements, the clock or the measured starting
-state change. Each planning ticket binds the selection to orbital, clock and
-starting-state revisions and the preparation schedule. Publishing newer inputs
+either mode, whenever orbital elements or the measured starting state change,
+or a clock sample stops vouching for the plan's timeline (see
+[Execution clock](#execution-clock)). A routine NTP synchronization does not
+replan: planning takes minutes on the Pico, and a sample every five minutes
+would otherwise restart it for ever. Each planning ticket binds the selection
+to orbital and starting-state revisions and the preparation schedule. Publishing newer inputs
 immediately withdraws the previous plan's permission to prepare; only the
 latest job can publish, even if an older job finishes later; an unsupported or
 failed replacement never falls back to an older success. A change in feedback
@@ -211,11 +214,11 @@ noise from the pose planning started from. Manual movement therefore does too;
 fresh ADC timestamps and an idle reading's flicker do not, while slow drift
 adds up until it does.
 
-Each published plan carries an exclusive `freeze_before_ms` deadline, the
-earliest of its clock's admission deadline, LOS and the plan's own admission
-deadline: AOS, or one millisecond after a late-acquisition entry. The plan
-stays armable only before that instant, while it is the current ticket and
-while its preparation time still fits.
+Each published plan carries an exclusive `freeze_before_ms` deadline: its own
+admission deadline, AOS or one millisecond after a late-acquisition entry. The
+plan stays armable only before that instant, while it is the current ticket,
+while its preparation time still fits and while the newest clock sample
+vouches for its timeline.
 
 Preparation atomically accepts the latest complete, valid plan and freezes its
 orbital elements, observer, clock mapping, motion profile and mechanical route.
@@ -295,20 +298,24 @@ the planner's uncertainty allocation for time:
 | Assumed maximum sky rate | 2°/s |
 | Resulting maximum timing error | 250 ms |
 
-Error grows from the original sample by `elapsed × drift_ppm / 1,000,000`: 6 ms
-per minute at 100 ppm, so a sample with 50 ms initial error covers about 33
-minutes from receipt to LOS. A preview checks the sample's current validity, so
-a pass can be armed hours ahead; immediately before preparation the full error
-and age bounds must fit through LOS, or preparation is blocked with a timing
-reason.
+Error grows from a sample by `elapsed × drift_ppm / 1,000,000`: 6 ms per
+minute at 100 ppm, so a sample with 50 ms initial error covers about 33 minutes
+from receipt to LOS.
 
-After preparation, propagation always uses the frozen millisecond anchor. A new
-sample is compared with that mapping: its discrepancy plus its uncertainty and
-drift through LOS must fit the timing share. An acceptable sample validates the
-run without shifting targets or deadlines; repeated small corrections cannot
-move the anchor. An excessive correction, missing time, a stale or reversed
-clock publication, or unusable source data stops the run with an explicit
-reason.
+A plan keeps the millisecond anchor it was captured with, and propagation
+always uses it. Each newer sample is compared with that mapping: true UTC lies
+within the sample's uncertainty and drift of the sample's own mapping, and the
+two differ by a constant, so their discrepancy plus that error bounds the
+frozen timeline's. Before preparation the bound must fit the timing share now,
+so a pass can be selected and armed hours ahead while the device keeps
+synchronizing; immediately before preparation, and on every output admission
+after it, the bound must fit through LOS. The plan's own sample is the newest
+until NTP synchronizes again, so its age matters only then. An acceptable
+sample validates the plan without shifting targets or deadlines; repeated small
+corrections cannot move the anchor. An excessive correction, missing time, a
+lapse in synchronization, a stale or reversed clock publication, or unusable
+source data replaces a preview, blocks preparation, or stops the run, with an
+explicit reason.
 
 ## Deviation and reacquisition
 

@@ -22,9 +22,9 @@ pub enum InputError {
     SourceOrder,
     /// Invalid station coordinates.
     Observer,
-    /// Ticket, satellite, clock revision, window or assumptions disagree.
+    /// Ticket, satellite, clock mapping, window or assumptions disagree.
     Binding,
-    /// A new clock sample requires a replacement preview before preparation.
+    /// The starting pose changed, so the preview needs replacing.
     RevisionChanged,
     /// Clock validity/uncertainty failure.
     Timing(TimingError),
@@ -70,7 +70,7 @@ pub struct ExecutionInputs {
 impl ExecutionInputs {
     /// Capture a preview. Whole-window orbital validity is required now; the
     /// clock's complete LOS error bound is checked at preparation, allowing
-    /// early selection while automatic NTP/plan refreshes continue.
+    /// early selection while NTP keeps synchronizing.
     pub fn capture(
         ticket: PlanTicket,
         orbit: OrbitalSnapshot,
@@ -87,7 +87,6 @@ impl ExecutionInputs {
             / 1000.0;
         if ticket.pass().norad_id != orbit.norad_id()
             || ticket.revisions().orbit != orbit.publication().revision
-            || ticket.revisions().clock != anchor.revision()
             || config.preparation_timing != ticket.preparation_timing()
             || !window.aos_unix_s.is_finite()
             || aos_utc != window.aos_unix_s
@@ -137,29 +136,22 @@ impl ExecutionInputs {
     pub const fn ticket(&self) -> PlanTicket {
         self.ticket
     }
-    /// Earliest exclusive expiry of the preview's current timing permission.
-    pub fn freeze_before_ms(&self) -> Result<u64, InputError> {
-        Ok(self
-            .clock
-            .admission_deadline_ms()?
-            .min(self.window.aos_at_ms + u64::from(self.window.duration_ms)))
+    /// Exclusive expiry: these inputs authorize nothing from LOS. Their clock
+    /// stays valid only while the newest sample vouches for it.
+    pub fn freeze_before_ms(&self) -> u64 {
+        self.window.aos_at_ms + u64::from(self.window.duration_ms)
     }
     /// Verify the result used the snapshot's timeline and assumptions. The
     /// internal worker remains responsible for actually planning this ephemeris.
     pub fn matches(&self, plan: &TrackingPlan, ticket: PlanTicket) -> bool {
         self.ticket == ticket && self.window == plan.window && self.config == plan.config
     }
-    /// Pre-preparation samples must stay current; even a small new clock
-    /// correction invalidates the preview and requests automatic replanning.
+    /// Before preparation the newest sample must vouch for the frozen
+    /// timeline now. A routine synchronization keeps the preview; one that
+    /// moves time beyond the timing share, or a lapse in synchronization,
+    /// invalidates it and requests automatic replanning.
     pub fn validate_preview(&self, current: UtcClock, now_ms: u64) -> Result<(), InputError> {
-        let latest = current.anchor().ok_or(TimingError::Unavailable)?;
-        if latest != self.clock.anchor() {
-            return Err(InputError::RevisionChanged);
-        }
-        if now_ms >= self.freeze_before_ms()? {
-            return Err(TimingError::Expired.into());
-        }
-        self.clock.unix_s(now_ms)?;
+        self.clock.validate_now(current, now_ms)?;
         self.validate_orbit(now_ms)
     }
     /// Required immediately before freezing, and on every serviced output

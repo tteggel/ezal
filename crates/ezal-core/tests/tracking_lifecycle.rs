@@ -19,11 +19,7 @@ const EVENT: PassEvent = PassEvent {
     aos_unix_s: 1000,
     los_unix_s: 1030,
 };
-const REVISIONS: PlanRevisions = PlanRevisions {
-    orbit: 1,
-    clock: 1,
-    start: 1,
-};
+const REVISIONS: PlanRevisions = PlanRevisions { orbit: 1, start: 1 };
 const AOS: u64 = 122_000;
 const PREP: u64 = 62_000;
 const LOS: u64 = 152_000;
@@ -390,7 +386,6 @@ fn freeze_is_atomic_and_newer_revisions_cannot_replace_it() {
             &[],
             PlanRevisions {
                 orbit: 20,
-                clock: 20,
                 start: 20,
             },
             PREP,
@@ -890,7 +885,7 @@ fn a_new_satellite_can_use_its_older_cached_publication_without_regressing_other
         lifecycle.refresh(
             &[next],
             PlanRevisions {
-                clock: 0,
+                start: 0,
                 ..REVISIONS
             },
             2000

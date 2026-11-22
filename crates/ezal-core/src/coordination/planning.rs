@@ -37,8 +37,9 @@ pub struct PlanningWorker {
 }
 
 impl CoordinationState {
-    /// Publish the selected satellite's forecast with the orbital, clock and
-    /// starting-state revisions current now. Called on every forecast
+    /// Publish the selected satellite's forecast with the orbital and
+    /// starting-state revisions current now. A clock sample is not one: it
+    /// only checks the plan's timeline, so synchronizing never restarts it. Called on every forecast
     /// publication and periodically by the planning task.
     pub fn refresh_tracking(
         &mut self,
@@ -55,7 +56,6 @@ impl CoordinationState {
         self.tracking_operation(now_ms, |runtime, observation| {
             let revisions = PlanRevisions {
                 orbit: orbit.publication().revision,
-                clock: observation.clock.anchor().map_or(0, |a| a.revision()),
                 start,
             };
             let _ = runtime.refresh(&events, revisions, observation);

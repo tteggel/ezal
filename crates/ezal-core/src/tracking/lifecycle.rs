@@ -19,15 +19,13 @@ use crate::operator::{LeaseError, OperatorGrant, OperatorLease, OperatorToken};
 pub struct PlanRevisions {
     /// Accepted orbital data, including source/expiry metadata.
     pub orbit: u64,
-    /// Fractional UTC anchor and its uncertainty.
-    pub clock: u64,
     /// Starting pose/output history; advance when that planning assumption changes.
     pub start: u64,
 }
 
 impl PlanRevisions {
     fn follows(self, previous: Self) -> bool {
-        self.orbit >= previous.orbit && self.clock >= previous.clock && self.start >= previous.start
+        self.orbit >= previous.orbit && self.start >= previous.start
     }
 }
 

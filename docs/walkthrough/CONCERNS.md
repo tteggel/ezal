@@ -226,8 +226,8 @@ Surveyed 2026-11-05 and re-verified 2026-11-13 against main 79046c17e90caf0ed6f9
 ### T3 — A run's clock is fixed, but a later time check can still stop the run
 
 - Status: resolved (a question about wording; the code is clear).
-- Source: [`ExecutionClock::validate`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/clock.rs#L138-L160).
-- Consequence: none for the firmware. A later answer from the time server never moves the run's schedule; if it disagrees by more than the 250 ms allowance (after its own uncertainty and 100 ppm of drift to the window's end) the run stops with `TimingError::Correction`. Chapter 6 excerpts the function and its figure applies the same sum.
+- Source: [`ExecutionClock::validate` and `check`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/clock.rs#L148-L182).
+- Consequence: none for the firmware. A later answer from the time server never moves the run's schedule; if it disagrees by more than the 250 ms allowance (after its own uncertainty and 100 ppm of drift to the window's end) the run stops with `TimingError::Correction`. Before the run the same sum is taken to the present, so a routine answer keeps the plan. Chapter 6 excerpts `check` and its figure applies the same sum.
 
 ### T4 — The board and rotator have not been through the bench checklist
 
