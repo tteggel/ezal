@@ -1317,11 +1317,16 @@ test("pointing shows device-computed spherical error at the matched sample time 
   ui.freshness({ tracking: t });
   assert.match(ui.ids.get("tracking-deviation").textContent, /Pointing warning · Spherical deviation 4.20°/);
   assert.match(ui.ids.get("tracking-pointing").textContent, /desired sky 1.00° az \/ 60.00° el; measured dish 181.00° az \/ 120.00° el/);
-  ui.clock.advance(config.feedbackMaxAgeMs - 100);
-  assert.match(ui.ids.get("tracking-deviation").textContent, /unavailable.*stale/);
+  // Between frames the device's freshness verdict stands; only the age grows.
+  ui.clock.advance(500);
+  assert.match(ui.ids.get("tracking-deviation").textContent, /Spherical deviation 4.20° .* sample 600 ms old/);
+  assert.ok(!ui.ids.get("tracking-deviation").textContent.includes("stale"));
+  ui.clock.advance(config.telemetryTimeoutMs);
+  assert.match(ui.ids.get("tracking-deviation").textContent, /device status is stale/);
   assert.equal(ui.ids.get("tracking-pointing").textContent, "");
   ui.freshness({ tracking: { ...t, feedback_stale: true } });
   assert.match(ui.ids.get("tracking-deviation").textContent, /stale or invalid/);
+  assert.equal(ui.ids.get("tracking-pointing").textContent, "");
 });
 
 test("recovery shows its fixed deadline, intercept estimate, retries and retained final metrics", () => {

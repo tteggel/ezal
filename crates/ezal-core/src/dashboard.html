@@ -408,8 +408,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
   const config = window.EZAL_CONFIG;
   const configured = config && typeof config.wsPath === "string"
     && Number.isFinite(config.refreshMs) && config.refreshMs > 0
-    && Number.isFinite(config.telemetryTimeoutMs) && config.telemetryTimeoutMs > 0
-    && Number.isFinite(config.feedbackMaxAgeMs) && config.feedbackMaxAgeMs > 0;
+    && Number.isFinite(config.telemetryTimeoutMs) && config.telemetryTimeoutMs > 0;
   const axes = { cw: "azimuth", ccw: "azimuth", up: "elevation", down: "elevation" };
   const idle = () => ({ azimuth: null, elevation: null });
   const hasDesired = (state) => Boolean(state.held.azimuth || state.held.elevation);
@@ -794,8 +793,10 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
         : "");
     const d = t.deviation;
     const reading = d.current;
-    const stale = t.feedback_stale || t.feedback_age_ms === null || t.feedback_age_ms + elapsed >= config.feedbackMaxAgeMs;
-    const current = known && !stale && reading && reading.age_ms + elapsed < config.feedbackMaxAgeMs;
+    // Freshness is the device's verdict at send time. Telemetry arrives no
+    // faster than feedback expires, so aging it here would expire every frame.
+    const stale = t.feedback_stale || t.feedback_age_ms === null;
+    const current = known && !stale && reading;
     setText(trackElements.deviation, current ? `${d.warning ? "Pointing warning · " : ""}Spherical deviation ${reading.degrees.toFixed(2)}° · uncertainty allowance ${reading.uncertainty_deg.toFixed(2)}° · sample ${Math.floor(reading.age_ms + elapsed)} ms old`
       : !known ? "Current deviation unavailable: device status is stale." : stale ? "Current deviation unavailable: position feedback is stale or invalid." : "Current deviation unavailable until tracking supplies a matched sample.");
     trackElements.deviation.classList.toggle("warning", Boolean(known && (d.warning || stale)));
