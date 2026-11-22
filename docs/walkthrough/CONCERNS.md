@@ -8,14 +8,14 @@ Covers chapters 1 and 2. Every entry was re-checked on 2026-11-13 against local 
 
 ### B1 — How quickly an output is released after a freeze has not been measured
 - Status: confirmed limitation (a validation gap, not a demonstrated defect).
-- Source: [watchdog.rs L25–33](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/watchdog.rs#L25-L33); bench step 4 in [CALIBRATION.md L363–369](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md?plain=1#L363-L369).
+- Source: [watchdog.rs L25–33](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/watchdog.rs#L25-L33); bench step 4 in [CALIBRATION.md L363–369](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md?plain=1#L355-L361).
 - Evidence: the code's own comment says RP2350 pad isolation latches can hold a pin's last level through a reset until the next boot claims the pin. The 500 ms watchdog setting is therefore a bound on when the chip restarts, not on when a switch opens.
 - Consequence: a reader must not take 500 ms as the worst-case time a motor keeps running after the program freezes. Chapter 1 says this once, under "Then, a question about the last run".
 - What would settle it: capture a direction pin on a scope or logic analyser through a forced stall and reset, as the bench checklist asks, and record reset-to-pin-low time on this board.
 
 ### B2 — A sensor fault at startup cannot be seen from the dashboard
 - Status: question (a deliberate trade-off whose usability cost is not documented).
-- Source: [main.rs L111–136](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L111-L136).
+- Source: [main.rs L113–138](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L113-L138).
 - Evidence: a failed or timed-out self-test parks `main` before the radio is initialised or any web task is spawned. The only record is a `defmt` log line. The onboard light stays dark in this case, but it also stays dark while Wi-Fi is merely still joining.
 - Consequence: someone who flashed by UF2 and has no debug probe cannot tell a dead sensor from a network that will not join. Chapter 1 states the fact under "Next, the sensor".
 - What would settle it: the owner's decision on whether a debug probe is an accepted bring-up requirement, or whether a bounded local indication (a distinct light pattern, say) is wanted. The fail-closed order itself should not change.
@@ -36,14 +36,14 @@ Covers chapters 1 and 2. Every entry was re-checked on 2026-11-13 against local 
 
 ### B5 — The measured calibration voltages do not match the manual's signal
 - Status: question, narrowed. On 2026-11-21 the owner confirmed that the checked-in voltages are measurements, and CALIBRATION.md now heads its column "measured ADC range".
-- Source: [CALIBRATION.md L22–30](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md?plain=1#L22-L30); [position.rs L320–336](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/position.rs#L320-L336); [HARDWARE.md L190–194](https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md?plain=1#L190-L194).
+- Source: [CALIBRATION.md L22–30](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md?plain=1#L22-L30); [position.rs L320–336](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/position.rs#L320-L336); [HARDWARE.md L190–194](https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md?plain=1#L193-L197).
 - Evidence: the nominal model in HARDWARE.md expects 0.90–2.02 V at the sensor for the manual's 2.0–4.5 V. Azimuth's measured 136 mV at 0° implies about 0.30 V at the control box, and elevation falls from 1170 mV to 84 mV as the angle rises, where the manual's signal rises.
 - Consequence: chapter 2 shows the divider with the manual's 4.5 V and then a calibration line whose low end is far below what that divider would give. A careful reader will notice. The firmware uses only the measured ends, so nothing it does depends on the model.
 - What would settle it: whether the control box's output trimmers explain the difference.
 
 ### B6 — How long a healthy read takes is not known
 - Status: confirmed limitation (unmeasured).
-- Source: [ads1015.rs L44](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/ads1015.rs#L44); worksheet row "Paired ADC latency and A0-to-A1 capture delay", still TBD, at [CALIBRATION.md L267](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md?plain=1#L267).
+- Source: [ads1015.rs L44](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/ads1015.rs#L44); worksheet row "Paired ADC latency and A0-to-A1 capture delay", still TBD, at [CALIBRATION.md L267](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md?plain=1#L265).
 - Evidence: the source fixes only the two 1 ms conversion waits. The I²C transfers around them, and the time the task spends waiting for its turn, are not stated anywhere.
 - Consequence: chapter 2's ageing figure opens with a 20 ms read, which is an illustration, not a measurement; the caption under the budget figure says only that a healthy read is "far quicker" than 150 ms. The interval between readings ("about ten times a second") is the 100 ms pause plus this unknown.
 - What would settle it: the worksheet measurement.
@@ -57,14 +57,14 @@ Covers chapters 1 and 2. Every entry was re-checked on 2026-11-13 against local 
 
 ### B8 — Startup durations in chapter 1 are not measured
 - Status: confirmed limitation (unmeasured).
-- Source: [main.rs L88–101](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L88-L101); nothing in the source or docs gives a time for the boot ROM or for joining Wi-Fi.
+- Source: [main.rs L90–103](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L90-L103); nothing in the source or docs gives a time for the boot ROM or for joining Wi-Fi.
 - Evidence: the chapter says the chip's loader runs "for the first few milliseconds" and that the dashboard is available "shortly afterwards". Both are qualitative. The pins are undriven for the first of these intervals and held open only by the interface board's pull-down resistors.
 - Consequence: the startup figure is explicitly not to scale. Nobody should read a duration off it.
 - What would settle it: a logic-analyser capture from power-on to the first driven-low pin, and a log timestamp at the first ready network.
 
 ### B9 — The watchdog is not yet running between taking the pins and the sensor test
 - Status: confirmed limitation (benign as far as the source shows).
-- Source: [main.rs L98–112](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L98-L112); [drive.rs L111–119](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/drive.rs#L111-L119).
+- Source: [main.rs L100–114](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L100-L114); [drive.rs L114–122](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/drive.rs#L114-L122).
 - Evidence: `spawner.spawn` only queues the direction task. The task first runs, and calls `watchdog::start`, when `main` first awaits, which is inside the sensor self-test. In between, `main` runs synchronous setup with all four pins already driven low and owned by the queued task.
 - Consequence: a hang in that short stretch would not be caught by the watchdog, but nothing can raise a pin during it. The startup figure shows the countdown starting at step 3 (the spawn); the note beside the excerpt says the task first runs a few lines later.
 - What would settle it: nothing needs settling unless code that can block is added between the spawn and the first await.
@@ -186,7 +186,7 @@ Surveyed 2026-11-13 against `crates/ezal-core/src/orbit.rs` and `passes.rs` at 7
 ### O6 — Downloaded records are checked for form, not for origin
 
 - Status: confirmed limitation, accepted by the operator.
-- Source: [`well_formed`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/orbit.rs#L284-L317); [PASS_PREDICTION.md lines 98–101](https://github.com/tteggel/ezal/blob/main/docs/PASS_PREDICTION.md#L98-L101) (plain HTTP, accepted on 2026-10-11).
+- Source: [`well_formed`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/orbit.rs#L284-L317); [PASS_PREDICTION.md lines 105–112](https://github.com/tteggel/ezal/blob/main/docs/PASS_PREDICTION.md#L105-L112) (TLS without certificate checks; unauthenticated data accepted on 2026-10-11).
 - Consequence: the walkthrough says the board "does not trust" the lines. That means layout, check digit, catalogue number, ranges and age. A well-formed forgery would pass all of them and move the forecast. What the motors may then do is bounded by the checks in chapters 3, 4 and 6, not by anything in this chapter.
 - What would settle it: nothing within the accepted scope.
 
@@ -212,14 +212,14 @@ Surveyed 2026-11-05 and re-verified 2026-11-13 against main 79046c17e90caf0ed6f9
 ### T1 — The rehearsal's rhythm changes its result
 
 - Status: confirmed limitation (documented by the repository).
-- Source: [CALIBRATION.md, known model limits](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L446-L455); [`PlanningConfig::default`, `step_ms: 20`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L80-L93); [`TRACKING_PERIOD`, 10 ms](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/drive.rs#L24-L27).
+- Source: [CALIBRATION.md, known model limits](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L438-L447); [`PlanningConfig::default`, `step_ms: 20`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L80-L106); [`TRACKING_PERIOD`, 10 ms](https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/drive.rs#L26-L29).
 - Consequence: the planner rehearses every 20 ms and the firmware runs a pass every 10 ms. In the recorded METOP-B window the planner predicts a 2.218° bounded peak and the 10 ms replay peaks at 2.345°. "Supported" is a statement about a model, not a guarantee about the dish.
 - Would settle it: measured scheduling, motor and pointing errors on the installed rotator, and rehearsals at more than one timing phase.
 
 ### T2 — Whether the Pico can plan a recovery in time is unmeasured
 
 - Status: confirmed limitation (documented by the repository).
-- Source: [CALIBRATION.md, known model limits](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L456-L463); [`WORK_PER_TICK` in the acceptance test](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs#L15-L17); [`INTERCEPT_PLANNING_LEAD_MS`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/recovery.rs#L50-L56); [the device's planning worker](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/coordination/planning.rs#L81-L120).
+- Source: [CALIBRATION.md, known model limits](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L448-L455); [`WORK_PER_TICK` in the acceptance test](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs#L15-L17); [`INTERCEPT_PLANNING_LEAD_MS`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/recovery.rs#L50-L56); [the device's planning worker](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/coordination/planning.rs#L81-L120).
 - Consequence: the recorded successful recovery search takes 398,964 work units. The test grants 2,048 units per virtual 10 ms, which is a test setting and not a measurement of the board; at 128 units it misses every launch. A board too slow to finish a search inside the 2 s lead would stop at its deadline rather than recover.
 - Would settle it: timing whole searches on the Pico with browsers connected and a forecast running.
 
@@ -232,14 +232,14 @@ Surveyed 2026-11-05 and re-verified 2026-11-13 against main 79046c17e90caf0ed6f9
 ### T4 — The board and rotator have not been through the bench checklist
 
 - Status: confirmed limitation.
-- Source: [README, validation status](https://github.com/tteggel/ezal/blob/main/README.md#L14-L17); [CALIBRATION.md, bench verification](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L328-L438); [HARDWARE.md, watchdog reset](https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md#L346-L360).
+- Source: [README, validation status](https://github.com/tteggel/ezal/blob/main/README.md#L14-L17); [CALIBRATION.md, bench verification](https://github.com/tteggel/ezal/blob/main/docs/CALIBRATION.md#L328-L438); [HARDWARE.md, watchdog reset](https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md#L333-L347).
 - Consequence: host tests and rehearsals say nothing about what a pin does while the watchdog resets the chip (RP2350 pads can hold their last level until boot takes them over), how far a pulse really carries the dish, how much the readings flicker, or where the beam points. The board has no separate motor-enable interlock, so a switch that fails closed is outside anything the firmware can stop. Chapter 7 says each of these once.
 - Would settle it: the measurements in the existing procedure, including the pin during the reset window.
 
 ### T5 — "Ready" still moves the dish if it drifts
 
 - Status: resolved (an earlier draft of the walkthrough was wrong; the code is clear).
-- Source: [`TrackingRuntime::execute`, target while preparing or ready](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L529-L550).
+- Source: [`TrackingRuntime::execute`, target while preparing or ready](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L545-L566).
 - Consequence: none for the firmware. `Preparing` and `Ready` both run the follower against the first point of the route, so a ready dish that is pushed off is pulsed back. Chapter 6 excerpts these lines.
 
 The full-travel calibration and measured slew rates supersede the settings in
@@ -253,7 +253,7 @@ these results. See [the installed settings](../HARDWARE.md#provisional-tracking-
 ### T6 — With the numbers checked in at the time, the planner blocks every recorded pass
 
 - Status: confirmed limitation.
-- Source: [`PlanningConfig::default`: 3° tolerance, 1° reserve, nine scenarios](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L80-L160); [`RelayConfig::DEFAULT`: 500 ms on, 2 s off](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/drive.rs#L16-L21); [`MotorProfile::AC_50HZ`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking.rs#L138-L152); the repository's own test [`production_assumptions_and_exhausted_duty_refuse_the_recorded_pass_without_motion`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs#L267-L270) and example [`tracking-plan.rs`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/examples/tracking-plan.rs#L85-L90), which reports the recorded FENGYUN 3C pass as unsupported.
+- Source: [`PlanningConfig::default`: 3° tolerance, 1° reserve, nine scenarios](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L80-L177); [`RelayConfig::DEFAULT`: 500 ms on, 2 s off](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/drive.rs#L16-L21); [`MotorProfile::AC_50HZ`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking.rs#L138-L152); the repository's own test [`production_assumptions_and_exhausted_duty_refuse_the_recorded_pass_without_motion`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs#L267-L270) and example [`tracking-plan.rs`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/examples/tracking-plan.rs#L85-L90), which reports the recorded FENGYUN 3C pass as unsupported.
 - Evidence gathered here: the real `Planner`, given `PlanningConfig::default()`, `HARD_CODED_CALIBRATION` and `DutyConfig::DEFAULT`, blocked all 16 passes that the fixture's satellites make over Clevedon between 15:00 UTC on 7 October 2026 and 03:00 the next day, and the 77° METOP-B pass of T11. Eight failed in a rehearsal (T7), three on the pointing budget, and five cross north and have no route (T8).
 - Consequence: the shortest pulse carries the azimuth 3.6° (0.7 s at 5.14° per second) and the follower waits for half of that plus 0.15°, so the staircase alone uses about 1.95° of the 2° left for it. On the dashboard every pass would read "Tracking blocked" until the placeholders are replaced. This is the planner refusing on cautious assumptions, not a defect, but a reader should not expect Enter Tracking to be available today.
 - Would settle it: the measured motion profile from CALIBRATION.md, and a decision on [`RelayConfig::TRACKING_CANDIDATE`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/drive.rs#L45-L50) (500 ms off, 1 s before reversing), which only simulations use at present.
@@ -261,29 +261,29 @@ these results. See [the installed settings](../HARDWARE.md#provisional-tracking-
 ### T7 — The fast-motor rehearsals run at exactly the speed the stall check calls implausible
 
 - Status: question (possible defect in the provisional margins).
-- Source: [`MotorProfile::AC_FAST`: 7.0 and 3.0° per second](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking.rs#L167-L178); [`TravelProfile::DEFAULT`: `max_speed_deg_per_s` 7.0 and 3.0](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L51-L64); [the speed check](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/motion.rs#L169-L176); [the scenarios that mix a fast axis with alternating one-step noise](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L107-L134).
+- Source: [`MotorProfile::AC_FAST`: 7.0 and 3.0° per second](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking.rs#L167-L178); [`TravelProfile::DEFAULT`: `max_speed_deg_per_s` 7.0 and 3.0](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L51-L64); [the speed check](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/motion.rs#L169-L176); [the scenarios that mix a fast axis with alternating one-step noise](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L124-L151).
 - Evidence gathered here: of the 11 passes in T6 that have a route, 8 ended with `Simulation(Motion(ElevationImplausibleSpeed))` in scenario 3 (slow azimuth, fast elevation, readings alternating by one converter step) while following. The other 3 completed all nine scenarios and failed the pointing budget with bounded peaks of 3.6° to 3.7°. Given the full 450° and 180° of travel instead, 9 of the 16 ended with `AzimuthImplausibleSpeed` in scenario 4 and 7 with `ElevationImplausibleSpeed` in scenario 3. The repository's own example completes all nine scenarios for a synthetic pass through the zenith, so the fault is not universal.
-- Consequence: a rehearsed motor that turns at exactly the supervisor's speed limit, read through noise, sits on a knife edge of that check, and which side it falls depends on the pass and the calibration. Passes are then refused for a reason that says nothing about pointing. The dashboard has no wording for it and would show the raw path, "Tracking blocked: Unsupported Some Simulation Motion Elevation Implausible Speed" ([fallback](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/dashboard.html#L717-L725)).
+- Consequence: a rehearsed motor that turns at exactly the supervisor's speed limit, read through noise, sits on a knife edge of that check, and which side it falls depends on the pass and the calibration. Passes are then refused for a reason that says nothing about pointing. The dashboard has no wording for it and would show the raw path, "Tracking blocked: Unsupported Some Simulation Motion Elevation Implausible Speed" ([fallback](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/dashboard.html#L728-L736)).
 - Would settle it: the maintainer saying whether the equality is intended (the fast scenario as a deliberate edge case) or whether the supervisor's bound should sit above the fastest rehearsed motor; then a measured maximum speed.
 
 ### T8 — The checked-in travel leaves one usable route, and none for a pass that crosses north
 
 - Status: confirmed limitation.
-- Source: [`HARD_CODED_CALIBRATION`: 0–360° and 0–90°](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/position.rs#L320-L336); [`route::choice`, 24 candidates](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/route.rs#L96-L111); [the planner rejecting a route that leaves the calibrated travel](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L653-L662).
+- Source: [`HARD_CODED_CALIBRATION`: 0–360° and 0–90°](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/position.rs#L320-L336); [`route::choice`, 24 candidates](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/route.rs#L96-L111); [the planner rejecting a route that leaves the calibrated travel](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L678-L687).
 - Consequence: a whole-turn offset needs azimuth beyond 360° and a flipped or over-the-top route needs elevation beyond 90°, so only the plain route can fit. Five of the 16 passes in T6 cross north and are rejected before any rehearsal; the dashboard would show "Tracking blocked: Unsupported None". The repository's acceptance tests reach the flipped route only by giving the simulated rotator 450° and 180°.
 - Would settle it: calibrating the rotator's real overlap and elevation range, and a plain-language reason on the dashboard for "no route fits the travel".
 
 ### T9 — Two rules disagree by one millisecond about a reading that is exactly 500 ms old
 
 - Status: question (harmless as far as can be seen).
-- Source: [the interlock allows `age_ms <= FEEDBACK_MAX_AGE_MS`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L201-L210); [a tracking run stops at `age >= FEEDBACK_MAX_AGE_MS`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L795-L799).
+- Source: [the interlock allows `age_ms <= FEEDBACK_MAX_AGE_MS`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L201-L210); [a tracking run stops at `age >= FEEDBACK_MAX_AGE_MS`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L811-L815).
 - Consequence: at exactly 500 ms a manual movement may continue for that instant while a tracking run stops. The stricter rule is the one that ends a run, so nothing unsafe follows; the walkthrough says "more than 500 ms" for the pin and "the tracking run stops" without the boundary.
 - Would settle it: a comment or shared helper saying which boundary is intended.
 
 ### T10 — Where the follower's decision lives
 
 - Status: resolved (a note for whoever maintains the walkthrough).
-- Source: [`AxisFollower::request`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/controller.rs#L28-L77); [`TrackingRuntime::execute` choosing the target and wrapping the answer](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L529-L576).
+- Source: [`AxisFollower::request`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/controller.rs#L28-L77); [`TrackingRuntime::execute` choosing the target and wrapping the answer](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L545-L592).
 - Consequence: the rule that turns a pointing error into a pulse is in `controller.rs`, not `runtime.rs` as the revision brief assumed. Chapter 6 excerpts both.
 
 ### T11 — A nearly overhead pass is followed, not refused for speed (answer to O5 in the orbit log)

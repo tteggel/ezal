@@ -79,7 +79,7 @@
       <button type="button" id="orbit-time-play">Play</button>
     </div>
     <p class="orbit-out" id="orbit-time-out" aria-live="polite"></p>
-    <figcaption>Minutes in; x, y and z out. The dark path shows the three numbers as a route from Earth’s centre: along x, then y, then z. It is dotted where the globe hides it. The minutes are counted as <code>Orbit::look_at</code> counts them; the position comes from this page’s simpler model.</figcaption>
+    <figcaption>Minutes in; x, y and z out. The dark path shows the three numbers as a route from Earth’s centre: along x, then y, then z. It is dotted where the globe hides it. The minutes are counted as <code>Orbit::state</code> counts them; the position comes from this page’s simpler model.</figcaption>
   </figure>
   <p>The three numbers are distances in kilometres from the centre of the Earth, measured along three axes that cross there at right angles. z runs up through the north pole. x and y lie in the plane of the equator, and x is the fixed direction from the first figure. These axes do not turn with the Earth: move the minutes slider and the land slides past them. The code calls this set of axes TEME.</p>
   <p>Now step through the days. The dashed ring is where the orbit was at the record’s date. A satellite circling a perfectly round planet would keep to that ring for ever. The real Earth bulges at the equator, and the bulge’s extra pull swings the ring steadily round: about one degree a day for this orbit. (That rate is chosen. One degree a day keeps pace with the Earth’s year-long trip round the Sun, so the satellite comes over at the same time of day all year.)</p>
@@ -234,5 +234,5 @@
   </figure>
   <p>This is what the board has at the end of the calculation. For any moment of a pass it can work out an <span class="c-az">azimuth</span> and an <span class="c-el">elevation</span>. In the highest pass of the evening, the satellite rises in the south-east, climbs to 51° in the east-north-east, and sets in the north twelve and a half minutes later.</p>
   <p>A direction for every moment is still only a list of numbers. The motors turn slowly, they cannot turn for ever, and they must not be started by accident. The next chapter turns the list into a route the motors can follow, and explains where the board gets the date and time that every step here depended on.</p>
-  <p class="primer">Optional: <a href="https://celestrak.org/columns/v04n03/">CelesTrak’s column on the two-line format</a> goes through every column of the record. <a href="https://github.com/tteggel/ezal/blob/main/docs/PASS_PREDICTION.md#L150-L342">docs/PASS_PREDICTION.md</a> gives the same steps as equations, with references.</p>
+  <p class="primer">Optional: <a href="https://celestrak.org/columns/v04n03/">CelesTrak’s column on the two-line format</a> goes through every column of the record. <a href="https://github.com/tteggel/ezal/blob/main/docs/PASS_PREDICTION.md#L161-L353">docs/PASS_PREDICTION.md</a> gives the same steps as equations, with references.</p>
 </section>

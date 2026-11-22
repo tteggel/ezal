@@ -82,7 +82,7 @@
     <li><strong>Tracking blocked</strong>, followed by the first check that failed.</li>
   </ul>
   <p>For both passes in the figure, with the numbers checked in today, the answer is <strong>Tracking blocked</strong>. Even the expected motors graze the line, and the fast ones are far outside it. We ran the repository’s planner over all 16 passes that the satellites in its recorded orbit data make in the twelve hours from 15:00 UTC on 7 October, and it blocked every one. A 3.6° hop is too coarse for a 2° allowance. That is the planner doing its job with placeholder numbers, not a verdict on the rotator. Chapter 7 says what would change the answer.</p>
-  <p class="code-links">The budget and the nine rehearsals: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L80-L160"><code>PlanningConfig::default</code></a>. The reasoning behind 3°: <a href="https://github.com/tteggel/ezal/blob/main/docs/TRACKING.md#L142-L156">TRACKING.md, pointing budget</a>. The dashboard’s wording: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/dashboard.html#L770-L771">dashboard.html</a>.</p>
+  <p class="code-links">The budget and the nine rehearsals: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L80-L177"><code>PlanningConfig::default</code></a>. The reasoning behind 3°: <a href="https://github.com/tteggel/ezal/blob/main/docs/TRACKING.md#L156-L170">TRACKING.md, pointing budget</a>. The dashboard’s wording: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/dashboard.html#L784-L785">dashboard.html</a>.</p>
 
   <h3>North is in the way</h3>
   <p>A direction can fail to be a motor instruction in one more way. Chapter 2’s azimuth runs from 0° to 360°, and the firmware will not drive past either end. No rotator can turn for ever: the cables to the dish would wind up. In the sky, 359° and 1° are neighbours. For the motor they are almost a full turn apart.</p>
@@ -180,7 +180,7 @@
 
   <p>Now take the Pico’s own Wi-Fi away instead. The run stops at once, and bringing the network back does not revive it. Why insist on a network that the run never uses? Because the network is the only way anyone can tell the Pico to stop. While it is reachable, any browser can open the dashboard, take control and press Cancel tracking. A run that nobody could cancel is not allowed to continue.</p>
   <p>After a run stops, or the controller presses Return to Manual, the Pico keeps the selection and soon shows a new verdict for whatever is left of the pass. Cancel tracking clears the selection as well, so nothing is planned until someone picks a pass again. Moving again takes a new press of Enter Tracking.</p>
-  <p class="code-links">The network check that every tracking turn passes through: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L656-L668"><code>TrackingRuntime::check_inputs</code></a>.</p>
+  <p class="code-links">The network check that every tracking turn passes through: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L672-L684"><code>TrackingRuntime::check_inputs</code></a>.</p>
 
   <h3>Where the satellite replaces the finger</h3>
   <p>In manual control, the browser writes a note into the mailbox every 150 ms while you hold a button. During a run, this function writes it instead, every 10 ms:</p>
@@ -217,7 +217,7 @@
   </figure>
 
   <p>However many attempts it takes, they share one allowance, fixed at the moment recovery began. The dashboard counts it down as time <em>until fixed deadline</em>. When it runs out, the run stops, like any other stop.</p>
-  <p class="code-links">The 3°, 2°, 1 s, 2 s and 30 s: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/deviation.rs#L8-L19">deviation.rs</a>. Fixing the deadline: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/lifecycle.rs#L944-L965"><code>enter_reacquisition</code></a>. Choosing where to rejoin: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/recovery.rs#L50-L56">recovery.rs</a>.</p>
+  <p class="code-links">The 3°, 2°, 1 s, 2 s and 30 s: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/deviation.rs#L8-L19">deviation.rs</a>. Fixing the deadline: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/lifecycle.rs#L1071-L1092"><code>enter_reacquisition</code></a>. Choosing where to rejoin: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/recovery.rs#L50-L56">recovery.rs</a>.</p>
 
   <p>There are now two writers of the same note: a finger and a follower. Chapter 7 follows that note the rest of the way to the pin, and asks how much of this anyone has seen happen.</p>
 </section>
@@ -304,7 +304,7 @@
       <thead><tr><th scope="col">Rule</th><th scope="col">Chapter</th><th scope="col">What it does</th></tr></thead>
       <tbody>
         <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/watchdog.rs#L1-L9">Watchdog</a></th><td>1</td><td>Resets the chip if the direction task has not fed it for 500 ms.</td></tr>
-        <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L66-L69">Start-up check of the ADC</a></th><td>1</td><td>Gives up after 500 ms, so a stuck ADC cannot leave start-up waiting for ever.</td></tr>
+        <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/main.rs#L68-L71">Start-up check of the ADC</a></th><td>1</td><td>Gives up after 500 ms, so a stuck ADC cannot leave start-up waiting for ever.</td></tr>
         <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/feedback.rs#L11-L12">Time allowed for one position reading</a></th><td>2</td><td>Abandons a reading that has not finished in 500 ms. The ADC is then left alone until a restart.</td></tr>
         <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/feedback.rs#L9-L10">Age of a position reading</a></th><td>2</td><td>A reading may keep a pin high until it is 500 ms old, counted from when the reading began.</td></tr>
         <tr><th scope="row"><a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/interlock.rs#L51-L64">Assumed coast</a></th><td>2, 6</td><td>The dish is taken to keep turning for 500 ms after its pin drops, when working out how close to an end stop it may go and how far one pulse carries it.</td></tr>
