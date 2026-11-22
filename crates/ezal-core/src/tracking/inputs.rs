@@ -2,13 +2,17 @@
 //! one plan is built and executed against. Elements come only from
 //! [`crate::catalog`] publications.
 
+use core::cell::Cell;
+
 use super::{
     ExecutionClock, PlanTicket, PlanningConfig, PlanningWindow, TimingError, TimingPolicy,
     TrackingPlan,
 };
 use crate::catalog::OrbitalSnapshot;
 use crate::ntp::UtcClock;
-use crate::orbit::{GroundStation, LookAngle, Observer, MAX_FUTURE_EPOCH_S, MAX_TLE_AGE_S};
+use crate::orbit::{
+    GroundStation, LookAngle, Observer, OrbitalState, MAX_FUTURE_EPOCH_S, MAX_TLE_AGE_S,
+};
 use crate::passes::Ephemeris;
 
 /// Input rejection, suitable for both a blocked preview and a terminal run reason.
@@ -205,5 +209,89 @@ impl Ephemeris for ExecutionInputs {
             return None;
         }
         self.orbit.orbit().look_at(&self.station, unix_s)
+    }
+}
+
+/// Spacing of the SGP4 states a [`PlanningTrack`] interpolates between.
+const KNOT_MS: u32 = 60_000;
+const MAX_KNOTS: usize = PlanningWindow::MAX_DURATION_MS.div_ceil(KNOT_MS) as usize + 1;
+
+/// [`ExecutionInputs`] as a planner's ephemeris: the same orbit, station and
+/// window, propagated once a minute instead of at every look-up. A plan
+/// evaluates the sky hundreds of thousands of times, and on the Pico's
+/// software floating point one SGP4 propagation costs about ten times the
+/// observer transformation, so planning a pass would otherwise take ten
+/// minutes rather than three. Between two states, cubic Hermite interpolation
+/// of TEME position from position and velocity follows SGP4 to about 0.00001°
+/// as seen from the station; the transformation itself stays exact. A run and
+/// reacquisition propagate the inputs directly.
+///
+/// Each state is computed on the first look-up that needs it, so no planner
+/// step propagates more than twice, and a value does not depend on the order
+/// of look-ups.
+#[derive(Clone, Debug)]
+pub struct PlanningTrack {
+    inputs: ExecutionInputs,
+    knots: [Cell<Option<OrbitalState>>; MAX_KNOTS],
+}
+
+impl PlanningTrack {
+    /// Plan against `inputs`, with no state propagated yet.
+    pub fn new(inputs: ExecutionInputs) -> Self {
+        Self {
+            inputs,
+            knots: [const { Cell::new(None) }; MAX_KNOTS],
+        }
+    }
+    /// The exact inputs a plan from this track is published with.
+    pub const fn inputs(&self) -> &ExecutionInputs {
+        &self.inputs
+    }
+    /// Knot `index`: every whole minute from AOS, then LOS.
+    fn knot(&self, index: usize) -> Option<(f64, OrbitalState)> {
+        let window = self.inputs.window;
+        let offset_ms = (index as u64 * u64::from(KNOT_MS)).min(u64::from(window.duration_ms));
+        let unix_s = window.aos_unix_s + offset_ms as f64 / 1000.0;
+        let cell = self.knots.get(index)?;
+        let state = match cell.get() {
+            Some(state) => state,
+            None => {
+                let state = self.inputs.orbit.orbit().state(unix_s)?;
+                cell.set(Some(state));
+                state
+            }
+        };
+        Some((unix_s, state))
+    }
+}
+
+impl Ephemeris for PlanningTrack {
+    fn look_at(&self, unix_s: f64) -> Option<LookAngle> {
+        let window = self.inputs.window;
+        let offset_ms = (unix_s - window.aos_unix_s) * 1000.0;
+        if !(0.0..=f64::from(window.duration_ms)).contains(&offset_ms) {
+            return None;
+        }
+        let last = window.duration_ms.div_ceil(KNOT_MS) as usize - 1;
+        let index = ((offset_ms / f64::from(KNOT_MS)) as usize).min(last);
+        let ((t0, a), (t1, b)) = (self.knot(index)?, self.knot(index + 1)?);
+        // Hermite basis on s in [0, 1]; velocities scale by the interval.
+        let h = t1 - t0;
+        let s = (unix_s - t0) / h;
+        let (s2, s3) = (s * s, s * s * s);
+        let [p0, m0, p1, m1] = [
+            2.0 * s3 - 3.0 * s2 + 1.0,
+            (s3 - 2.0 * s2 + s) * h,
+            3.0 * s2 - 2.0 * s3,
+            (s3 - s2) * h,
+        ];
+        let position_km = core::array::from_fn(|axis| {
+            p0 * a.position_km[axis]
+                + m0 * a.velocity_km_s[axis]
+                + p1 * b.position_km[axis]
+                + m1 * b.velocity_km_s[axis]
+        });
+        let look = self.inputs.station.look_at(position_km, unix_s);
+        (look.azimuth_deg.is_finite() && look.elevation_deg.is_finite()).then_some(look)
     }
 }

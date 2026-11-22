@@ -379,7 +379,7 @@ struct RunMetrics {
     truncated: bool,
 }
 
-/// One `step` performs at most one propagation and one simulator service, or
+/// One `step` performs at most one sky look-up and one simulator service, or
 /// bounded route bookkeeping. No allocation, waiting, networking or live GPIO.
 /// The caller yields between steps and can cancel at any phase.
 pub struct Planner<E> {

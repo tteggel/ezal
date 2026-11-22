@@ -146,7 +146,7 @@ Surveyed 2026-11-13 against `crates/ezal-core/src/orbit.rs` and `passes.rs` at 7
 ### O1 — The walkthrough's figures use a simpler orbit model than the firmware
 
 - Status: confirmed limitation of the walkthrough, not of ezal. Stated once on the page.
-- Source: [`Orbit::look_at`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/orbit.rs#L394-L410) calls the `sgp4` crate; `sections/orbit.js` `propagate` moves the satellite round a Kepler ellipse and adds only the steady (secular J2) drift of the ring, its low point and its lap time.
+- Source: [`Orbit::state`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/orbit.rs#L393-L410) calls the `sgp4` crate; `sections/orbit.js` `propagate` moves the satellite round a Kepler ellipse and adds only the steady (secular J2) drift of the ring, its low point and its lap time.
 - Evidence (measured, fixture `weather-2026-10-07.tle`, Clevedon): for the page's example pass (METOP-B, 2026-10-07 19:41–19:54 UTC) position differs from SGP4 by at most 11.4 km and the pointing direction by at most 0.44°; rise and set differ by 1 s and the peak by 0.02°. Over 24 h for all seven fixture satellites: position within 18.2 km, every pass found, rise and set within 2 s, peaks within 0.11°, direction while above the horizon within 0.66°.
 - Evidence (measured) for everything after propagation: `sidereal`, `groundStation` and `lookAt` in `orbit.js` agree with `GroundStation::new` and `look_at` to 1.2 × 10⁻¹³ degrees on 400 random positions and times, including points within 30 km of the station, and on SGP4's own positions for every satellite.
 - Consequence: figure readouts are not ezal's numbers to better than about half a degree. The prose quotes ezal's own pass times separately.

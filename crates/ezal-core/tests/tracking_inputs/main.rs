@@ -415,6 +415,57 @@ fn input_snapshot_propagates_fractional_time_and_binds_clock_satellite_and_plan(
     assert!(matches!(wrong, Err(InputError::Observer)));
 }
 
+/// The planner's ephemeris interpolates SGP4 states a minute apart; the run
+/// propagates every look-up. Fifteen minutes cross many knots.
+#[test]
+fn a_planning_track_follows_its_inputs_whatever_the_look_up_order() {
+    let event = PassEvent {
+        los_unix_s: EVENT.aos_unix_s + 900,
+        ..EVENT
+    };
+    let (runtime, _) = selected(event, observation(2000));
+    let inputs = capture(
+        &runtime,
+        &catalog(),
+        clock(UTC),
+        UTC + 120_000,
+        UTC + 1_020_000,
+    )
+    .unwrap();
+    let window = inputs.window();
+    let los = window.aos_unix_s + f64::from(window.duration_ms) / 1000.0;
+    let track = PlanningTrack::new(inputs.clone());
+    let at_los = track.look_at(los).unwrap();
+    assert!(track.look_at(window.aos_unix_s - 0.001).is_none());
+    assert!(track.look_at(los + 0.001).is_none());
+    let direction = |look: ezal_core::orbit::LookAngle| {
+        let (az, el) = (
+            look.azimuth_deg.to_radians(),
+            look.elevation_deg.to_radians(),
+        );
+        [el.cos() * az.sin(), el.cos() * az.cos(), el.sin()]
+    };
+    let mut worst_deg = 0.0f64;
+    for step in 0..=window.duration_ms / 10 {
+        let at = window.aos_unix_s + f64::from(step * 10) / 1000.0;
+        let (a, b) = (
+            direction(track.look_at(at).unwrap()),
+            direction(inputs.look_at(at).unwrap()),
+        );
+        let cross = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
+        let sine = cross.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let cosine: f64 = (0..3).map(|i| a[i] * b[i]).sum();
+        worst_deg = worst_deg.max(sine.atan2(cosine).to_degrees());
+    }
+    assert!(worst_deg < 1e-4, "{worst_deg}°");
+    assert_eq!(track.look_at(los), Some(at_los));
+    assert_eq!(track.inputs().ticket(), inputs.ticket());
+}
+
 #[test]
 fn freshly_downloaded_elements_must_remain_fresh_through_los_with_time_allowance() {
     let catalog = catalog();

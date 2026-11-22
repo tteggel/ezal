@@ -124,9 +124,21 @@ candidates. Exhausting the search means no supported route was found, not that
 every physical route is impossible.
 
 Work and memory are bounded: at most 2,048 route points, nine scenarios and 16
-gap intervals; one step performs at most one propagation and one simulator
+gap intervals; one step performs at most one sky look-up and one simulator
 service, or bounded route bookkeeping; a job stops at 20 million steps.
 Preparation probes are limited to 300 s and reception windows to 30 minutes.
+
+The device plans against a
+[`PlanningTrack`](../crates/ezal-core/src/tracking/inputs.rs): the job's own
+orbit, station and window, with SGP4 run once a minute and cubic Hermite
+interpolation of TEME position and velocity between those states. A plan looks
+at the sky hundreds of thousands of times, and on the Pico's software floating
+point one propagation costs about ten times the observer transformation. Counted
+on a Cortex-M33 under QEMU, interpolation cuts planning a 13-minute pass from
+80 to 27 billion instructions: about three minutes at 150 MHz, rather than ten.
+It departs from full propagation by about 0.00001°, and the host suite bounds it
+below 0.0001°. A look-up propagates at most the two states either side of it,
+each once per job. A frozen run and reacquisition propagate every look-up.
 
 The offline timing tool,
 [`examples/tracking-plan.rs`](../crates/ezal-core/examples/tracking-plan.rs),
@@ -516,8 +528,10 @@ runtime with synthetic and recorded passes covering:
 [`end_to_end.rs`](../crates/ezal-core/tests/end_to_end.rs) runs a recorded
 pass through the device's planning worker, coordination, feedback validation
 and actuator with the installed settings, while the readings flicker by an ADC
-code. It also checks that Cancel clears the selection and Return to Manual
-keeps it replanning.
+code. Planning proceeds at the Pico's measured speed, the pass is selected an
+hour ahead and NTP synchronizes every five minutes, as on the bench. It also
+checks that Cancel clears the selection and Return to Manual keeps it
+replanning.
 
 Dashboard tests must preserve the deviation and recovery displays, stale
 deviation removal and Cancel staying available. Commissioning repeats the

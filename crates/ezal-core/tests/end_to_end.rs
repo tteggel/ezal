@@ -32,12 +32,21 @@ const PASS: PassEvent = PassEvent {
 };
 /// Uptime when the clock first synchronizes and the operator connects.
 const BOOT_MS: u64 = 2000;
-/// Enough to plan and then prepare before AOS.
-const BOOT_BEFORE_AOS_MS: u64 = 300_000;
+/// The pass is selected an hour ahead, as on the bench.
+const BOOT_BEFORE_AOS_MS: u64 = 3_600_000;
 const TICK_MS: u64 = 10;
-/// Worker units between output services. Planning then takes device
-/// seconds, as on the Pico, so feedback keeps arriving while it runs.
-const UNITS_PER_TICK: u32 = 200;
+/// Mean Cortex-M33 instructions per worker unit, counted under QEMU
+/// (mps2-an505) while planning the bench's pass of 2026-11-21.
+const UNIT_INSTRUCTIONS: u32 = 65_000;
+/// The planning task's share of a tick: the 150 MHz core for 8 of every
+/// 10 ms, before flash cache misses. Planning takes device minutes.
+const TICK_INSTRUCTIONS: u32 = 1_200_000;
+const UNITS_PER_TICK: u32 = TICK_INSTRUCTIONS / UNIT_INSTRUCTIONS;
+/// Selection to a supported plan, at that speed.
+const PLANNING_LIMIT_MS: u64 = 5 * 60_000;
+/// The firmware's NTP period. Each sample lands a few milliseconds from
+/// the last, as a server's do.
+const NTP_PERIOD_MS: u64 = 300_000;
 
 struct Device {
     state: CoordinationState,
@@ -46,6 +55,8 @@ struct Device {
     monitor: FeedbackMonitor,
     worker: PlanningWorker,
     catalog: Catalog,
+    clock: UtcClock,
+    utc0: u64,
     flicker: bool,
     reads: u64,
     operator: u32,
@@ -83,6 +94,8 @@ impl Device {
             monitor: FeedbackMonitor::new(HARD_CODED_CALIBRATION, None),
             worker: PlanningWorker::new(HARD_CODED_CALIBRATION, config, InputSettings::default()),
             catalog,
+            clock: UtcClock::new(),
+            utc0,
             flicker,
             reads: 0,
             operator: 0,
@@ -91,17 +104,25 @@ impl Device {
         };
         device.state.publish_network(true, 0);
         device.until(BOOT_MS);
-        let mut clock = UtcClock::new();
-        clock
-            .synchronize(BOOT_MS, ntp_sample(utc0 + BOOT_MS))
-            .unwrap();
-        device.state.publish_clock(clock, BOOT_MS);
+        device.synchronize();
         device.operator = device.state.register_client(BOOT_MS);
         device
     }
 
     fn uptime(utc_s: i64) -> u64 {
         utc_s as u64 * 1000 - (PASS.aos_unix_s as u64 * 1000 - BOOT_BEFORE_AOS_MS)
+    }
+
+    /// The firmware time task's synchronization, alternately 3 ms either side.
+    fn synchronize(&mut self) {
+        let error = if (self.now / NTP_PERIOD_MS).is_multiple_of(2) {
+            3
+        } else {
+            -3
+        };
+        let utc = (self.utc0 + self.now).checked_add_signed(error).unwrap();
+        self.clock.synchronize(self.now, ntp_sample(utc)).unwrap();
+        self.state.publish_clock(self.clock, self.now);
     }
 
     /// The firmware feedback task's acquisition, through its validation.
@@ -143,6 +164,9 @@ impl Device {
         self.state.publish_network(true, self.now);
         if self.now.is_multiple_of(FEEDBACK_PERIOD_MS) {
             self.read();
+        }
+        if self.now.is_multiple_of(NTP_PERIOD_MS) {
+            self.synchronize();
         }
         if self.now.is_multiple_of(1000) {
             if let Some(grant) = self.state.operator(self.operator, self.now) {
@@ -220,7 +244,7 @@ impl Device {
 fn flickering_feedback_plans_arms_and_follows_the_recorded_pass() {
     let mut device = Device::boot(true);
     device.request(TrackingAction::Select(PASS)).unwrap();
-    device.wait_for(60_000, Device::supported);
+    device.wait_for(PLANNING_LIMIT_MS, Device::supported);
     assert!(device
         .telemetry()
         .contains(r#""plan":{"status":"supported""#));
@@ -254,12 +278,12 @@ fn flickering_feedback_plans_arms_and_follows_the_recorded_pass() {
 fn return_to_manual_keeps_the_pass_replanning_and_cancel_clears_it() {
     let mut device = Device::boot(false);
     device.request(TrackingAction::Select(PASS)).unwrap();
-    device.wait_for(60_000, Device::supported);
+    device.wait_for(PLANNING_LIMIT_MS, Device::supported);
     device.request(TrackingAction::Arm).unwrap();
     device.request(TrackingAction::Manual).unwrap();
     assert_eq!(device.snapshot().mode, TrackingMode::Manual);
     assert!(device.snapshot().selection.is_some());
-    device.wait_for(60_000, Device::supported);
+    device.wait_for(PLANNING_LIMIT_MS, Device::supported);
     device.request(TrackingAction::Cancel).unwrap();
     device.until(device.now + 5000);
     let state = device.snapshot();

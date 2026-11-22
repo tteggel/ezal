@@ -11,7 +11,7 @@ use crate::passes::MAX_PASSES;
 use crate::position::PositionCalibration;
 use crate::tracking::{
     execution_window, ExecutionInputs, InputError, InputSettings, PassEvent, PlanRevisions,
-    PlanTicket, Planner, PlanningConfig, RestingStart, TimingError,
+    PlanTicket, Planner, PlanningConfig, PlanningTrack, RestingStart, TimingError,
 };
 
 /// One satellite's elements and the forecast published with them.
@@ -33,7 +33,7 @@ pub struct PlanningWorker {
     calibration: PositionCalibration,
     config: PlanningConfig,
     settings: InputSettings,
-    job: Option<Planner<ExecutionInputs>>,
+    job: Option<Planner<PlanningTrack>>,
 }
 
 impl CoordinationState {
@@ -92,7 +92,7 @@ impl PlanningWorker {
         if self
             .job
             .as_ref()
-            .is_some_and(|job| Some(job.source().ticket()) != ticket)
+            .is_some_and(|job| Some(job.source().inputs().ticket()) != ticket)
         {
             self.job = None;
         }
@@ -109,7 +109,7 @@ impl PlanningWorker {
         };
         let _ = job.step();
         if job.is_finished() {
-            let inputs = job.source().clone();
+            let inputs = job.source().inputs().clone();
             let result = job.take_report();
             self.job = None;
             state.tracking_operation(now(), |runtime, observation| {
@@ -141,7 +141,7 @@ impl PlanningWorker {
             }
         };
         match Planner::new(
-            inputs.clone(),
+            PlanningTrack::new(inputs.clone()),
             inputs.window(),
             self.calibration,
             start,
