@@ -19,7 +19,7 @@ repeats a number.
 | ADC transaction deadline, 500 ms (`feedback::FEEDBACK_READ_TIMEOUT_MS`) | ADC resource owner | Invalidate feedback; never reuse a cancelled bus | Board reset |
 | Calibration, ADC rails and accepted read latency, at most 150 ms (`feedback::FEEDBACK_MAX_LATENCY_MS`) | Feedback validation | Publish raw diagnostics but no usable sample | A valid later sample; invalid installation requires corrected calibration |
 | Feedback lifetime, age at most 500 ms (`feedback::FEEDBACK_MAX_AGE_MS`) | Actuator | Clear forbidden active and pending movement | Fresh feedback and a new movement request |
-| Endpoint margin: quantization, sample-age travel and 500 ms coast (`interlock::TravelProfile::DEFAULT`) | Actuator | Cut outward motion on the affected axis | Inward movement remains available |
+| Endpoint margin: quantization, sample-age travel and 500 ms coast (`installation::ACTUATOR.travel`) | Actuator | Cut outward motion on the affected axis | Inward movement remains available |
 | Session token age, less than 1 s (`session::COMMAND_MAX_AGE_MS`), and increasing input sequence | Manual session | Reject stale/replayed input and abandon held intent | New telemetry token and operator press |
 | Exclusive operator lease, 5 s (`operator::OPERATOR_LEASE_MS`); disconnect/expiry | `TrackingLifecycle`, with coordination serializing claims and renewals | Inhibit manual movement; device-owned tracking continues | Claim vacant control explicitly; fresh Ping/Pong renews only the original valid grant |
 | Tracking request: current lease generation and increasing intent number | Protocol admission, then `TrackingLifecycle` | Reject any tracking action from another connection, an expired grant or an old intent number | Claim the lease; send the next intent number |
@@ -30,7 +30,7 @@ repeats a number.
 | Tracking execution interval, at most the plan's step, 20 ms by default (`tracking::PlanningConfig::step_ms`), outside recovery | `TrackingRuntime` | Stop the run with `ExecutionDeadline`; a stale command cannot start a pending relay | A fresh arm |
 | Motion progress within 5 s of accumulated energized time (`motion::MotionConfig::DEFAULT`), direction and speed | Actuator using applied output | Latch both axes off | Board reset |
 | Motor duty: 180 s per axis by default (`duty::DutyConfig::DEFAULT`); unknown history on boot | Actuator using applied output | Refuse a new pulse without its minimum allowance; cut an exhausted axis and discard its pending request | 900 s continuously idle on that axis, then fresh operator input; unknown boot history alone also permits the explicit [startup rest override](#startup-rest-override) |
-| Ordinary relay timing, 500 ms on and 2 s off (`drive::RelayConfig::DEFAULT`) | Actuator | Delay ordinary release, reversal and reactivation | Timer completion, subject to all current permissions |
+| Ordinary relay timing, 500 ms on, 500 ms same-direction off and 1 s before reversing (`installation::ACTUATOR.relays`) | Actuator | Delay ordinary release, reversal and reactivation | Timer completion, subject to all current permissions |
 | Operator release, reversal or inhibition | Actuator | Cut affected axes immediately; retain off-time | Fresh permitted request after off-time |
 | Executor failure: no output service for 500 ms (firmware `watchdog::WATCHDOG_TIMEOUT`), including a [stack overflow](DEVELOPMENT.md#debugging-tips) once the watchdog is armed | Hardware watchdog, fed after GPIO service | Reset; boot holds outputs low after a firmware watchdog timeout. A UF2 or `picotool` reboot also restarts through the watchdog and is not a firmware timeout | Explicit reset or power cycle |
 
@@ -75,9 +75,6 @@ validated UTC-to-uptime mapping before execution.
 Every received SNTP sample publishes the clock, whether or not it is accepted;
 reversed uptime or an exhausted revision disarms it until reboot, which stops a
 run with `Inputs(Timing(Unavailable))` and blocks preview.
-
-`RelayConfig::TRACKING_CANDIDATE`, a shorter relay policy, is for offline
-simulation and commissioning only; the firmware runs `RelayConfig::DEFAULT`.
 
 ## Startup rest override
 

@@ -26,7 +26,7 @@ pub struct ActuatorConfig {
 }
 
 impl ActuatorConfig {
-    /// Installed timing with provisional coast bounds and unidentified-hardware duty.
+    /// Conservative timing, coast bounds and unidentified-hardware duty.
     pub const DEFAULT: Self = Self {
         relays: RelayConfig::DEFAULT,
         travel: TravelProfile::DEFAULT,

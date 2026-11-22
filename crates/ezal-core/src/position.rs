@@ -10,7 +10,7 @@ use crate::ads1015::FullScale;
 /// Small voltage excursion accepted beyond a measured endpoint before the
 /// feedback channel is treated as faulty. Values inside this margin clamp to
 /// the mechanical endpoint; larger excursions fail safe.
-pub const FEEDBACK_ENDPOINT_MARGIN_MV: i32 = 25;
+pub const FEEDBACK_ENDPOINT_MARGIN_MV: i32 = 15;
 
 /// A paired azimuth/elevation pointing position in degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -323,15 +323,15 @@ fn validate_adc_readings(
 pub const HARD_CODED_CALIBRATION: PositionCalibration = PositionCalibration {
     azimuth: AxisCalibration {
         angle_min_deg: 0.0,
-        angle_max_deg: 360.0,
-        voltage_min_mv: 136,
-        voltage_max_mv: 1_898,
+        angle_max_deg: 450.0,
+        voltage_min_mv: 22,
+        voltage_max_mv: 2_224,
     },
     elevation: AxisCalibration {
         angle_min_deg: 0.0,
-        angle_max_deg: 90.0,
-        voltage_min_mv: 1_170,
-        voltage_max_mv: 84,
+        angle_max_deg: 180.0,
+        voltage_min_mv: 20,
+        voltage_max_mv: 2_362,
     },
 };
 

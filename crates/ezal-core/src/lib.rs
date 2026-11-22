@@ -26,6 +26,7 @@
 //! snapshots and enforces source/timing/network validity. [`operator`] supplies
 //! its exclusive controller lease.
 //! Firmware services tracking independently through that same output boundary.
+//! [`installation`] holds the installed rotator's motion settings.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
@@ -47,6 +48,7 @@ pub mod drive;
 pub mod duty;
 pub mod feedback;
 pub mod http;
+pub mod installation;
 pub mod interlock;
 pub mod motion;
 pub mod network;

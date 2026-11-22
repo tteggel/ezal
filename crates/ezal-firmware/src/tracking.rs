@@ -5,6 +5,7 @@ use core::cell::Cell;
 use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::{raw::ThreadModeRawMutex, Mutex};
 use embassy_time::{Duration, Instant, Timer};
+use ezal_core::installation;
 use ezal_core::position::HARD_CODED_CALIBRATION;
 use ezal_core::tracking::{
     execution_window, ExecutionInputs, InputError, InputSettings, PlanRevisions, PlanTicket,
@@ -86,7 +87,7 @@ fn capture(state: &SharedState, ticket: PlanTicket) -> Result<Option<Captured>, 
     };
     let config = PlanningConfig {
         preparation_timing: ticket.preparation_timing(),
-        ..PlanningConfig::default()
+        ..installation::planning_config()
     };
     let inputs = state.with(|s| {
         s.tracking_operation(Instant::now().as_millis(), |_, observation| {

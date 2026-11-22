@@ -280,9 +280,10 @@ fn adc_range_validation_covers_both_axes_and_both_limits() {
         );
     }
 
-    // A 2 V endpoint leaves no fault margin under the narrower ±2.048 V range.
+    // This endpoint's margin reaches saturation under the narrower ±2.048 V range.
     let mut near_full_scale = TEST_CALIBRATION;
-    near_full_scale.azimuth.voltage_max_mv = 2_030;
+    near_full_scale.azimuth.voltage_max_mv =
+        FullScale::V2_048.positive_saturation_mv() - FEEDBACK_ENDPOINT_MARGIN_MV;
     assert_eq!(
         near_full_scale.validate_for_adc(FullScale::V2_048),
         Err(CalibrationError::AdcRangeTooNarrow)
@@ -298,10 +299,11 @@ fn adc_and_supply_rails_are_rejected_before_endpoint_noise_clamping() {
     // The mathematical endpoint clamp alone would accept a saturation code as
     // a valid mechanical limit.
     let mut near_full_scale = TEST_CALIBRATION;
-    near_full_scale.azimuth.voltage_max_mv = 2_030;
+    near_full_scale.azimuth.voltage_max_mv =
+        FullScale::V2_048.positive_saturation_mv() - FEEDBACK_ENDPOINT_MARGIN_MV;
     let saturated = FeedbackVoltages {
         a0_elevation_mv: 700,
-        a1_azimuth_mv: 2_047,
+        a1_azimuth_mv: FullScale::V2_048.positive_saturation_mv(),
     };
     assert_eq!(
         near_full_scale

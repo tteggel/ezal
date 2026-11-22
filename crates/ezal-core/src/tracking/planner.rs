@@ -79,16 +79,32 @@ pub struct PlanningConfig {
 
 impl Default for PlanningConfig {
     fn default() -> Self {
-        let nominal = Scenario::NOMINAL;
-        let slow = MotorProfile::AC_SLOW;
-        let fast = MotorProfile::AC_FAST;
+        Self::with_motor_profiles(
+            MotorProfile::AC_50HZ,
+            MotorProfile::AC_SLOW,
+            MotorProfile::AC_FAST,
+        )
+    }
+}
+
+impl PlanningConfig {
+    /// Apply the same feedback scenarios to an installation's motor profiles.
+    pub fn with_motor_profiles(
+        reference: MotorProfile,
+        slow: MotorProfile,
+        fast: MotorProfile,
+    ) -> Self {
+        let nominal = Scenario {
+            motor: reference,
+            ..Scenario::NOMINAL
+        };
         Self {
             preparation_timing: PreparationTiming::Scheduled,
             tolerance_deg: 3.0,
             uncertainty_deg: 1.0,
             sky_rate_bound_deg_per_s: 2.0,
             step_ms: 20,
-            reference: MotorProfile::AC_50HZ,
+            reference,
             deadband_deg: 0.15,
             preparation_tolerance_deg: 3.0,
             scenarios: Vec::from_slice(&[
@@ -159,9 +175,7 @@ impl Default for PlanningConfig {
             .expect("fixed scenario capacity"),
         }
     }
-}
 
-impl PlanningConfig {
     /// Pointing error the modeled route may use: the target less reserved uncertainty.
     pub fn allocation_deg(&self) -> f32 {
         self.tolerance_deg - self.uncertainty_deg

@@ -242,7 +242,15 @@ Surveyed 2026-11-05 and re-verified 2026-11-13 against main 79046c17e90caf0ed6f9
 - Source: [`TrackingRuntime::execute`, target while preparing or ready](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L529-L550).
 - Consequence: none for the firmware. `Preparing` and `Ready` both run the follower against the first point of the route, so a ready dish that is pushed off is pulsed back. Chapter 6 excerpts these lines.
 
-### T6 — With the numbers checked in, the planner blocks every recorded pass
+The full-travel calibration and measured slew rates supersede the settings in
+T6–T8. At a 450 ms minimum pulse, the original 17 fixture passes yielded 15
+complete plans, one partial plan (FENGYUN-3C), and one refusal (the 77.3°
+METOP-B pass, with an azimuth progress fault in rehearsal). At 500 ms, all
+17 completed in rehearsal, as did all 190 passes in a five-day Clevedon replay
+of the same archived TLEs. Both planner step sizes, 20 ms and 10 ms, gave
+these results. See [the installed settings](../HARDWARE.md#provisional-tracking-profile).
+
+### T6 — With the numbers checked in at the time, the planner blocks every recorded pass
 
 - Status: confirmed limitation.
 - Source: [`PlanningConfig::default`: 3° tolerance, 1° reserve, nine scenarios](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/planner.rs#L80-L160); [`RelayConfig::DEFAULT`: 500 ms on, 2 s off](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/drive.rs#L16-L21); [`MotorProfile::AC_50HZ`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking.rs#L138-L152); the repository's own test [`production_assumptions_and_exhausted_duty_refuse_the_recorded_pass_without_motion`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/tests/tracking_inputs/execution/acceptance.rs#L267-L270) and example [`tracking-plan.rs`](https://github.com/tteggel/ezal/blob/main/crates/ezal-core/examples/tracking-plan.rs#L85-L90), which reports the recorded FENGYUN 3C pass as unsupported.

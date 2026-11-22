@@ -39,7 +39,7 @@ returns values. It has no peripherals, global runtime state or Embassy tasks.
 
 | Boundary | Core owner | Responsibility |
 |---|---|---|
-| Installation | `position::InstalledCalibration` | Validate immutable geometry and ADC observability once; reuse checked conversion math |
+| Installation | `position::InstalledCalibration`, `installation` | Validate immutable geometry and ADC observability once; reuse checked conversion math; hold the installed motion settings |
 | Observations | `feedback::FeedbackMonitor` | Calibrate timestamped samples, reject bad acquisitions, retain diagnostic readings |
 | Source admission | `session::CommandFreshness` | Bound source age and sequence; distinguish a new press from a continued hold |
 | Coordination | `coordination::CoordinationState` | Exclusive operator lease, tracking runtime, input revisions and coherent command delivery |

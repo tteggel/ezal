@@ -194,16 +194,13 @@ The interface circuit (canonical version in
   per code over 450° azimuth. Full-scale selection and code size follow
   [ADS1015 datasheet Table 7-1](https://www.ti.com/lit/ds/symlink/ads1015.pdf).
 
-  Runtime calibration uses measured ADC millivolts, rather than those
-  nominal ranges. The checked-in installation maps azimuth **136–1898 mV
-  to 0–360°**, and elevation **1170–84 mV to 0–90°**. Its resolution is
-  approximately **0.409° per code in azimuth** and **0.166° per code in
-  elevation**. The reversed elevation voltage scale is intentional.
+  Runtime calibration uses measured ADC millivolts. The checked-in
+  installation maps azimuth **22–2224 mV to 0–450°** and elevation
+  **20–2362 mV to 0–180°**. Its resolution is approximately **0.409° per
+  code in azimuth** and **0.154° per code in elevation**.
 
-  The wider ADC range leaves room above the measured 1898 mV endpoint
-  for the **25 mV endpoint margin** and observable overrange readings.
-  The ±2.048 V range would saturate at 2047 mV, only 124 mV beyond that
-  margin and barely beyond the nominal model's 2.02 V top plus the margin.
+  The ±2.048 V range would saturate at 2047 mV, below the measured upper
+  endpoints. The ±4.096 V range leaves room for the **15 mV endpoint margin**.
   The installed calibration model validates that its entire band sits above zero
   and below **3200 mV**, the lower of the ±4.096 V saturation code (4094 mV)
   and the 3.3 V supply-rail ceiling. The ceiling matters because the ADS1015
@@ -252,8 +249,7 @@ differ from the nominal DIN voltage description.
 Record two known angles per axis and the corresponding dashboard **ADC
 millivolts**, including both angle endpoints and both voltage endpoints in
 [`HARD_CODED_CALIBRATION`](../crates/ezal-core/src/position.rs). The current
-installation covers 0–360° azimuth and 0–90° elevation; those limits are not
-interchangeable with the G-5500's full 450°/180° travel.
+installation covers the full 450° azimuth and 180° elevation travel.
 
 Use the G-5500's own controls to obtain initial measurements when ezal's
 feedback interlock blocks browser movement. Manual firmware still publishes
@@ -266,7 +262,7 @@ more reads or motion.
 The linear mapping accounts for offset, voltage direction, and gain at the
 time of measurement. It cannot compensate for later drift or nonlinear
 feedback; repeat measurements when the hardware changes or independent
-angle checks disagree. Keep the full 25 mV endpoint tolerance inside the
+angle checks disagree. Keep the full 15 mV endpoint tolerance inside the
 ADC's unsaturated range and below the supply-rail ceiling; a calibration that
 overlaps either is rejected.
 
@@ -308,37 +304,25 @@ minimum useful motor pulse or an installed-system 1 Hz switching ceiling.
 
 ### Provisional tracking profile
 
-Use the original AC G-5500 at 50 Hz as the planning assumption for Clevedon
-until the installation record identifies a different model. Apply the same
-initial values in both directions, replacing them separately when measured.
-This profile is for the [tracking planner](TRACKING.md#planning);
-the firmware's output timing is in the [control contract](CONTROL_CONTRACT.md).
+The [installation profile](../crates/ezal-core/src/installation.rs)
+uses the measured steady rates in both directions. The [tracking planner](TRACKING.md#planning)
+also rehearses slower and faster cases. The firmware's output timing is in the
+[control contract](CONTROL_CONTRACT.md).
 
-| Planning parameter | Initial value | Basis |
+| Planning parameter | Installed value | Basis |
 |---|---:|---|
-| Nominal energized azimuth / elevation rates | 5.14 / 2.25°/s | Brochure times |
-| Slower rates for preparation and intercept estimates | 4.0 / 1.8°/s | Engineering allowance of approximately 20% for load and supply variation |
-| Upper rates for simulated travel and stopping margins | 7.0 / 3.0°/s | Published 60 Hz rates plus margin; unmeasured |
-| Backlash at a direction reversal | 1° per axis | Brochure value; model take-up before useful travel |
+| Nominal energized azimuth / elevation rates | 6.2 / 3.1°/s | Measured steady slew rates |
+| Slower scenario rates | 5.5 / 2.8°/s | Provisional loaded-rate allowance |
+| Faster scenario rates | 7.0 / 3.4°/s | Provisional loaded-rate allowance |
+| Backlash at a direction reversal | 1° per axis | Brochure value for gearbox take-up |
 | Startup allowance | 300 ms | Unmeasured engineering assumption |
-| Release/coasting allowance | 500 ms | Unmeasured engineering assumption |
-| Minimum ordinary on-time | 500 ms | Initial useful-pulse assumption |
+| Modeled release/coast | 100 ms | Commissioning target |
 
-Startup, coast and pulse values are selected budgets, not guarantees from
-Yaesu. Simulate the slower and faster cases with the same controller and
-actuator timing that will run on the device; if the shorter off-times of
-[`RelayConfig::TRACKING_CANDIDATE`](CONTROL_CONTRACT.md#ordering-and-time)
-cannot maintain useful movement and supervision on the bench, keep
-`RelayConfig::DEFAULT`. A maximum-rate-times-coast-time bound reserves 3.5°
-azimuth and 1.5° elevation for post-release travel, in addition to feedback
-age and quantization. It is deliberately conservative and should be
-replaced with measured stopping travel. The endpoint gate includes that
-allowance.
-
-The DC time tolerance implies possible rates up to 7.5°/s azimuth and about
-3.46°/s elevation. The current 7/3°/s bounds therefore cannot be assumed to
-cover a G-5500DC; selecting that model requires matching planner, interlock
-and motion-supervision limits.
+The endpoint guard retains a 500 ms stopping allowance and speed bounds of
+7.7°/s azimuth and 3.8°/s elevation. This reserves 3.85° azimuth and 1.9°
+elevation for travel after output release, in addition to sample age and
+quantization. Record stopping travel and coast duration under load before
+changing the guard allowance.
 
 The [bench verification](CALIBRATION.md#bench-verification) records the
 installed model and supply frequency, and measures relay behaviour and loaded

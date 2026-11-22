@@ -15,6 +15,8 @@ use embassy_time::{with_deadline, Duration, Instant};
 
 use ezal_core::actuator::Actuator;
 use ezal_core::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
+use ezal_core::duty::DutyHistory;
+use ezal_core::installation;
 
 use crate::state::SharedState;
 
@@ -114,7 +116,7 @@ pub async fn direction_task(
     mut watchdog: Watchdog,
 ) -> ! {
     outputs.stop();
-    let mut actuator = Actuator::new();
+    let mut actuator = Actuator::with_config(installation::ACTUATOR, DutyHistory::Unknown);
     state.record_actuator(&actuator, Instant::now().as_millis());
     crate::watchdog::start(&mut watchdog);
     let mut next_service = Instant::now();

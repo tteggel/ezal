@@ -12,7 +12,9 @@ use ezal_core::feedback::{
 };
 use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::network::NetworkGate;
-use ezal_core::position::{CalibrationError, FeedbackVoltages, Pointing};
+use ezal_core::position::{
+    CalibrationError, FeedbackVoltages, Pointing, FEEDBACK_ENDPOINT_MARGIN_MV,
+};
 
 fn feedback(azimuth: f32, elevation: f32) -> Result<FeedbackVoltages, FeedbackReadError> {
     Ok(TEST_CALIBRATION
@@ -212,7 +214,7 @@ fn the_published_interlock_uses_the_monitors_installed_calibration() {
 #[test]
 fn a_rejected_calibration_keeps_raw_readings_live_and_never_permits_motion() {
     let mut rejected = TEST_CALIBRATION;
-    rejected.elevation.voltage_max_mv = 20;
+    rejected.elevation.voltage_max_mv = FEEDBACK_ENDPOINT_MARGIN_MV;
     let raw = FeedbackVoltages {
         a0_elevation_mv: 700,
         a1_azimuth_mv: 1_100,

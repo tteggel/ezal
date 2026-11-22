@@ -164,8 +164,8 @@ figure.live[id^="board-"],#boot details {max-width:46rem}
     <figcaption>The whole calibration: two angles and two voltages for each axis.</figcaption>
     <pre data-from="pub const HARD_CODED_CALIBRATION" data-to="};"></pre>
     <ol>
-      <li data-at="voltage_min_mv: 136">Not the smaller voltage: the voltage measured at <code>angle_min_deg</code>.</li>
-      <li data-at="voltage_min_mv: 1_170">Which is why elevation’s “min” voltage is the larger of its two.</li>
+      <li data-at="voltage_min_mv: 22">The voltage measured at <code>angle_min_deg</code> for azimuth.</li>
+      <li data-at="voltage_min_mv: 20">The voltage measured at <code>angle_min_deg</code> for elevation.</li>
     </ol>
   </figure>
   <p>These numbers are not stored anywhere else. To recalibrate, you measure again, edit them, and rebuild the firmware.</p>
