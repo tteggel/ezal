@@ -169,7 +169,12 @@ async fn main(spawner: Spawner) {
     );
     spawner.spawn(time::synchronize(stack).expect("static task pool exhausted"));
     // The catalog download's TLS key exchange draws on the hardware TRNG.
-    let trng = Trng::new(p.TRNG, Irqs, trng::Config::default());
+    // embassy-rp 0.10 samples its ring oscillator every 25 clocks by default,
+    // which left some boards' TRNG busy forever: the blocking read then spun
+    // until the watchdog reset the board. 200 is upstream's later default.
+    let mut trng_config = trng::Config::default();
+    trng_config.sample_count = 200;
+    let trng = Trng::new(p.TRNG, Irqs, trng_config);
     spawner.spawn(prediction::run(stack, trng).expect("static task pool exhausted"));
     spawner.spawn(tracking::run(&state::STATE).expect("static task pool exhausted"));
 
