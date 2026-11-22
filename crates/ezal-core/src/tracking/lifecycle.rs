@@ -302,9 +302,11 @@ pub enum TrackingAction {
     PrepareNow,
     /// Prepare immediately and execute the selected motion at real speed, early.
     Rehearse,
-    /// Stop across plan revisions, retaining the last selection for inspection.
+    /// Stop across plan revisions and drop the selection, so nothing replans.
+    /// The termination still names the event.
     Cancel,
-    /// Stop and allow fresh manual input.
+    /// Stop and allow fresh manual input, keeping the selection: its preview
+    /// keeps replanning and can be armed again.
     Manual,
 }
 
@@ -713,16 +715,14 @@ impl<S> TrackingLifecycle<S> {
                 self.commands.submit(CommandEnvelope::INHIBIT);
                 self.start_job(now_ms)?;
             }
-            TrackingAction::Cancel | TrackingAction::Manual => {
+            TrackingAction::Cancel => {
                 self.bump(now_ms)?;
-                self.stop(
-                    if request.action == TrackingAction::Cancel {
-                        TrackingStop::Cancelled
-                    } else {
-                        TrackingStop::ManualMode
-                    },
-                    now_ms,
-                );
+                self.stop(TrackingStop::Cancelled, now_ms);
+                self.selection = None;
+            }
+            TrackingAction::Manual => {
+                self.bump(now_ms)?;
+                self.stop(TrackingStop::ManualMode, now_ms);
             }
         }
         Ok(())

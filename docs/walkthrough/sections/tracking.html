@@ -178,7 +178,7 @@
   </figure>
 
   <p>Now take the Pico’s own Wi-Fi away instead. The run stops at once, and bringing the network back does not revive it. Why insist on a network that the run never uses? Because the network is the only way anyone can tell the Pico to stop. While it is reachable, any browser can open the dashboard, take control and press Cancel tracking. A run that nobody could cancel is not allowed to continue.</p>
-  <p>After a run is stopped or cancelled, the Pico keeps the selection and soon shows a new verdict for whatever is left of the pass. Moving again takes a new press of Enter Tracking.</p>
+  <p>After a run stops, or the controller presses Return to Manual, the Pico keeps the selection and soon shows a new verdict for whatever is left of the pass. Cancel tracking clears the selection as well, so nothing is planned until someone picks a pass again. Moving again takes a new press of Enter Tracking.</p>
   <p class="code-links">The network check that every tracking turn passes through: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L656-L668"><code>TrackingRuntime::check_inputs</code></a>.</p>
 
   <h3>Where the satellite replaces the finger</h3>

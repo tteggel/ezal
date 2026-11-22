@@ -44,7 +44,9 @@ or building obstruction are outside this design.
   device, and the dashboard hides the manual controls. Cancel and Return to
   Manual stay available throughout planning, preparation and execution; either
   inhibits pending and active output, returns to idle Manual mode and keeps the
-  last selection and result for inspection. Another run needs a fresh arm.
+  result for inspection. Return to Manual keeps the selection, whose preview
+  keeps replanning; Cancel clears it, so nothing replans. Another run needs a
+  fresh arm.
 - Loss of the device's Wi-Fi link or DHCP address stops the run and
   invalidates queued output; network recovery never resumes it. A failed
   internet refresh does not stop a run while its cached orbital and clock data
@@ -430,8 +432,9 @@ complete AOS/LOS window; selection stops any held manual input and previews
 feasibility. The preview shows the route, modeled error bound, pointing
 allowance, predicted reception and missed intervals and the UTC preparation
 time; a partial plan is also named on the arming button. **Enter Tracking**
-arms, **Prepare now** requests the earlier schedule, and **Cancel tracking** or
-**Return to Manual** stops the run.
+arms, **Prepare now** requests the earlier schedule, **Return to Manual** stops
+the run and keeps the pass selected, and **Cancel tracking** stops it and clears
+the selection.
 
 Every viewer sees the selection, preview, phase, measured and desired pointing
 at the same ADC sample time, spherical error and its uncertainty, peak error

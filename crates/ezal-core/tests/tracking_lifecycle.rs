@@ -226,6 +226,31 @@ fn only_current_lease_can_mutate_and_stale_generations_cannot_cancel() {
 }
 
 #[test]
+fn cancel_drops_the_selection_and_return_to_manual_keeps_it_replanning() {
+    for (action, reason, kept) in [
+        (TrackingAction::Cancel, TrackingStop::Cancelled, false),
+        (TrackingAction::Manual, TrackingStop::ManualMode, true),
+    ] {
+        let (mut lifecycle, owner) = armed();
+        let event = lifecycle.snapshot().selection.unwrap().id;
+        lifecycle
+            .request(request(&lifecycle, owner, 3, action), 2100)
+            .unwrap();
+        let state = lifecycle.snapshot();
+        assert_eq!(state.mode, TrackingMode::Manual);
+        assert_eq!(state.selection.is_some(), kept);
+        let termination = state.termination.unwrap();
+        assert_eq!(
+            (termination.reason, termination.event),
+            (reason, Some(event))
+        );
+        // The worker's next refresh replans only a kept selection.
+        lifecycle.refresh(&[EVENT], REVISIONS, 2200).unwrap();
+        assert_eq!(lifecycle.planning_ticket().is_some(), kept);
+    }
+}
+
+#[test]
 fn exact_retries_are_idempotent_and_old_requests_cannot_revive_or_cancel_a_replacement() {
     let (mut lifecycle, owner) = selected();
     let arm = request(&lifecycle, owner, 2, TrackingAction::Arm);

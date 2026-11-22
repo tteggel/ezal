@@ -786,7 +786,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     setText(trackElements.reception, preview ? receptionText(preview.reception) : "");
     setText(trackElements.schedule, t.rehearsal ? "Preparing now, then rehearsing the selected pass at real speed. The live pass stays selected."
       : preview ? `${t.mode === "manual" ? "If armed, preparation" : "Preparation"} at ${utc(preview.prepare_unix_s)} UTC · planned lead ${duration(preview.preparation_lead_ms)}. ${t.phase === "armed" ? "Prepare now requests a new feasibility check before moving." : ""}` : "");
-    setText(trackElements["rehearsal-help"], t.rehearsal ? "Rehearsal moves the dish. Cancel tracking stops it."
+    setText(trackElements["rehearsal-help"], t.rehearsal ? "Rehearsal moves the dish. Return to Manual stops it and keeps the pass; Cancel tracking stops it and clears the selection."
       : preview && ["supported", "partial"].includes(t.plan.status)
         ? t.rehearsal_available_ms > elapsed ? "Rehearse prepares the dish now and runs the pass motion at real speed before live preparation is due."
           : "Rehearsal unavailable: preparation and the full rehearsal must finish before live preparation is due."
