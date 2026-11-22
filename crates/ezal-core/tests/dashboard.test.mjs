@@ -44,6 +44,7 @@ const healthy = servedTelemetry[0].feedback.health;
 function idleTracking(overrides = {}) {
   return {
     revision: "0", operator: null, mode: "manual", phase: "idle", run: null, selection: null,
+    rehearsal: false, rehearsal_available_ms: null,
     plan: { status: "unplanned", reason: null, preview: null },
     feedback_stale: false, feedback_age_ms: 0,
     deviation: { run: null, warning: false, maximum_deg: null, outside_ms: 0, current: null },
@@ -1183,6 +1184,72 @@ test("partial reception and automatic plan replacement are visible before arming
   assert.match(ui.ids.get("tracking-plan").textContent, /Tracking blocked: Unsupported Some Simulation Travel Limit Azimuth\./, "an unexplained leaf shows its full path");
 });
 
+test("rehearse sends one ordered device request from a selected manual or armed pass", () => {
+  for (const phase of ["idle", "armed"]) {
+    const ui = controller(false);
+    ui.freshness({ tracking: trackingFixture({ mode: phase === "armed" ? "tracking" : "manual", phase, rehearsal_available_ms: 30000 }) });
+    assert.equal(ui.ids.get("tracking-rehearse").disabled, false);
+    if (phase === "idle") ui.press("cw", 1);
+    trackClick(ui, "rehearse");
+    assert.match(trackingMessages(ui)[0], /^track:\d+:9007199254740995:1:9007199254740993:rehearse$/);
+    trackClick(ui, "rehearse");
+    assert.equal(trackingMessages(ui).length, 1, "double clicks do not repeat rehearsal");
+    assert.ok(ui.ids.get("tracking-rehearse").disabled);
+    ackTracking(ui, 1);
+    ui.freshness({ tracking: trackingFixture({ mode: "tracking", phase: "preparing", rehearsal: true, rehearsal_available_ms: null }) });
+    assert.match(ui.ids.get("tracking-state").textContent, /Rehearsal · preparing/);
+    assert.match(ui.ids.get("tracking-schedule").textContent, /real speed/);
+    assert.equal(ui.ids.get("manual-controls").hidden, true);
+    assert.ok(ui.ids.get("tracking-prepare").disabled);
+    trackClick(ui, "cancel");
+    assert.match(trackingMessages(ui).at(-1), /:2:9007199254740993:cancel$/);
+  }
+});
+
+test("rehearse expires at the device cutoff between telemetry frames and rechecks on click", () => {
+  const ui = controller(false);
+  ui.freshness({ tracking: trackingFixture({ rehearsal_available_ms: 200 }) });
+  ui.clock.advance(100);
+  assert.equal(ui.ids.get("tracking-rehearse").disabled, false);
+  ui.clock.advance(100);
+  assert.ok(ui.ids.get("tracking-rehearse").disabled);
+  assert.match(ui.ids.get("tracking-rehearsal-help").textContent, /must finish before live preparation/);
+  trackClick(ui, "rehearse");
+  assert.deepEqual(trackingMessages(ui), []);
+  ui.freshness({ tracking: trackingFixture({ rehearsal_available_ms: 200 }) });
+  ui.clock.now += 200; // A suspended browser has not run its render timer.
+  trackClick(ui, "rehearse");
+  assert.deepEqual(trackingMessages(ui), []);
+});
+
+test("rehearse requires current permission, healthy feedback and a supported idle plan", () => {
+  for (const overrides of [
+    { rehearsal_available_ms: null }, { rehearsal_available_ms: 0 }, { rehearsal_available_ms: undefined },
+    { feedback_stale: true }, { rehearsal: true },
+    { mode: "tracking", phase: "following" },
+    { plan: { status: "planning", reason: null, preview: null } },
+    { plan: { status: "blocked", reason: "TooLate", preview: null } },
+  ]) {
+    const ui = controller();
+    ui.freshness({ tracking: trackingFixture({ rehearsal_available_ms: 30000, ...overrides }) });
+    assert.ok(ui.ids.get("tracking-rehearse").disabled, JSON.stringify(overrides));
+    trackClick(ui, "rehearse");
+    assert.deepEqual(trackingMessages(ui), []);
+  }
+  const viewer = controller(false);
+  viewer.freshness({ tracking: trackingFixture({ rehearsal_available_ms: 30000 }),
+    control: { ...viewer.telemetry.control, controller: false } });
+  assert.ok(viewer.ids.get("tracking-rehearse").disabled);
+  trackClick(viewer, "rehearse");
+  assert.deepEqual(trackingMessages(viewer), []);
+  const ui = controller(false);
+  ui.freshness({ tracking: trackingFixture({ rehearsal_available_ms: 30000 }) });
+  ui.clock.advance(config.telemetryTimeoutMs);
+  assert.ok(ui.ids.get("tracking-rehearse").disabled);
+  trackClick(ui, "rehearse");
+  assert.deepEqual(trackingMessages(ui), []);
+});
+
 test("cancel overrides a pending request and remains available with stale or faulty telemetry", () => {
   const ui = controller(false);
   ui.freshness({ tracking: trackingFixture({ mode: "tracking", phase: "armed" }) });
@@ -1230,7 +1297,7 @@ test("tracking survives browser hiding and reconnect without replaying any actio
   ui.document.dispatch("visibilitychange");
   ui.freshness({ tracking: running });
   assert.match(ui.ids.get("tracking-state").textContent, /Tracking · following · viewer/);
-  for (const action of ["arm", "prepare", "cancel", "manual"]) {
+  for (const action of ["arm", "prepare", "rehearse", "cancel", "manual"]) {
     assert.ok(ui.ids.get(`tracking-${action}`).disabled);
     trackClick(ui, action);
   }

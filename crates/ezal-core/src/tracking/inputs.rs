@@ -76,15 +76,11 @@ impl ExecutionInputs {
         orbit: OrbitalSnapshot,
         settings: InputSettings,
         current: UtcClock,
-        window: PlanningWindow,
+        mut window: PlanningWindow,
         config: &PlanningConfig,
         now_ms: u64,
     ) -> Result<Self, InputError> {
         let anchor = current.anchor().ok_or(TimingError::Unavailable)?;
-        let los_ms = window
-            .aos_at_ms
-            .checked_add(u64::from(window.duration_ms))
-            .ok_or(InputError::Binding)?;
         let aos_utc = anchor
             .unix_ms(window.aos_at_ms)
             .ok_or(InputError::Binding)? as f64
@@ -104,6 +100,18 @@ impl ExecutionInputs {
         {
             return Err(InputError::Binding);
         }
+        if ticket.is_rehearsal() {
+            window.aos_at_ms = ticket
+                .rehearsal_aos_at_ms(now_ms)
+                .ok_or(InputError::Binding)?;
+            if !ticket.rehearsal_fits(window) {
+                return Err(InputError::Binding);
+            }
+        }
+        let los_ms = window
+            .aos_at_ms
+            .checked_add(u64::from(window.duration_ms))
+            .ok_or(InputError::Binding)?;
         let station = GroundStation::new(settings.observer).ok_or(InputError::Observer)?;
         let clock = ExecutionClock::preview(anchor, settings.timing, config, los_ms, now_ms)?;
         let inputs = Self {
@@ -165,12 +173,17 @@ impl ExecutionInputs {
             return Err(InputError::SourceOrder);
         }
         let now = self.clock.unix_s(now_ms)?;
-        let end = self
+        let mut end = self
             .clock
             .anchor()
             .unix_ms(self.clock.through_ms())
             .ok_or(TimingError::ClockOrder)? as f64
             / 1000.0;
+        if self.ticket.is_rehearsal() {
+            // The orbit is evaluated at the selected future pass's UTC, while
+            // clock/output supervision still uses the actual rehearsal time.
+            end = end.max(self.window.aos_unix_s + f64::from(self.window.duration_ms) / 1000.0);
+        }
         let allowance_s = self.clock.allowance_ms() / 1000.0;
         let epoch = self.orbit.epoch_unix_s();
         if !epoch.is_finite()
@@ -184,7 +197,12 @@ impl ExecutionInputs {
     /// Propagate the frozen orbit at fractional uptime-matched UTC. Execution
     /// services validate live clock/network state separately before output.
     pub fn look_at_uptime(&self, now_ms: u64) -> Option<LookAngle> {
-        self.look_at(self.clock.unix_s(now_ms).ok()?)
+        if self.ticket.is_rehearsal() {
+            let offset = now_ms.checked_sub(self.window.aos_at_ms)?;
+            self.look_at(self.window.aos_unix_s + offset as f64 / 1000.0)
+        } else {
+            self.look_at(self.clock.unix_s(now_ms).ok()?)
+        }
     }
 }
 

@@ -231,7 +231,7 @@ fn telemetry_encodes_one_observation_with_its_proof() {
     message.write_json(&mut json).unwrap();
     assert_eq!(
         json,
-        r#"{"type":"telemetry","position":{"a0_mv":null,"a1_mv":null},"feedback":{"azimuth_tenths":null,"elevation_tenths":null,"health":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000],"duty_startup_rest":true},"freshness":{"token":"42"},"tracking":{"revision":"0","operator":null,"mode":"manual","phase":"idle","run":null,"selection":null,"plan":{"status":"unplanned","reason":null,"preview":null},"feedback_stale":true,"feedback_age_ms":null,"deviation":{"run":null,"warning":false,"maximum_deg":null,"outside_ms":0,"current":null},"recovery":null,"termination":null,"summary":null}}"#
+        r#"{"type":"telemetry","position":{"a0_mv":null,"a1_mv":null},"feedback":{"azimuth_tenths":null,"elevation_tenths":null,"health":"no-feedback"},"control":{"type":"control","controller":false,"azimuth":null,"elevation":null,"network_ready":false,"motion_fault":null,"duty_remaining_ms":[0,0],"duty_cooldown_ms":[900000,900000],"duty_startup_rest":true},"freshness":{"token":"42"},"tracking":{"revision":"0","operator":null,"mode":"manual","phase":"idle","run":null,"rehearsal":false,"rehearsal_available_ms":null,"selection":null,"plan":{"status":"unplanned","reason":null,"preview":null},"feedback_stale":true,"feedback_age_ms":null,"deviation":{"run":null,"warning":false,"maximum_deg":null,"outside_ms":0,"current":null},"recovery":null,"termination":null,"summary":null}}"#
     );
 }
 

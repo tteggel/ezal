@@ -103,6 +103,14 @@ impl TrackingRuntime {
     pub const fn snapshot(&self) -> TrackingSnapshot {
         self.lifecycle.snapshot()
     }
+    /// Whether planning or execution currently belongs to an early rehearsal.
+    pub const fn is_rehearsing(&self) -> bool {
+        self.lifecycle.is_rehearsing()
+    }
+    /// Device countdown to the last admissible rehearsal request.
+    pub fn rehearsal_available_ms(&self, now_ms: u64) -> Option<u64> {
+        self.lifecycle.rehearsal_available_ms(now_ms)
+    }
     /// Fresh timestamp-matched pointing, or unavailable, plus retained metrics.
     pub fn deviation(&self, now_ms: u64) -> DeviationStatus {
         match &self.execution {
@@ -181,7 +189,11 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<u64, RuntimeError> {
         self.check_inputs(observation)?;
-        if request.action == TrackingAction::Arm && !observation.network.ready(observation.now_ms) {
+        if matches!(
+            request.action,
+            TrackingAction::Arm | TrackingAction::Rehearse
+        ) && !observation.network.ready(observation.now_ms)
+        {
             return Err(RuntimeError::NetworkUnavailable);
         }
         let result = self.lifecycle.request(request, observation.now_ms)?;

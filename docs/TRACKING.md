@@ -37,7 +37,7 @@ or building obstruction are outside this design.
   manages the existing run; claiming the lease neither stops it nor changes
   the selection. An old socket's close or delayed request cannot release a
   newer grant.
-- Only the lease holder may select, replace, arm, prepare early, cancel or
+- Only the lease holder may select, replace, arm, prepare early, rehearse, cancel or
   change mode. Other viewers observe position, deviation and tracking state.
   Fault handling and physical power removal never need a lease.
 - Tracking mode rejects manual movement and manual stop messages on the
@@ -54,7 +54,7 @@ or building obstruction are outside this design.
 ### Operator requests
 
 Every mutation carries the connection-bound lease generation and a strictly
-increasing, nonzero request number. Select, Arm and Prepare now also carry the
+increasing, nonzero request number. Select, Arm, Prepare now and Rehearse also carry the
 current state revision and a telemetry proof younger than
 [`COMMAND_MAX_AGE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery), and
 Select must name a row the device currently offers. Cancel and Manual ignore
@@ -177,6 +177,23 @@ long early wait can fail with an explicit work-limit reason. Late preparation,
 duty exhaustion, motion faults and travel violations produce explicit
 rejections naming the scenario and phase.
 
+Rehearse, next to Prepare now, prepares immediately and runs the selected pass's
+motion early at real speed. It is available for a supported selection in Manual
+or an armed pass. A fresh `Immediate` planning job evaluates the actual relay and
+duty history; the rehearsal uses the normal preparation lead, including its
+settling margin, followed by the entire selected pass duration. Orbital targets
+use the selected future pass's time, while feedback, relay deadlines, duty and
+clock supervision use real device time.
+
+The button is disabled unless preparation, the complete rehearsal and final
+coast fit strictly before scheduled live preparation. The device supplies a
+countdown, rechecks the deadline on admission and planning publication, and
+inhibits rehearsal work at the live preparation deadline. Closing the browser
+does not stop a rehearsal; Cancel or Return to Manual does. A successful
+rehearsal retains the selection and returns to Manual, or restores Armed if the
+pass was already armed, requesting a fresh live plan from the final measured
+pose and consumed duty. Cancellation or a fault never rearms it.
+
 ### Updating and freezing the plan
 
 Before preparation the device replans the selected pass automatically, in
@@ -212,6 +229,7 @@ cancellation and faults end with an explicit terminal reason.
 |---|---|
 | Scheduled preparation becomes due | Freeze the current supported plan and issue a new run token |
 | Prepare now | Request an `Immediate` plan; start only after that schedule passes evaluation |
+| Rehearse | Prepare now and replay the selected trajectory at real speed before live preparation; retain the selection and restore an already armed pass on success |
 | Measured readiness | Enter Ready after 2 s of distinct fresh, settled samples at the preparation pose; keep the frozen route |
 | AOS while Ready | Enter Following, independently of operator presence |
 | AOS during preparation without readiness | Enter a late-acquisition recovery episode counted from AOS |
