@@ -87,7 +87,7 @@ async fn park<T>(resources: T) -> ! {
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    let directions = drive::DirectionOutputs::new(p.PIN_10, p.PIN_11, p.PIN_20, p.PIN_21);
+    let directions = drive::DirectionOutputs::new(p.PIN_10, p.PIN_11, p.PIN_21, p.PIN_20);
     let mut watchdog = embassy_rp::watchdog::Watchdog::new(p.WATCHDOG);
     if watchdog::firmware_timeout_caused_reset(&mut watchdog) {
         // Keep the owned outputs low until a hardware reset clears the reason.

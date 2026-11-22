@@ -85,7 +85,10 @@ DHCP address.
 
 The four direction pins above are claimed by the firmware and can be driven by
 manual dashboard commands; their G-5500 wiring is in
-[`design/circuit.py`](../design/circuit.py) / `circuit.svg`. The I²C
+[`design/circuit.py`](../design/circuit.py) / `circuit.svg`. The signal names
+are the G-5500's. This installation's elevation drive runs reversed, since DIN 3
+lowers the dish, so the firmware drives GP21 for up and GP20 for down
+(`drive::DirectionOutputs::new`). The I²C
 feedback pins (GP4 = SDA, GP5 = SCL, to the ADS1015 at 0x48) are driven by
 the firmware's ADS1015 driver
 ([`crates/ezal-firmware/src/ads1015.rs`](../crates/ezal-firmware/src/ads1015.rs)),

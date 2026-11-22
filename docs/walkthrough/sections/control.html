@@ -229,7 +229,7 @@
       <li data-at="if self.applied.azimuth != drive.azimuth">Touch the pins only when the answer has changed.</li>
       <li data-at="Some(AzimuthDirection::Clockwise) =&gt; self.cw.set_low()">First lower whichever pin was high.</li>
       <li data-at="Some(AzimuthDirection::Clockwise) =&gt; self.cw.set_high()">Then raise the new one. The timing rules never ask for a straight swap, since a reversal passes through two seconds of off. If they ever did, GP10 and GP11 still could not be high together.</li>
-      <li data-at="if self.applied.elevation != drive.elevation">Elevation is the same again, with GP20 for up and GP21 for down.</li>
+      <li data-at="if self.applied.elevation != drive.elevation">Elevation is the same again. On this installation the control box’s down input raises the dish, so <code>up</code> is GP21 and <code>down</code> is GP20.</li>
       <li data-at="self.applied = drive;">Remember what the pins now are.</li>
     </ol>
   </figure>
