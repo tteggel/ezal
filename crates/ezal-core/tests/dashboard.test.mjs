@@ -1153,7 +1153,7 @@ test("arming clears held input, uses exact 64-bit revision and lease, and awaits
   assert.ok(ui.buttons.get("cw").disabled, "acknowledgement is not a mode observation");
   ui.freshness({ tracking: trackingFixture({ mode: "tracking", phase: "armed" }) });
   assert.equal(ui.ids.get("manual-controls").hidden, true);
-  assert.match(ui.ids.get("tracking-schedule").textContent, /Prepare now requests a new feasibility check/);
+  assert.match(ui.ids.get("tracking-schedule").textContent, /Prepare now starts at once from rested motors/);
   ui.press("up", 2);
   ui.clock.advance(config.refreshMs);
   assert.equal(trackingMessages(ui).length, 1);

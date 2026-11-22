@@ -201,7 +201,7 @@ survive network recovery.
 
 The dashboard exposes leased manual direction controls and single-pass tracking.
 Select a forecast row to preview, then Enter Tracking to arm; Prepare now
-re-evaluates an earlier start. Cancel or Return to Manual interrupts the run.
+starts early, re-evaluating first unless the motors are rested. Cancel or Return to Manual interrupts the run.
 Manual controls are hidden while tracking, and browser closure does not cancel it.
 Movement requires fresh, valid calibrated feedback at the final GPIO boundary.
 Initial calibration uses the G-5500 front-panel controls with the Pico's

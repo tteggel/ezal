@@ -134,6 +134,10 @@ impl TrackingRuntime {
     pub const fn bound_plan(&self) -> Option<&BoundTrackingPlan<ExecutionInputs>> {
         self.lifecycle.bound_plan()
     }
+    /// When the armed run starts preparing.
+    pub fn prepare_at_ms(&self) -> Option<u64> {
+        self.lifecycle.prepare_at_ms()
+    }
     /// Latest device planning job, if any.
     pub fn planning_ticket(&self) -> Option<PlanTicket> {
         self.lifecycle.planning_ticket()
@@ -595,7 +599,7 @@ impl TrackingRuntime {
         let plan = bound.plan();
         let state = self.snapshot();
         let phase_deadline = match state.phase {
-            TrackingPhase::Armed => Some(plan.assessment.prepare_at_ms),
+            TrackingPhase::Armed => self.lifecycle.prepare_at_ms(),
             TrackingPhase::Preparing | TrackingPhase::Ready => Some(plan.window.aos_at_ms),
             TrackingPhase::Following => {
                 let gap = plan.reception().gap().map(|g| g.recovery_at_ms);
@@ -686,8 +690,8 @@ impl TrackingRuntime {
         if state.run.is_some() && now >= bound.inputs().clock().through_ms() {
             return Ok(());
         }
-        let freezing =
-            state.phase == TrackingPhase::Armed && now >= bound.plan().assessment.prepare_at_ms;
+        let freezing = state.phase == TrackingPhase::Armed
+            && self.lifecycle.prepare_at_ms().is_some_and(|at| now >= at);
         let error = if clock_regressed {
             Some(InputError::Timing(TimingError::ClockOrder))
         } else if state.run.is_some() {

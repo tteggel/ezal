@@ -688,7 +688,12 @@ impl<S> TrackingLifecycle<S> {
                     return Err(LifecycleError::NotReady);
                 }
                 self.timing = PreparationTiming::Immediate;
-                self.start_job(now_ms)?;
+                // A plan whose verification already covers starting now is kept.
+                if self.armable(now_ms) && self.prepare_at_ms().is_some_and(|at| at <= now_ms) {
+                    self.bump(now_ms)?;
+                } else {
+                    self.start_job(now_ms)?;
+                }
             }
             TrackingAction::Rehearse => {
                 if self.rehearsal_available_ms(now_ms).is_none() {
@@ -815,6 +820,16 @@ impl<S> TrackingLifecycle<S> {
     /// Borrow the accepted result, including its captured inputs, for inspection.
     pub const fn bound_plan(&self) -> Option<&BoundTrackingPlan<S>> {
         self.plan.as_ref()
+    }
+
+    /// When an armed run starts preparing: the plan's schedule or, after
+    /// Prepare now, the earliest start its verification covers.
+    pub fn prepare_at_ms(&self) -> Option<u64> {
+        let assessment = &self.plan.as_ref()?.plan.assessment;
+        Some(match self.timing {
+            PreparationTiming::Scheduled => assessment.prepare_at_ms,
+            PreparationTiming::Immediate => assessment.prepare_from_ms,
+        })
     }
 
     /// The input owner can invalidate a preview without disarming its selection.
@@ -974,7 +989,7 @@ impl<S> TrackingLifecycle<S> {
                 self.plan = None;
                 self.plan_status = PlanStatus::Blocked(PlanProblem::Expired);
             } else if self.phase == TrackingPhase::Armed
-                && now_ms >= bound.plan.assessment.prepare_at_ms
+                && self.prepare_at_ms().is_some_and(|at| now_ms >= at)
             {
                 if !self.armable(now_ms) {
                     self.bump(now_ms)?;
@@ -1252,6 +1267,7 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
         && plan.config.uncertainty_deg.is_finite()
         && plan.config.uncertainty_deg >= 0.0
         && assessment.choice == plan.route.choice()
+        && assessment.prepare_from_ms <= assessment.prepare_at_ms
         && match plan.reception() {
             ReceptionCoverage::Complete => {
                 assessment.prepare_at_ms <= window.aos_at_ms
@@ -1267,6 +1283,7 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
                             end_ms: gap.missed.end_ms,
                         }]
                     && assessment.gap_time_ms == u64::from(gap.missed.end_ms - gap.missed.start_ms)
+                    && assessment.prepare_from_ms == assessment.prepare_at_ms
                     && if gap.late_acquisition {
                         assessment.prepare_at_ms == gap.recovery_at_ms
                             && assessment.preparation_ms == 0

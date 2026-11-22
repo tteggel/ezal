@@ -183,9 +183,13 @@ Preparation probes estimate the worst readiness time from the current position,
 chosen route, backlash, startup, coast and relay state, including a 2 s
 settled dwell. Each complete verification then simulates the scheduled
 preparation and the pass in one run, keeping on-time and relay holds at AOS.
-Far-future idle waiting is skipped with its actual rest credit. Prepare now
-requests a separately evaluated `Immediate` plan, so it cannot spend rest that
-the scheduled start would have gained. A ready dish may wait at the preparation
+Far-future idle waiting is skipped with its actual rest credit. From motors
+with their full duty allowance and settled relays, starting sooner repeats the
+same preparation and only lengthens the wait before AOS, so the verification
+also covers Prepare now from then on, provided every scenario ended that wait
+still for the relay off-time and two readings. Otherwise Prepare now requests a
+separately evaluated `Immediate` plan, so it cannot spend rest that the
+scheduled start would have gained. A ready dish may wait at the preparation
 pose beyond the probe limit; the planning job keeps its fixed work bound, so a
 long early wait can fail with an explicit work-limit reason. Late preparation,
 duty exhaustion, motion faults and travel violations produce explicit
@@ -249,7 +253,7 @@ cancellation and faults end with an explicit terminal reason.
 | Event | Behaviour |
 |---|---|
 | Scheduled preparation becomes due | Freeze the current supported plan and issue a new run token |
-| Prepare now | Request an `Immediate` plan; start only after that schedule passes evaluation |
+| Prepare now | Start now if the plan's verification covers it; otherwise request an `Immediate` plan and start only after that schedule passes evaluation |
 | Rehearse | Prepare now and replay the selected trajectory at real speed before live preparation; retain the selection and restore an already armed pass on success |
 | Measured readiness | Enter Ready after 2 s of distinct fresh, settled samples at the preparation pose; keep the frozen route |
 | AOS while Ready | Enter Following, independently of operator presence |
@@ -455,7 +459,7 @@ complete AOS/LOS window; selection stops any held manual input and previews
 feasibility. The preview shows the route, modeled error bound, pointing
 allowance, predicted reception and missed intervals and the UTC preparation
 time; a partial plan is also named on the arming button. **Enter Tracking**
-arms, **Prepare now** requests the earlier schedule, **Return to Manual** stops
+arms, **Prepare now** starts preparation early, **Return to Manual** stops
 the run and keeps the pass selected, and **Cancel tracking** stops it and clears
 the selection.
 

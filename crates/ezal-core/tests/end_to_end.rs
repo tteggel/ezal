@@ -275,6 +275,40 @@ fn flickering_feedback_plans_arms_and_follows_the_recorded_pass() {
 }
 
 #[test]
+fn prepare_now_from_rested_motors_keeps_the_plan_and_tracks_the_pass() {
+    let mut device = Device::boot(true);
+    device.request(TrackingAction::Select(PASS)).unwrap();
+    device.wait_for(PLANNING_LIMIT_MS, Device::supported);
+    device.request(TrackingAction::Arm).unwrap();
+    // Ten minutes ahead, while the clock vouches through LOS; replanning
+    // would take about as long on the device.
+    device.until(Device::uptime(PASS.aos_unix_s) - 600_000);
+    device.request(TrackingAction::PrepareNow).unwrap();
+    assert_eq!(device.state.tracking().planning_ticket(), None);
+    let mut phases = vec![device.snapshot().phase];
+    while device.now < Device::uptime(PASS.los_unix_s) + 5000 {
+        device.tick();
+        let phase = device.snapshot().phase;
+        if phases.last() != Some(&phase) {
+            phases.push(phase);
+        }
+    }
+    assert_eq!(
+        phases,
+        [
+            TrackingPhase::Preparing,
+            TrackingPhase::Ready,
+            TrackingPhase::Following,
+            TrackingPhase::Complete,
+        ]
+    );
+    let summary = device.state.tracking().last_summary().unwrap();
+    assert_eq!(summary.termination.reason, TrackingStop::LossOfSignal);
+    assert!(summary.reception.is_complete());
+    assert_eq!(summary.deviation.outside_tolerance_ms, 0);
+}
+
+#[test]
 fn return_to_manual_keeps_the_pass_replanning_and_cancel_clears_it() {
     let mut device = Device::boot(false);
     device.request(TrackingAction::Select(PASS)).unwrap();

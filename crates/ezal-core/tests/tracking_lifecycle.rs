@@ -453,7 +453,30 @@ fn update_or_cancel_at_preparation_boundary_prevents_stale_activation() {
 }
 
 #[test]
-fn prepare_now_needs_a_new_plan_that_explicitly_evaluated_early_preparation() {
+fn prepare_now_keeps_a_plan_whose_verification_covers_starting_now() {
+    let (mut lifecycle, owner) = armed();
+    let from = lifecycle
+        .bound_plan()
+        .unwrap()
+        .plan()
+        .assessment
+        .prepare_from_ms;
+    assert!(from < PREP);
+    lifecycle
+        .request(
+            request(&lifecycle, owner, 3, TrackingAction::PrepareNow),
+            from,
+        )
+        .unwrap();
+    assert_eq!(lifecycle.planning_ticket(), None);
+    lifecycle.tick(from).unwrap();
+    assert_eq!(lifecycle.snapshot().phase, TrackingPhase::Preparing);
+    assert_eq!(*lifecycle.bound_plan().unwrap().inputs(), "original inputs");
+}
+
+#[test]
+fn prepare_now_before_the_verified_start_needs_a_new_immediate_plan() {
+    // The plan covers starting once the relays settle, which is after 2100 ms.
     let (mut lifecycle, owner) = armed();
     lifecycle
         .request(

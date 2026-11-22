@@ -238,7 +238,11 @@ impl TrackingTelemetry {
                         .inputs()
                         .clock()
                         .anchor()
-                        .unix_ms(plan.assessment.prepare_at_ms)
+                        .unix_ms(
+                            runtime
+                                .prepare_at_ms()
+                                .unwrap_or(plan.assessment.prepare_at_ms),
+                        )
                         .map_or(plan.window.aos_unix_s, |ms| ms as f64 / 1000.0),
                     lead_ms: plan.assessment.preparation_lead_ms,
                     bound_deg: plan.assessment.bounded_peak_deg,

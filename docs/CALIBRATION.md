@@ -401,8 +401,8 @@ simulated feedback, then in supervised powered passes:
 
 11. Select one predicted pass, inspect its feasibility and reception windows,
     then Enter Tracking. Selection alone does not move, scheduled preparation
-    starts at the displayed time, and Prepare now evaluates its own schedule
-    before moving. Test full and partial support. With eight viewers open,
+    starts at the displayed time, and Prepare now starts at once from rested
+    motors, otherwise after evaluating its own schedule. Test full and partial support. With eight viewers open,
     exercise forecast computation and a TLE download while preparing and
     following; close and reopen the controller and pause a slow viewer. The
     pass continues, only the current leased controller can cancel it, manual
