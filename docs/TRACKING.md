@@ -202,11 +202,12 @@ state change. Each planning ticket binds the selection to orbital, clock and
 starting-state revisions and the preparation schedule. Publishing newer inputs
 immediately withdraws the previous plan's permission to prepare; only the
 latest job can publish, even if an older job finishes later; an unsupported or
-failed replacement never falls back to an older success. A change in measured
-pose, feedback health, consumed duty or network generation invalidates a
-preview's starting state, so manual movement does too; fresh ADC timestamps
-alone do not. Noisy, changing starting positions can therefore keep a preview
-from completing.
+failed replacement never falls back to an older success. A change in feedback
+health, consumed duty or network generation invalidates a preview's starting
+state, and so does a measured pose more than the motion monitor's two codes of
+noise from the pose planning started from. Manual movement therefore does too;
+fresh ADC timestamps and an idle reading's flicker do not, while slow drift
+adds up until it does.
 
 Each published plan carries an exclusive `freeze_before_ms` deadline, the
 earliest of its clock's admission deadline, LOS and the plan's own admission

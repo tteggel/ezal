@@ -137,16 +137,20 @@ impl CoordinationState {
         self.feedback.raw = Some(raw);
     }
 
-    /// Publish one acquisition; changed pose invalidates preview work immediately.
+    /// Publish one acquisition. A pose outside the planning start's noise
+    /// invalidates preview work immediately, before a simultaneous preparation
+    /// deadline can freeze it.
     pub fn publish_feedback(
         &mut self,
         feedback: FeedbackSnapshot,
         interlock: FeedbackInterlock,
         now_ms: u64,
     ) -> bool {
-        let changed = self.feedback.health != feedback.health
-            || self.feedback.last_valid.map(|s| s.position())
-                != feedback.last_valid.map(|s| s.position());
+        let moved = feedback
+            .last_valid
+            .zip(self.start_identity)
+            .is_some_and(|(sample, (start, ..))| !self.within_noise(sample.position(), start));
+        let changed = self.feedback.health != feedback.health || moved;
         self.feedback = feedback;
         self.interlock = interlock;
         if changed {
@@ -348,8 +352,9 @@ impl CoordinationState {
         }
     }
 
-    /// Identity of the physical starting assumptions; fresh timestamps alone
-    /// do not restart planning, while changed pose/duty/network history does.
+    /// Identity of the physical starting assumptions. Fresh timestamps and
+    /// feedback noise do not restart planning; a moved pose or changed
+    /// duty/network history does.
     pub const fn start_revision(&self) -> u64 {
         self.start_revision
     }
@@ -380,10 +385,33 @@ impl CoordinationState {
                 .resting_history(now_ms)
                 .map(|(used, _)| (s.feedback.position(), used, self.network.generation()))
         });
-        if identity != self.start_identity {
+        if !self.same_start(identity) {
             self.start_identity = identity;
             self.changed_start(now_ms);
         }
+    }
+
+    /// Duty and network history must match exactly; the pose only within noise.
+    fn same_start(&self, identity: Option<(Pointing, [u64; 2], u64)>) -> bool {
+        match (identity, self.start_identity) {
+            (Some((pose, used, network)), Some((start, start_used, start_network))) => {
+                used == start_used && network == start_network && self.within_noise(pose, start)
+            }
+            (identity, start) => identity.is_none() && start.is_none(),
+        }
+    }
+
+    /// The motion monitor's measurement noise around the pose planning started
+    /// from. An idle ADC flickers by a code, and a restart per flicker would
+    /// never let a plan finish. Drift is measured from that start, so it adds up.
+    fn within_noise(&self, pose: Pointing, start: Pointing) -> bool {
+        let code = self
+            .interlock
+            .feedback_resolution_deg()
+            .unwrap_or(Pointing::new(0.0, 0.0));
+        let noise = f32::from(self.applied.configuration().motion.noise_codes);
+        (pose.azimuth_deg - start.azimuth_deg).abs() <= code.azimuth_deg * noise
+            && (pose.elevation_deg - start.elevation_deg).abs() <= code.elevation_deg * noise
     }
 
     /// Generate a device command only after the actuator was serviced/applied at
