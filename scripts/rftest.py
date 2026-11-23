@@ -159,7 +159,8 @@ class Runner:
             print(f"  recording starts in {delay} s ...", flush=True)
             time.sleep(delay)
         cmd = ["satdump", "legacy", "record", base, "--source", "hydrasdr",
-               "--samplerate", f"{SR:g}", "--frequency", f"{tuned * 1e6:.0f}",
+               # Plain digits only: SatDump's flag parser reads "1e+07" as a string.
+               "--samplerate", f"{SR:.0f}", "--frequency", f"{tuned * 1e6:.0f}",
                "--general_gain", str(self.a.gain), "--baseband_format", "cs16",
                "--timeout", str(secs)]
         if bias:
@@ -169,7 +170,9 @@ class Runner:
             subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
         path = base + ".cs16"
         if not os.path.exists(path):
-            print(f"  !! no recording: see {base}.log")
+            with open(base + ".log", errors="replace") as log:
+                errs = [l.strip() for l in log if "(E)" in l]
+            print(f"  !! no recording: {errs[-1] if errs else 'see ' + base + '.log'}")
             return None
         got = os.path.getsize(path) / (4 * SR)
         if got < 0.9 * secs:
