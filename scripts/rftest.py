@@ -9,6 +9,8 @@ Groups (default: spur lna sky):
   spur     where the ~1700 MHz line comes from (coax off, retuned, Pi Wi-Fi
            off, ezal controller off, RFOne moved)
   lna      noise floor with the antenna, with bias off, and with coax off
+  pickup   whether the ~1700 MHz line reaches the antenna side: LNA on/off,
+           RFOne moved away from the feed, RFOne shielded
   sky      cold sky against ground (antenna and LNA working?)
   sun      on the sun against 20 deg away (pointing and antenna, works in cloud)
   sunscan  step around the sun to find the azimuth/elevation pointing offset
@@ -92,12 +94,18 @@ def fmt_row(name, tuned, bias, r):
     ln = r["line"]
     lhz = f"{ln[0]:+7.0f}" if ln else "      -"
     ldb = f"{ln[1]:6.1f}" if ln else "     -"
+    lab = f"{line_abs(r):8.2f}" if ln else "       -"
     return (f"{name:<17} {tuned:>9.3f} {('on' if bias else 'off'):>4} {r['floor_db']:8.2f} "
-            f"{r['level_dbfs']:8.2f} {r['clip_pct']:7.4f} {lhz} {ldb}")
+            f"{r['level_dbfs']:8.2f} {r['clip_pct']:7.4f} {lhz} {ldb} {lab}")
+
+
+def line_abs(r):
+    """The line's strength on one scale across tests (floor + height above it)."""
+    return r["floor_db"] + r["line"][1]
 
 
 HEADER = (f"{'test':<17} {'tuned_MHz':>9} {'bias':>4} {'floor_dB':>8} {'lvl_dBFS':>8} "
-          f"{'clip_%':>7} {'line_Hz':>7} {'line_dB':>6}")
+          f"{'clip_%':>7} {'line_Hz':>7} {'line_dB':>6} {'line_abs':>8}")
 
 
 # ------------------------------------------------------------- sun position
@@ -246,6 +254,25 @@ class Runner:
             self.test("coax_off_1699.3", 1699.3, False,
                       "Disconnect the coax from ANT and leave the port open.")
 
+    def pickup(self):
+        """Does the ~1700 MHz line reach the antenna side, and from where?"""
+        if "sky_bias_on" not in self.res:
+            self.test("sky_bias_on", 1699.3, True,
+                      "Coax on ANT, bias on. Point the dish at clear sky about 45 deg up, away\n"
+                      "  from the sun and buildings. RFOne and Pi where they normally live.")
+        if "sky_bias_off" not in self.res:
+            self.test("sky_bias_off", 1699.3, False, "Same pointing, bias-tee off (LNA unpowered).")
+        self.test("ant_rfone_far", 1699.3, True,
+                  "Coax on ANT, bias on, same pointing. Move the RFOne (and the Pi if it can go)\n"
+                  "  as far from the feed and LNA as the cables allow.")
+        self.test("ant_rfone_tin", 1699.3, True,
+                  "Coax on ANT, bias on, same pointing, RFOne back in its usual place but inside\n"
+                  "  a closed metal tin or wrapped in kitchen foil (USB and coax through a small\n"
+                  "  gap; keep foil off the connectors' contacts).")
+        if "coax_off_1699.3" not in self.res:
+            self.test("coax_off_1699.3", 1699.3, False,
+                      "Disconnect the coax from ANT and leave the port open.")
+
     def sky(self):
         if "sky_bias_on" not in self.res:
             self.test("sky_bias_on", 1699.3, True,
@@ -326,6 +353,15 @@ class Runner:
                   d("sun_on", "sun_off", "sun - off-sun")]:
             if x:
                 lines.append(x)
+        ref = R.get("coax_off_1699.3")
+        if ref and ref["line"]:
+            for n, label in (("sky_bias_on", "antenna on, LNA on"),
+                             ("sky_bias_off", "antenna on, LNA off"),
+                             ("ant_rfone_far", "antenna on, RFOne moved away"),
+                             ("ant_rfone_tin", "antenna on, RFOne shielded")):
+                if R.get(n) and R[n]["line"] and abs(R[n]["line"][0] - ref["line"][0]) < 1500:
+                    lines.append(f"  ~1700 MHz line, {label}: {line_abs(R[n]) - line_abs(ref):+.1f} dB "
+                                 "stronger than with the coax off")
         offs = [(n, R[n]["line"]) for n in ("coax_off_1699.3", "coax_off_1701", "coax_off_1702.5")
                 if R.get(n) and R[n]["line"]]
         if offs:
@@ -348,7 +384,7 @@ class Runner:
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("groups", nargs="*", default=["spur", "lna", "sky"],
-                   help="spur lna sky sun sunscan, or: analyse FILE")
+                   help="spur lna pickup sky sun sunscan, or: analyse FILE")
     p.add_argument("--gain", type=int, default=14, help="--general_gain for every test (default 14)")
     p.add_argument("--dir", default="/srv/passes/rftest", help="where recordings and logs go")
     p.add_argument("--zoom", type=float, default=1700.0, help="MHz to search for the narrow line")
@@ -364,7 +400,7 @@ def main():
         print(HEADER + "\n" + fmt_row(os.path.basename(a.groups[1])[:17], a.tuned, False, r))
         return
 
-    bad = [g for g in a.groups if g not in ("spur", "lna", "sky", "sun", "sunscan")]
+    bad = [g for g in a.groups if g not in ("spur", "lna", "pickup", "sky", "sun", "sunscan")]
     if bad:
         sys.exit(f"unknown group(s): {' '.join(bad)}")
     if not os.environ.get("TMUX"):
