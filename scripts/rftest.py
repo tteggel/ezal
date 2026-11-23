@@ -3,11 +3,11 @@
 
 Walks through short test recordings, makes each one with SatDump at the
 right tuning, analyses it with matching settings, and prints one summary
-block to copy back. Run it inside tmux: the Ethernet test drops SSH.
+block to copy back. Run it inside tmux: the Wi-Fi test freezes SSH briefly.
 
 Groups (default: spur lna sky):
-  spur     where the ~1700 MHz line comes from (coax off, retuned, Ethernet
-           unplugged, RFOne moved)
+  spur     where the ~1700 MHz line comes from (coax off, retuned, Pi Wi-Fi
+           off, ezal controller off, RFOne moved)
   lna      noise floor with the antenna, with bias off, and with coax off
   sky      cold sky against ground (antenna and LNA working?)
   sun      on the sun against 20 deg away (pointing and antenna, works in cloud)
@@ -198,13 +198,41 @@ class Runner:
         self.test("coax_off_1702.5", 1702.5, False, "Coax still off (retuned to 1702.5 MHz).")
         self.test("terminated", 1699.3, False,
                   "Fit a 50 ohm terminator on ANT (s to skip if you have none).")
-        self.test("no_ethernet", 1699.3, False,
-                  "Coax off, ANT open. After Enter you have 30 s to UNPLUG ETHERNET. SSH will\n"
-                  "  drop if it runs over Ethernet: plug back in after about a minute, SSH in\n"
-                  "  (over Wi-Fi or Ethernet) and run `tmux attach` to continue.", delay=30)
+        self.wifi_off_test()
+        self.test("controller_off", 1699.3, False,
+                  "Coax off. Power off ezal's Pico and the rotator control box.")
         self.test("rfone_far", 1699.3, False,
-                  "Ethernet back in. Coax off. Move the RFOne at least 1 m from the Pi on a\n"
-                  "  USB extension, or into a black (USB 2) port.")
+                  "Controller back on if you like. Coax off. Move the RFOne at least 1 m from\n"
+                  "  the Pi on a USB extension, or into a black (USB 2) port.")
+
+    def wifi_off_test(self):
+        """Record with the Pi's Wi-Fi radio off; a detached timer turns it back on."""
+        name, tuned = "wifi_off", 1699.3
+        r = None
+        if self.ask(f"[{name}] Coax off. The Pi's Wi-Fi is switched off for about 20 s while this\n"
+                    "  records, so SSH will freeze, then recover: keep this running in tmux. A\n"
+                    "  safety timer turns Wi-Fi back on after 90 s whatever happens. sudo may\n"
+                    "  ask for your password first."):
+            if subprocess.run(["sudo", "-v"]).returncode != 0:
+                print("  !! sudo failed; skipped")
+            else:
+                subprocess.Popen(["sudo", "sh", "-c", "sleep 90; nmcli radio wifi on"],
+                                 start_new_session=True, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+                path = None
+                try:
+                    subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"])
+                    time.sleep(3)
+                    path = self.record(name, tuned, False)
+                finally:
+                    subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"])
+                if path:
+                    r = analyse(path, tuned, self.a.zoom)
+                    if not self.a.keep:
+                        os.remove(path)
+        self.rows.append((name, tuned, False, r))
+        self.res[name] = r
+        print("  " + HEADER + "\n  " + fmt_row(name, tuned, False, r))
 
     def lna(self):
         self.test("sky_bias_on", 1699.3, True,
@@ -337,8 +365,8 @@ def main():
     if bad:
         sys.exit(f"unknown group(s): {' '.join(bad)}")
     if not os.environ.get("TMUX"):
-        print("Note: not inside tmux. The no_ethernet test drops SSH; run `tmux new -s rftest`"
-              " first, or skip that test.")
+        print("Note: not inside tmux. The wifi_off test freezes SSH for ~20 s; run"
+              " `tmux new -s rftest` first, or skip that test.")
     print(f"Gain {a.gain}, {RECORD_S} s per test, recordings in {a.dir}"
           f"{'' if a.keep else ' (deleted after analysis)'}.")
     run = Runner(a)
