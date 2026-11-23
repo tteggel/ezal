@@ -70,7 +70,7 @@
   <p><strong>Are you the one in control?</strong> Two people can have the dashboard open. Only one browser at a time is the <em>operator</em>; the others can watch. The first to connect gets control, and anyone may take it once it is free. The board keeps asking the operator to prove it is still there: with each status report it sends a ping down the connection (a <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API">WebSocket</a>, which has ping and echo built in), and a prompt echo renews control for another 5 seconds. Close the tab and control is free at once. Vanish without closing it and control is free 5 seconds after the last echo. A press from anyone else changes nothing.</p>
   <p>This stops two dashboards fighting over one dish. It does not keep strangers out: anyone who can reach the board on your network can open the dashboard and take control when it is free.</p>
   <p><strong>Is the board itself still on the network?</strong> A separate task looks at the Wi-Fi link ten times a second. Once its last good look is 300 ms old, nobody is operator any more and nothing may move. When the link comes back, every token issued before the gap is void, so nothing sent before or during an outage can start a move after it.</p>
-  <p class="code-links">In the code: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/operator.rs#L5-L6">the 5-second operator lease</a>, <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/session.rs#L16-L39">pings and their echoes</a>, <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/coordination.rs#L171-L182">control claimed on connecting</a>, and <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/network.rs#L10-L39">the 300 ms network check</a>.</p>
+  <p class="code-links">In the code: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/operator.rs#L5-L6">the 5-second operator lease</a>, <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/session.rs#L16-L39">pings and their echoes</a>, <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/coordination.rs#L189-L200">control claimed on connecting</a>, and <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/network.rs#L10-L39">the 300 ms network check</a>.</p>
 
   <h3>A note for the direction task</h3>
   <p>The press has been accepted. It is still nowhere near a pin. <a href="#boot">Chapter 1</a> started several tasks that take turns on the processor, and the one talking to your browser is not the one that owns the pins. It has no way to reach them. Only the <strong>direction task</strong> writes GP10, GP11, GP20 and GP21. Everyone else, the browser’s task now and the satellite tracker later, leaves it a note saying <em>move</em> or <em>stop</em>, in a mailbox with room for exactly one.</p>
@@ -84,7 +84,7 @@
       <button type="button" id="control-mailbox-read">Read the note</button>
     </div>
     <p id="control-mailbox-readout" aria-live="polite" class="control-say"></p>
-    <figcaption>Each move note here is good for the full 750 ms from the moment it is left. The figure follows <code>CommandMailbox</code>, shown below, and the expiry check made when a note is read, in <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/lifecycle.rs#L1061-L1072"><code>take_command</code></a>.</figcaption>
+    <figcaption>Each move note here is good for the full 750 ms from the moment it is left. The figure follows <code>CommandMailbox</code>, shown below, and the expiry check made when a note is read, in <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/lifecycle.rs#L1188-L1199"><code>take_command</code></a>.</figcaption>
   </figure>
   <p>Three rules, and you can produce each of them above. A newer move replaces an older one, because only the latest wish matters. A stop is never replaced: once someone has asked for a stop, no later move can hide it before it is read. And waiting does not extend a note. A move that has expired by the time it is read is read as a stop.</p>
   <p>Here is the browser’s task turning an accepted press into a note, and the mailbox the note goes into.</p>
@@ -229,7 +229,7 @@
       <li data-at="if self.applied.azimuth != drive.azimuth">Touch the pins only when the answer has changed.</li>
       <li data-at="Some(AzimuthDirection::Clockwise) =&gt; self.cw.set_low()">First lower whichever pin was high.</li>
       <li data-at="Some(AzimuthDirection::Clockwise) =&gt; self.cw.set_high()">Then raise the new one. The timing rules never ask for a straight swap, since a reversal passes through two seconds of off. If they ever did, GP10 and GP11 still could not be high together.</li>
-      <li data-at="if self.applied.elevation != drive.elevation">Elevation is the same again, with GP20 for up and GP21 for down.</li>
+      <li data-at="if self.applied.elevation != drive.elevation">Elevation is the same again. On this installation the control box’s down input raises the dish, so <code>up</code> is GP21 and <code>down</code> is GP20.</li>
       <li data-at="self.applied = drive;">Remember what the pins now are.</li>
     </ol>
   </figure>

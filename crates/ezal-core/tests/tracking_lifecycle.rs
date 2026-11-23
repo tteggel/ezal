@@ -19,11 +19,7 @@ const EVENT: PassEvent = PassEvent {
     aos_unix_s: 1000,
     los_unix_s: 1030,
 };
-const REVISIONS: PlanRevisions = PlanRevisions {
-    orbit: 1,
-    clock: 1,
-    start: 1,
-};
+const REVISIONS: PlanRevisions = PlanRevisions { orbit: 1, start: 1 };
 const AOS: u64 = 122_000;
 const PREP: u64 = 62_000;
 const LOS: u64 = 152_000;
@@ -226,6 +222,31 @@ fn only_current_lease_can_mutate_and_stale_generations_cannot_cancel() {
 }
 
 #[test]
+fn cancel_drops_the_selection_and_return_to_manual_keeps_it_replanning() {
+    for (action, reason, kept) in [
+        (TrackingAction::Cancel, TrackingStop::Cancelled, false),
+        (TrackingAction::Manual, TrackingStop::ManualMode, true),
+    ] {
+        let (mut lifecycle, owner) = armed();
+        let event = lifecycle.snapshot().selection.unwrap().id;
+        lifecycle
+            .request(request(&lifecycle, owner, 3, action), 2100)
+            .unwrap();
+        let state = lifecycle.snapshot();
+        assert_eq!(state.mode, TrackingMode::Manual);
+        assert_eq!(state.selection.is_some(), kept);
+        let termination = state.termination.unwrap();
+        assert_eq!(
+            (termination.reason, termination.event),
+            (reason, Some(event))
+        );
+        // The worker's next refresh replans only a kept selection.
+        lifecycle.refresh(&[EVENT], REVISIONS, 2200).unwrap();
+        assert_eq!(lifecycle.planning_ticket().is_some(), kept);
+    }
+}
+
+#[test]
 fn exact_retries_are_idempotent_and_old_requests_cannot_revive_or_cancel_a_replacement() {
     let (mut lifecycle, owner) = selected();
     let arm = request(&lifecycle, owner, 2, TrackingAction::Arm);
@@ -365,7 +386,6 @@ fn freeze_is_atomic_and_newer_revisions_cannot_replace_it() {
             &[],
             PlanRevisions {
                 orbit: 20,
-                clock: 20,
                 start: 20,
             },
             PREP,
@@ -433,7 +453,30 @@ fn update_or_cancel_at_preparation_boundary_prevents_stale_activation() {
 }
 
 #[test]
-fn prepare_now_needs_a_new_plan_that_explicitly_evaluated_early_preparation() {
+fn prepare_now_keeps_a_plan_whose_verification_covers_starting_now() {
+    let (mut lifecycle, owner) = armed();
+    let from = lifecycle
+        .bound_plan()
+        .unwrap()
+        .plan()
+        .assessment
+        .prepare_from_ms;
+    assert!(from < PREP);
+    lifecycle
+        .request(
+            request(&lifecycle, owner, 3, TrackingAction::PrepareNow),
+            from,
+        )
+        .unwrap();
+    assert_eq!(lifecycle.planning_ticket(), None);
+    lifecycle.tick(from).unwrap();
+    assert_eq!(lifecycle.snapshot().phase, TrackingPhase::Preparing);
+    assert_eq!(*lifecycle.bound_plan().unwrap().inputs(), "original inputs");
+}
+
+#[test]
+fn prepare_now_before_the_verified_start_needs_a_new_immediate_plan() {
+    // The plan covers starting once the relays settle, which is after 2100 ms.
     let (mut lifecycle, owner) = armed();
     lifecycle
         .request(
@@ -865,7 +908,7 @@ fn a_new_satellite_can_use_its_older_cached_publication_without_regressing_other
         lifecycle.refresh(
             &[next],
             PlanRevisions {
-                clock: 0,
+                start: 0,
                 ..REVISIONS
             },
             2000

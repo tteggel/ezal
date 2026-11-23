@@ -3,12 +3,12 @@
 mod common;
 
 use common::{
-    download, full_travel_installed, full_travel_sample, nominal, resting_start,
+    download, full_travel_installed, full_travel_sample, nominal, ntp_sample, resting_start,
     FULL_TRAVEL_CALIBRATION,
 };
 use ezal_core::actuator::{Actuator, ActuatorConfig, ActuatorInput};
 use ezal_core::ads1015::FEEDBACK_FULL_SCALE;
-use ezal_core::catalog::{Catalog, OrbitalDownload, SourceOrder};
+use ezal_core::catalog::{Catalog, DownloadError, OrbitalDownload, SourceOrder};
 use ezal_core::drive::{Command, CommandEnvelope};
 use ezal_core::duty::{DutyConfig, DutyHistory};
 use ezal_core::feedback::{FeedbackHealth, FeedbackSample, FeedbackSnapshot};
@@ -35,27 +35,10 @@ const EVENT: PassEvent = PassEvent {
 const UTC: u64 = EVENT.aos_unix_s as u64 * 1000 + 125 - 120_000;
 const AOS: u64 = 122_000;
 const LOS: u64 = 152_000;
-const REVISIONS: PlanRevisions = PlanRevisions {
-    orbit: 1,
-    clock: 1,
-    start: 1,
-};
-fn sample(utc: u64) -> ntp::TimeSample {
-    let mut stamp = [0; 8];
-    stamp[..4].copy_from_slice(&((utc / 1000 + 2_208_988_800) as u32).to_be_bytes());
-    stamp[4..].copy_from_slice(&((((utc % 1000) << 32).div_ceil(1000)) as u32).to_be_bytes());
-    let mut packet = [0; 48];
-    packet[0] = 0x24;
-    packet[1] = 2;
-    packet[3] = (-20i8) as u8;
-    packet[24..32].fill(1);
-    packet[32..40].copy_from_slice(&stamp);
-    packet[40..48].copy_from_slice(&stamp);
-    ntp::reply_sample(&packet, [1; 8], 0).unwrap()
-}
+const REVISIONS: PlanRevisions = PlanRevisions { orbit: 1, start: 1 };
 fn clock(utc: u64) -> UtcClock {
     let mut clock = UtcClock::new();
-    clock.synchronize(2000, sample(utc)).unwrap();
+    clock.synchronize(2000, ntp_sample(utc)).unwrap();
     clock
 }
 fn observation(at: u64) -> RuntimeObservation {
@@ -125,32 +108,33 @@ fn capture(
         2000,
     )
 }
+/// Plan `inputs` from rest at the satellite's AOS direction.
+fn plan(inputs: &ExecutionInputs) -> PlanningReport {
+    let look = inputs.look_at(inputs.window().aos_unix_s).unwrap();
+    let pose = Pointing::new(look.azimuth_deg as f32, look.elevation_deg as f32);
+    let mut planner = Planner::new(
+        inputs.clone(),
+        inputs.window(),
+        FULL_TRAVEL_CALIBRATION,
+        resting_start(FULL_TRAVEL_CALIBRATION, pose, [0, 0]),
+        nominal(),
+    )
+    .unwrap();
+    while !planner.is_finished() {
+        planner.step().unwrap();
+    }
+    let report = planner.take_report().unwrap();
+    assert!(
+        report.plan.is_some(),
+        "fixture must be feasible: {:?}",
+        report.closest_attempt
+    );
+    report
+}
+/// The fixture window's plan, computed once for every test that uses it.
 fn report(inputs: &ExecutionInputs) -> PlanningReport {
     static REPORT: OnceLock<PlanningReport> = OnceLock::new();
-    REPORT
-        .get_or_init(|| {
-            let look = inputs.look_at(inputs.window().aos_unix_s).unwrap();
-            let pose = Pointing::new(look.azimuth_deg as f32, look.elevation_deg as f32);
-            let mut planner = Planner::new(
-                inputs.clone(),
-                inputs.window(),
-                FULL_TRAVEL_CALIBRATION,
-                resting_start(FULL_TRAVEL_CALIBRATION, pose, [0, 0]),
-                nominal(),
-            )
-            .unwrap();
-            while !planner.is_finished() {
-                planner.step().unwrap();
-            }
-            let report = planner.take_report().unwrap();
-            assert!(
-                report.plan.is_some(),
-                "fixture must be feasible: {:?}",
-                report.closest_attempt
-            );
-            report
-        })
-        .clone()
+    REPORT.get_or_init(|| plan(inputs)).clone()
 }
 fn preview() -> (TrackingRuntime, OperatorToken) {
     let (mut runtime, token) = selected(EVENT, observation(2000));
@@ -282,11 +266,14 @@ fn framed_downloads_are_atomic_and_failed_older_or_malformed_updates_retain_meta
             .as_bytes(),
         )
         .unwrap();
-    assert!(matches!(truncated.finish(), Err(http::Error::Truncated)));
+    assert!(matches!(
+        truncated.finish(),
+        Err(DownloadError::Http(http::Error::Truncated))
+    ));
     let mut failed = OrbitalDownload::new((UTC / 1000) as i64);
     assert_eq!(
         failed.push(b"HTTP/1.1 500 Error\r\n\r\n"),
-        Err(http::Error::Status)
+        Err(DownloadError::Http(http::Error::Status))
     );
     assert!(failed.push(TLES.as_bytes()).is_err());
     assert!(failed.finish().is_err());
@@ -378,10 +365,26 @@ fn input_snapshot_propagates_fractional_time_and_binds_clock_satellite_and_plan(
     assert!(inputs.matches(&plan, inputs.ticket()));
     plan.window.aos_at_ms += 1;
     assert!(!inputs.matches(&plan, inputs.ticket()));
-    let mut changed = clock(UTC);
-    changed.synchronize(2000, sample(UTC)).unwrap();
+    // A job captures whatever sample is current, but its window must map
+    // through that same sample.
+    let mut corrected = clock(UTC);
+    corrected.synchronize(3000, ntp_sample(UTC + 1300)).unwrap();
+    let recapture = |window| {
+        ExecutionInputs::capture(
+            inputs.ticket(),
+            catalog.snapshot(EVENT.norad_id).unwrap(),
+            InputSettings::default(),
+            corrected,
+            window,
+            &nominal(),
+            3000,
+        )
+    };
+    let window =
+        execution_window(corrected.anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap();
+    assert!(recapture(window).is_ok());
     assert!(matches!(
-        capture(&runtime, &catalog, changed, UTC + 120_000, UTC + 150_000),
+        recapture(inputs.window()),
         Err(InputError::Binding)
     ));
     let wrong = ExecutionInputs::capture(
@@ -410,6 +413,57 @@ fn input_snapshot_propagates_fractional_time_and_binds_clock_satellite_and_plan(
         2000,
     );
     assert!(matches!(wrong, Err(InputError::Observer)));
+}
+
+/// The planner's ephemeris interpolates SGP4 states a minute apart; the run
+/// propagates every look-up. Fifteen minutes cross many knots.
+#[test]
+fn a_planning_track_follows_its_inputs_whatever_the_look_up_order() {
+    let event = PassEvent {
+        los_unix_s: EVENT.aos_unix_s + 900,
+        ..EVENT
+    };
+    let (runtime, _) = selected(event, observation(2000));
+    let inputs = capture(
+        &runtime,
+        &catalog(),
+        clock(UTC),
+        UTC + 120_000,
+        UTC + 1_020_000,
+    )
+    .unwrap();
+    let window = inputs.window();
+    let los = window.aos_unix_s + f64::from(window.duration_ms) / 1000.0;
+    let track = PlanningTrack::new(inputs.clone());
+    let at_los = track.look_at(los).unwrap();
+    assert!(track.look_at(window.aos_unix_s - 0.001).is_none());
+    assert!(track.look_at(los + 0.001).is_none());
+    let direction = |look: ezal_core::orbit::LookAngle| {
+        let (az, el) = (
+            look.azimuth_deg.to_radians(),
+            look.elevation_deg.to_radians(),
+        );
+        [el.cos() * az.sin(), el.cos() * az.cos(), el.sin()]
+    };
+    let mut worst_deg = 0.0f64;
+    for step in 0..=window.duration_ms / 10 {
+        let at = window.aos_unix_s + f64::from(step * 10) / 1000.0;
+        let (a, b) = (
+            direction(track.look_at(at).unwrap()),
+            direction(inputs.look_at(at).unwrap()),
+        );
+        let cross = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
+        let sine = cross.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let cosine: f64 = (0..3).map(|i| a[i] * b[i]).sum();
+        worst_deg = worst_deg.max(sine.atan2(cosine).to_degrees());
+    }
+    assert!(worst_deg < 1e-4, "{worst_deg}°");
+    assert_eq!(track.look_at(los), Some(at_los));
+    assert_eq!(track.inputs().ticket(), inputs.ticket());
 }
 
 #[test]
@@ -441,10 +495,11 @@ fn freshly_downloaded_elements_must_remain_fresh_through_los_with_time_allowance
 }
 
 #[test]
-fn early_selection_allows_refreshes_but_old_clock_cannot_freeze_hours_later() {
+fn an_early_preview_freezes_hours_later_on_a_newer_sample_that_agrees() {
+    const LATER: u64 = 4 * 3_600_000;
     let event = PassEvent {
-        aos_unix_s: EVENT.aos_unix_s + 4 * 3600,
-        los_unix_s: EVENT.los_unix_s + 4 * 3600,
+        aos_unix_s: EVENT.aos_unix_s + (LATER / 1000) as i64,
+        los_unix_s: EVENT.los_unix_s + (LATER / 1000) as i64,
         ..EVENT
     };
     let (runtime, _) = selected(event, observation(2000));
@@ -452,15 +507,34 @@ fn early_selection_allows_refreshes_but_old_clock_cannot_freeze_hours_later() {
         &runtime,
         &catalog(),
         clock(UTC),
-        UTC + 120_000 + 14_400_000,
-        UTC + 150_000 + 14_400_000,
+        UTC + 120_000 + LATER,
+        UTC + 150_000 + LATER,
     )
     .unwrap();
     assert_eq!(inputs.validate_preview(clock(UTC), 2000), Ok(()));
-    assert_eq!(
-        inputs.validate_execution(clock(UTC), 2000),
-        Err(InputError::Timing(TimingError::Uncertainty))
-    );
+    // Its own sample cannot cover LOS, nor, hours on, even the present.
+    let prep = AOS + LATER - 60_000;
+    let uncertain = Err(InputError::Timing(TimingError::Uncertainty));
+    assert_eq!(inputs.validate_execution(clock(UTC), 2000), uncertain);
+    assert_eq!(inputs.validate_preview(clock(UTC), prep), uncertain);
+    // A recent sample vouches for the unchanged timeline unless it moves
+    // time by more than the 250 ms timing share.
+    for (correction, expected) in [
+        (3, Ok(())),
+        (-3, Ok(())),
+        (300, Err(InputError::Timing(TimingError::Correction))),
+    ] {
+        let mut current = clock(UTC);
+        let at = prep - 1000;
+        current
+            .synchronize(
+                at,
+                ntp_sample((UTC + at - 2000).checked_add_signed(correction).unwrap()),
+            )
+            .unwrap();
+        assert_eq!(inputs.validate_preview(current, prep), expected);
+        assert_eq!(inputs.validate_execution(current, prep), expected);
+    }
 }
 
 #[test]
@@ -476,14 +550,13 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
         .look_at_uptime(AOS + 10);
     let mut obs = observation(AOS + 10);
     obs.clock
-        .synchronize(AOS + 10, sample(UTC + AOS + 10 - 2000 + 100))
+        .synchronize(AOS + 10, ntp_sample(UTC + AOS + 10 - 2000 + 100))
         .unwrap();
     runtime
         .refresh(
             &[EVENT],
             PlanRevisions {
                 orbit: 2,
-                clock: 2,
                 ..REVISIONS
             },
             obs,
@@ -529,23 +602,30 @@ fn browser_loss_and_failed_internet_refreshes_leave_frozen_inputs_and_clock_unch
 }
 
 #[test]
-fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacement() {
+fn a_routine_sample_at_preparation_freezes_the_plan_it_vouches_for() {
+    let (mut runtime, _, prep) = armed();
+    let anchor = runtime.bound_plan().unwrap().inputs().clock().anchor();
+    let mut obs = observation(prep);
+    obs.clock
+        .synchronize(prep, ntp_sample(UTC + prep - 2000 + 3))
+        .unwrap();
+    runtime.refresh(&[EVENT], REVISIONS, obs).unwrap();
+    assert_eq!(runtime.snapshot().phase, TrackingPhase::Preparing);
+    assert_eq!(
+        runtime.bound_plan().unwrap().inputs().clock().anchor(),
+        anchor
+    );
+}
+
+#[test]
+fn a_large_correction_at_preparation_invalidates_old_job_then_freezes_only_its_replacement() {
     let (mut runtime, _, prep) = armed();
     let old_inputs = runtime.bound_plan().unwrap().inputs().clone();
     let mut obs = observation(prep);
     obs.clock
-        .synchronize(prep, sample(UTC + prep - 2000))
+        .synchronize(prep, ntp_sample(UTC + prep - 2000 + 300))
         .unwrap();
-    runtime
-        .refresh(
-            &[EVENT],
-            PlanRevisions {
-                clock: 2,
-                ..REVISIONS
-            },
-            obs,
-        )
-        .unwrap();
+    runtime.refresh(&[EVENT], REVISIONS, obs).unwrap();
     assert!(runtime.snapshot().run.is_none());
     assert_eq!(runtime.snapshot().plan, PlanStatus::Planning);
     assert_eq!(
@@ -569,7 +649,7 @@ fn new_clock_at_preparation_invalidates_old_job_then_freezes_only_its_replacemen
     )
     .unwrap();
     runtime
-        .publish_plan(ticket, Ok(report(&inputs)), inputs, obs)
+        .publish_plan(ticket, Ok(plan(&inputs)), inputs, obs)
         .unwrap();
     assert_eq!(runtime.snapshot().phase, TrackingPhase::Preparing);
     assert_eq!(
@@ -594,7 +674,7 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
         obs.clock
             .synchronize(
                 now,
-                sample((UTC as i64 + now as i64 - 2000 + correction) as u64),
+                ntp_sample((UTC as i64 + now as i64 - 2000 + correction) as u64),
             )
             .unwrap();
         assert_eq!(runtime.take_command(obs), Some(CommandEnvelope::INHIBIT));
@@ -802,7 +882,7 @@ fn runtime_cancel_at_preparation_prevents_a_freeze_and_stale_clock_publications_
     let mut updated = observation(AOS + 10);
     updated
         .clock
-        .synchronize(AOS + 10, sample(UTC + AOS + 10 - 2000))
+        .synchronize(AOS + 10, ntp_sample(UTC + AOS + 10 - 2000))
         .unwrap();
     runtime.service(updated).unwrap();
     assert!(is_drive(runtime.take_command(updated)));

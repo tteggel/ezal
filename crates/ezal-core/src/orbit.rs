@@ -390,8 +390,9 @@ impl Orbit {
         fresh_epoch(self.epoch_unix_s, start_unix_s, end_unix_s)
     }
 
-    /// Propagate using the library and apply only the observer transformation.
-    pub fn look_at(&self, station: &GroundStation, unix_s: f64) -> Option<LookAngle> {
+    /// TEME position and velocity at a Unix time. Most of a look-up's cost
+    /// on the Pico is here, not in the observer transformation.
+    pub fn state(&self, unix_s: f64) -> Option<OrbitalState> {
         // SGP4 takes elapsed minutes since the TLE epoch. Negative offsets are
         // allowed (a fresh distributed TLE can have a slightly future epoch).
         // Each call starts from the same epoch constants, so peak refinement
@@ -402,12 +403,27 @@ impl Orbit {
             .constants
             .propagate(sgp4::MinutesSinceEpoch((unix_s - self.epoch_unix_s) / 60.0))
             .ok()?;
-        // Position is in TEME kilometres. Velocity is also returned by SGP4,
-        // but is unnecessary for geometric pointing and these pass windows.
-        let look = station.look_at(prediction.position, unix_s);
+        Some(OrbitalState {
+            position_km: prediction.position,
+            velocity_km_s: prediction.velocity,
+        })
+    }
+
+    /// Propagate using the library and apply only the observer transformation.
+    pub fn look_at(&self, station: &GroundStation, unix_s: f64) -> Option<LookAngle> {
+        let look = station.look_at(self.state(unix_s)?.position_km, unix_s);
         // A numerical failure must not become a direction or an empty forecast.
         (look.azimuth_deg.is_finite() && look.elevation_deg.is_finite()).then_some(look)
     }
+}
+
+/// One SGP4 prediction in TEME axes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrbitalState {
+    /// Position in kilometres.
+    pub position_km: [f64; 3],
+    /// Velocity in kilometres per second.
+    pub velocity_km_s: [f64; 3],
 }
 
 /// Longest line kept while streaming. Anything longer is not TLE data.

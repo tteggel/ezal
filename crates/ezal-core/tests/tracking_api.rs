@@ -36,15 +36,20 @@ fn strict_bounded_wire_preserves_identifiers_and_rejects_extra_intent() {
     assert_eq!(intent.lease, u64::MAX);
     assert_eq!(intent.sequence, u64::MAX);
     assert_eq!(intent.revision, u64::MAX);
-    for action in ["arm", "prepare", "cancel", "manual"] {
+    for action in ["arm", "prepare", "rehearse", "cancel", "manual"] {
         assert!(matches!(
             ClientMessage::parse(&format!("track:1:2:3:4:{action}")),
             Some(ClientMessage::Tracking(_))
         ));
     }
+    assert_eq!(
+        parse("track:1:2:3:4:rehearse").action,
+        TrackingAction::Rehearse
+    );
     for text in [
         "track:1:2:3:4:arm:select",
         "track:1:2:3:4:cancel:",
+        "track:1:2:3:4:rehearse:1",
         "track:1:2:0:4:arm",
         "track:1:0:3:4:arm",
         "track:1:2:3:4:select:1:100",

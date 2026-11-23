@@ -1,6 +1,12 @@
+mod common;
+
+use ezal_core::actuator::Actuator;
 use ezal_core::coordination::CoordinationState;
 use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
+use ezal_core::feedback::{FeedbackHealth, FeedbackSample, FeedbackSnapshot};
+use ezal_core::interlock::FeedbackInterlock;
 use ezal_core::operator::{OperatorGrant, OPERATOR_LEASE_MS};
+use ezal_core::position::{FeedbackVoltages, Pointing};
 
 const MOVE: CommandEnvelope = CommandEnvelope {
     command: Command::Jog(DriveCommand {
@@ -161,4 +167,57 @@ fn renewal_extends_the_same_grant_only_while_the_network_is_current() {
     // The observation from 200 expires at 500 and revokes the renewed lease with it.
     assert!(!state.renew_operator(token, 700));
     assert!(state.operator(owner, 700).is_none());
+}
+
+/// One resting acquisition in firmware order: publish, service, record.
+fn rest_at(state: &mut CoordinationState, actuator: &mut Actuator, mv: FeedbackVoltages, now: u64) {
+    let sample = FeedbackSample::from_voltages(common::installed(), mv, now).unwrap();
+    let mut interlock = FeedbackInterlock::new(common::installed());
+    interlock.publish(Some(sample));
+    state.publish_network(true, now);
+    state.publish_feedback(
+        FeedbackSnapshot {
+            raw: None,
+            last_valid: Some(sample),
+            health: FeedbackHealth::Healthy,
+        },
+        interlock,
+        now,
+    );
+    state.service_actuator(actuator, now);
+    state.record_actuator(actuator, now);
+}
+
+/// The test calibration's azimuth code is 0.4°, so the 2° start tolerance
+/// (`coordination::START_TOLERANCE_DEG`) is five codes; the bench's flicker
+/// at an end stop is four.
+#[test]
+fn idle_feedback_noise_keeps_the_planning_start_and_drift_from_it_replaces_it() {
+    let mut state = CoordinationState::new();
+    let mut actuator = common::rested_actuator();
+    let rest = common::TEST_CALIBRATION
+        .position_to_feedback(Pointing::new(180.0, 45.0))
+        .unwrap();
+    let offset = |codes: i32| FeedbackVoltages {
+        a0_elevation_mv: rest.a0_elevation_mv + 2 * codes,
+        a1_azimuth_mv: rest.a1_azimuth_mv - 2 * codes,
+    };
+    rest_at(&mut state, &mut actuator, rest, 0);
+    rest_at(&mut state, &mut actuator, rest, 2000);
+    let start = state.start_revision();
+    for (now, codes) in (2100..4000).step_by(100).zip([4, -4].into_iter().cycle()) {
+        rest_at(&mut state, &mut actuator, offset(codes), now);
+    }
+    assert_eq!(state.start_revision(), start);
+    // Creeping a code at a time is measured from the start, not the last sample.
+    for (now, codes) in [(4000, 2), (4100, 3), (4200, 4)] {
+        rest_at(&mut state, &mut actuator, offset(codes), now);
+    }
+    assert_eq!(state.start_revision(), start);
+    rest_at(&mut state, &mut actuator, offset(6), 4300);
+    let moved = state.start_revision();
+    assert!(moved > start);
+    // The moved pose is the new start.
+    rest_at(&mut state, &mut actuator, offset(3), 4400);
+    assert_eq!(state.start_revision(), moved);
 }

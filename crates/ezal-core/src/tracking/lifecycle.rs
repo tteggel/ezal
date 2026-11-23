@@ -19,15 +19,13 @@ use crate::operator::{LeaseError, OperatorGrant, OperatorLease, OperatorToken};
 pub struct PlanRevisions {
     /// Accepted orbital data, including source/expiry metadata.
     pub orbit: u64,
-    /// Fractional UTC anchor and its uncertainty.
-    pub clock: u64,
     /// Starting pose/output history; advance when that planning assumption changes.
     pub start: u64,
 }
 
 impl PlanRevisions {
     fn follows(self, previous: Self) -> bool {
-        self.orbit >= previous.orbit && self.clock >= previous.clock && self.start >= previous.start
+        self.orbit >= previous.orbit && self.start >= previous.start
     }
 }
 
@@ -51,6 +49,16 @@ pub struct PlanTicket {
     pass: PassEvent,
     revisions: PlanRevisions,
     timing: PreparationTiming,
+    rehearsal: Option<Rehearsal>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Rehearsal {
+    preparation_lead_ms: u64,
+    finish_before_ms: u64,
+    coast_ms: u64,
+    resume_armed: bool,
+    live_deadline_ms: u64,
 }
 
 impl PlanTicket {
@@ -65,6 +73,22 @@ impl PlanTicket {
     /// The planner must evaluate this schedule explicitly.
     pub const fn preparation_timing(self) -> PreparationTiming {
         self.timing
+    }
+    /// Rehearsals retain the selected orbital window but execute it earlier.
+    pub const fn is_rehearsal(self) -> bool {
+        self.rehearsal.is_some()
+    }
+    pub(super) fn rehearsal_aos_at_ms(self, now_ms: u64) -> Option<u64> {
+        now_ms.checked_add(self.rehearsal?.preparation_lead_ms)
+    }
+    pub(super) fn rehearsal_fits(self, window: super::PlanningWindow) -> bool {
+        self.rehearsal.is_none_or(|r| {
+            window
+                .aos_at_ms
+                .checked_add(u64::from(window.duration_ms))
+                .and_then(|end| end.checked_add(r.coast_ms))
+                .is_some_and(|end| end < r.finish_before_ms)
+        })
     }
 }
 
@@ -196,6 +220,10 @@ pub enum PlanStatus {
 pub enum TrackingStop {
     /// Normal end of the reception window.
     LossOfSignal,
+    /// The full-speed rehearsal finished; the selected live event is retained.
+    RehearsalComplete,
+    /// Rehearsal work reached the selected live pass's preparation deadline.
+    RehearsalDeadline,
     /// Current leased operator cancelled.
     Cancelled,
     /// Current leased operator selected Manual mode.
@@ -270,9 +298,13 @@ pub enum TrackingAction {
     Arm,
     /// Re-evaluate preparation from now before freezing/executing it.
     PrepareNow,
-    /// Stop across plan revisions, retaining the last selection for inspection.
+    /// Prepare immediately and execute the selected motion at real speed, early.
+    Rehearse,
+    /// Stop across plan revisions and drop the selection, so nothing replans.
+    /// The termination still names the event.
     Cancel,
-    /// Stop and allow fresh manual input.
+    /// Stop and allow fresh manual input, keeping the selection: its preview
+    /// keeps replanning and can be armed again.
     Manual,
 }
 
@@ -355,6 +387,7 @@ pub struct TrackingLifecycle<S> {
     selection: Option<Selection>,
     revisions: Option<PlanRevisions>,
     timing: PreparationTiming,
+    rehearsal: Option<Rehearsal>,
     ticket: Option<PlanTicket>,
     plan: Option<BoundTrackingPlan<S>>,
     plan_status: PlanStatus,
@@ -386,6 +419,7 @@ impl<S> TrackingLifecycle<S> {
             selection: None,
             revisions: None,
             timing: PreparationTiming::Scheduled,
+            rehearsal: None,
             ticket: None,
             plan: None,
             plan_status: PlanStatus::Unplanned,
@@ -411,6 +445,41 @@ impl<S> TrackingLifecycle<S> {
             recovery: self.recovery,
             termination: self.termination,
         }
+    }
+
+    /// Includes planning and preparation for an explicitly requested rehearsal.
+    pub const fn is_rehearsing(&self) -> bool {
+        self.rehearsal.is_some()
+    }
+
+    /// Time left to request a rehearsal that finishes, including final coast,
+    /// strictly before scheduled live preparation. Uses device monotonic time.
+    pub fn rehearsal_available_ms(&self, now_ms: u64) -> Option<u64> {
+        if self.rehearsal.is_some()
+            || self.run.is_some()
+            || (self.mode != TrackingMode::Manual && self.phase != TrackingPhase::Armed)
+            || !self.armable(now_ms)
+        {
+            return None;
+        }
+        let plan = &self.plan.as_ref()?.plan;
+        let deadline = plan
+            .window
+            .aos_at_ms
+            .checked_sub(plan.assessment.preparation_lead_ms)?;
+        let lead = plan.assessment.preparation_lead_ms.max(60_000);
+        let coast = plan
+            .actuator
+            .travel
+            .azimuth
+            .coast_ms
+            .max(plan.actuator.travel.elevation.coast_ms);
+        let remaining = deadline
+            .checked_sub(now_ms)?
+            .checked_sub(lead)?
+            .checked_sub(u64::from(plan.window.duration_ms))?
+            .checked_sub(coast)?;
+        (remaining > 0).then_some(remaining)
     }
 
     /// Observe a grant without renewing it.
@@ -509,6 +578,9 @@ impl<S> TrackingLifecycle<S> {
     }
 
     fn stop(&mut self, reason: TrackingStop, now_ms: u64) {
+        let resume = self
+            .rehearsal
+            .filter(|r| reason == TrackingStop::RehearsalComplete && r.resume_armed);
         self.termination = Some(TrackingTermination {
             event: self.selection.map(|s| s.id),
             run: self.run,
@@ -525,7 +597,13 @@ impl<S> TrackingLifecycle<S> {
         self.plan = None;
         self.plan_status = PlanStatus::Unplanned;
         self.timing = PreparationTiming::Scheduled;
+        self.rehearsal = None;
         self.commands.submit(CommandEnvelope::INHIBIT);
+        if let Some(rehearsal) = resume {
+            self.mode = TrackingMode::Tracking;
+            self.phase = TrackingPhase::Armed;
+            self.armed_deadline_ms = Some(rehearsal.live_deadline_ms);
+        }
     }
 
     /// Apply one lease-bound mutation. An exact retry returns its original result
@@ -604,23 +682,50 @@ impl<S> TrackingLifecycle<S> {
             }
             TrackingAction::PrepareNow => {
                 if self.phase != TrackingPhase::Armed
+                    || self.rehearsal.is_some()
                     || self.selection.is_none_or(|s| s.current.is_none())
                 {
                     return Err(LifecycleError::NotReady);
                 }
                 self.timing = PreparationTiming::Immediate;
+                // A plan whose verification already covers starting now is kept.
+                if self.armable(now_ms) && self.prepare_at_ms().is_some_and(|at| at <= now_ms) {
+                    self.bump(now_ms)?;
+                } else {
+                    self.start_job(now_ms)?;
+                }
+            }
+            TrackingAction::Rehearse => {
+                if self.rehearsal_available_ms(now_ms).is_none() {
+                    return Err(LifecycleError::NotReady);
+                }
+                let plan = &self.plan.as_ref().unwrap().plan;
+                self.rehearsal = Some(Rehearsal {
+                    preparation_lead_ms: plan.assessment.preparation_lead_ms.max(60_000),
+                    finish_before_ms: plan.window.aos_at_ms - plan.assessment.preparation_lead_ms,
+                    coast_ms: plan
+                        .actuator
+                        .travel
+                        .azimuth
+                        .coast_ms
+                        .max(plan.actuator.travel.elevation.coast_ms),
+                    resume_armed: self.mode == TrackingMode::Tracking,
+                    live_deadline_ms: plan.window.aos_at_ms,
+                });
+                self.timing = PreparationTiming::Immediate;
+                self.mode = TrackingMode::Tracking;
+                self.phase = TrackingPhase::Armed;
+                self.commands.submit(CommandEnvelope::INHIBIT);
                 self.start_job(now_ms)?;
             }
-            TrackingAction::Cancel | TrackingAction::Manual => {
+            TrackingAction::Cancel => {
                 self.bump(now_ms)?;
-                self.stop(
-                    if request.action == TrackingAction::Cancel {
-                        TrackingStop::Cancelled
-                    } else {
-                        TrackingStop::ManualMode
-                    },
-                    now_ms,
-                );
+                self.stop(TrackingStop::Cancelled, now_ms);
+                self.selection = None;
+            }
+            TrackingAction::Manual => {
+                self.bump(now_ms)?;
+                self.stop(TrackingStop::ManualMode, now_ms);
             }
         }
         Ok(())
@@ -648,6 +753,7 @@ impl<S> TrackingLifecycle<S> {
             pass,
             revisions,
             timing: self.timing,
+            rehearsal: self.rehearsal,
         });
         self.plan = None;
         self.plan_status = PlanStatus::Planning;
@@ -716,6 +822,16 @@ impl<S> TrackingLifecycle<S> {
         self.plan.as_ref()
     }
 
+    /// When an armed run starts preparing: the plan's schedule or, after
+    /// Prepare now, the earliest start its verification covers.
+    pub fn prepare_at_ms(&self) -> Option<u64> {
+        let assessment = &self.plan.as_ref()?.plan.assessment;
+        Some(match self.timing {
+            PreparationTiming::Scheduled => assessment.prepare_at_ms,
+            PreparationTiming::Immediate => assessment.prepare_from_ms,
+        })
+    }
+
     /// The input owner can invalidate a preview without disarming its selection.
     /// A subsequent complete input refresh starts a new job; no stale fallback.
     pub(super) fn invalidate_inputs(
@@ -766,6 +882,8 @@ impl<S> TrackingLifecycle<S> {
         let freeze_before_ms = freeze_before_ms.min(admission_deadline(&plan));
         let problem = if !valid_plan(&plan, ticket) {
             Some(PlanProblem::InvalidResult)
+        } else if !ticket.rehearsal_fits(plan.window) {
+            Some(PlanProblem::TooLate)
         } else if now_ms >= freeze_before_ms {
             Some(PlanProblem::Expired)
         } else if !has_preparation_time(&plan, now_ms) {
@@ -798,6 +916,11 @@ impl<S> TrackingLifecycle<S> {
     /// state transition; subsequent worker results cannot overwrite it.
     pub fn tick(&mut self, now_ms: u64) -> Result<(), LifecycleError> {
         self.advance(now_ms)?;
+        if self.rehearsal.is_some_and(|r| now_ms >= r.finish_before_ms) {
+            self.bump(now_ms)?;
+            self.stop(TrackingStop::RehearsalDeadline, now_ms);
+            return Ok(());
+        }
         if self.phase == TrackingPhase::Armed
             && self
                 .armed_deadline_ms
@@ -846,7 +969,11 @@ impl<S> TrackingLifecycle<S> {
                 self.bump(now_ms)?;
                 self.stop(
                     if self.phase == TrackingPhase::Following {
-                        TrackingStop::LossOfSignal
+                        if self.rehearsal.is_some() {
+                            TrackingStop::RehearsalComplete
+                        } else {
+                            TrackingStop::LossOfSignal
+                        }
                     } else {
                         TrackingStop::LatePreparation
                     },
@@ -862,7 +989,7 @@ impl<S> TrackingLifecycle<S> {
                 self.plan = None;
                 self.plan_status = PlanStatus::Blocked(PlanProblem::Expired);
             } else if self.phase == TrackingPhase::Armed
-                && now_ms >= bound.plan.assessment.prepare_at_ms
+                && self.prepare_at_ms().is_some_and(|at| now_ms >= at)
             {
                 if !self.armable(now_ms) {
                     self.bump(now_ms)?;
@@ -1077,7 +1204,7 @@ impl<S> TrackingLifecycle<S> {
 /// returns to Idle, and every other reason is a fault that stops it.
 const fn terminal_phase(reason: TrackingStop) -> TrackingPhase {
     match reason {
-        TrackingStop::LossOfSignal => TrackingPhase::Complete,
+        TrackingStop::LossOfSignal | TrackingStop::RehearsalComplete => TrackingPhase::Complete,
         TrackingStop::Cancelled | TrackingStop::ManualMode => TrackingPhase::Cancelled,
         TrackingStop::Replaced => TrackingPhase::Idle,
         _ => TrackingPhase::Stopped,
@@ -1140,6 +1267,7 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
         && plan.config.uncertainty_deg.is_finite()
         && plan.config.uncertainty_deg >= 0.0
         && assessment.choice == plan.route.choice()
+        && assessment.prepare_from_ms <= assessment.prepare_at_ms
         && match plan.reception() {
             ReceptionCoverage::Complete => {
                 assessment.prepare_at_ms <= window.aos_at_ms
@@ -1155,6 +1283,7 @@ fn valid_plan(plan: &TrackingPlan, ticket: PlanTicket) -> bool {
                             end_ms: gap.missed.end_ms,
                         }]
                     && assessment.gap_time_ms == u64::from(gap.missed.end_ms - gap.missed.start_ms)
+                    && assessment.prepare_from_ms == assessment.prepare_at_ms
                     && if gap.late_acquisition {
                         assessment.prepare_at_ms == gap.recovery_at_ms
                             && assessment.preparation_ms == 0

@@ -1,5 +1,6 @@
-//! Device ownership, independent tracking and coherent actuator delivery.
-//! Reads never renew leases or drain commands. Firmware serializes mutations.
+//! Device ownership, independent tracking and coherent actuator delivery, with
+//! the selected pass's background planning in [`PlanningWorker`]. Reads never
+//! renew leases or drain commands. Firmware serializes mutations.
 
 use crate::actuator::{Actuator, ActuatorInput, ActuatorUpdate};
 use crate::drive::{CommandEnvelope, DriveCommand};
@@ -11,9 +12,22 @@ use crate::network::NetworkGate;
 use crate::ntp::UtcClock;
 use crate::operator::{OperatorGrant, OperatorToken};
 use crate::position::{FeedbackVoltages, Pointing};
+
+/// How far an idle pose may stray from the one planning started from before
+/// planning starts again. Idle feedback flickers by a code mid-range but by up
+/// to five near an end stop: 1.6° of azimuth on the bench. A 2° error lengthens
+/// the preparation slew by under 0.75 s at the slowest modelled 2.8°/s, and
+/// preparation is scheduled 20 s beyond the slowest rehearsal. Any output this
+/// device drives restarts planning regardless; a turn of the rotator's own
+/// controller beyond this does too.
+pub const START_TOLERANCE_DEG: f32 = 2.0;
 use crate::tracking::{
     RestingStart, RuntimeObservation, TrackingMode, TrackingRuntime, TrackingStop,
 };
+
+mod planning;
+
+pub use planning::{PlanningUnit, PlanningWorker, TrackingSource};
 
 struct StartupRestOverride {
     operator: OperatorToken,
@@ -137,16 +151,20 @@ impl CoordinationState {
         self.feedback.raw = Some(raw);
     }
 
-    /// Publish one acquisition; changed pose invalidates preview work immediately.
+    /// Publish one acquisition. A pose outside the planning start's tolerance
+    /// invalidates preview work immediately, before a simultaneous preparation
+    /// deadline can freeze it.
     pub fn publish_feedback(
         &mut self,
         feedback: FeedbackSnapshot,
         interlock: FeedbackInterlock,
         now_ms: u64,
     ) -> bool {
-        let changed = self.feedback.health != feedback.health
-            || self.feedback.last_valid.map(|s| s.position())
-                != feedback.last_valid.map(|s| s.position());
+        let moved = feedback
+            .last_valid
+            .zip(self.start_identity)
+            .is_some_and(|(sample, (start, ..))| !self.near_start(sample.position(), start));
+        let changed = self.feedback.health != feedback.health || moved;
         self.feedback = feedback;
         self.interlock = interlock;
         if changed {
@@ -348,8 +366,9 @@ impl CoordinationState {
         }
     }
 
-    /// Identity of the physical starting assumptions; fresh timestamps alone
-    /// do not restart planning, while changed pose/duty/network history does.
+    /// Identity of the physical starting assumptions. Fresh timestamps and
+    /// feedback noise do not restart planning; a moved pose or changed
+    /// duty/network history does.
     pub const fn start_revision(&self) -> u64 {
         self.start_revision
     }
@@ -380,10 +399,35 @@ impl CoordinationState {
                 .resting_history(now_ms)
                 .map(|(used, _)| (s.feedback.position(), used, self.network.generation()))
         });
-        if identity != self.start_identity {
+        if !self.same_start(identity) {
             self.start_identity = identity;
             self.changed_start(now_ms);
         }
+    }
+
+    /// Duty and network history must match exactly; the pose only within noise.
+    fn same_start(&self, identity: Option<(Pointing, [u64; 2], u64)>) -> bool {
+        match (identity, self.start_identity) {
+            (Some((pose, used, network)), Some((start, start_used, start_network))) => {
+                used == start_used && network == start_network && self.near_start(pose, start)
+            }
+            (identity, start) => identity.is_none() && start.is_none(),
+        }
+    }
+
+    /// [`START_TOLERANCE_DEG`], or the motion monitor's measurement noise if
+    /// that is larger, around the pose planning started from. A restart per
+    /// flicker would never let a plan finish. Drift is measured from that
+    /// start, so it adds up.
+    fn near_start(&self, pose: Pointing, start: Pointing) -> bool {
+        let code = self
+            .interlock
+            .feedback_resolution_deg()
+            .unwrap_or(Pointing::new(0.0, 0.0));
+        let noise = f32::from(self.applied.configuration().motion.noise_codes);
+        let tolerance = |code_deg: f32| (code_deg * noise).max(START_TOLERANCE_DEG);
+        (pose.azimuth_deg - start.azimuth_deg).abs() <= tolerance(code.azimuth_deg)
+            && (pose.elevation_deg - start.elevation_deg).abs() <= tolerance(code.elevation_deg)
     }
 
     /// Generate a device command only after the actuator was serviced/applied at

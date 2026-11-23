@@ -37,14 +37,16 @@ or building obstruction are outside this design.
   manages the existing run; claiming the lease neither stops it nor changes
   the selection. An old socket's close or delayed request cannot release a
   newer grant.
-- Only the lease holder may select, replace, arm, prepare early, cancel or
+- Only the lease holder may select, replace, arm, prepare early, rehearse, cancel or
   change mode. Other viewers observe position, deviation and tracking state.
   Fault handling and physical power removal never need a lease.
 - Tracking mode rejects manual movement and manual stop messages on the
   device, and the dashboard hides the manual controls. Cancel and Return to
   Manual stay available throughout planning, preparation and execution; either
   inhibits pending and active output, returns to idle Manual mode and keeps the
-  last selection and result for inspection. Another run needs a fresh arm.
+  result for inspection. Return to Manual keeps the selection, whose preview
+  keeps replanning; Cancel clears it, so nothing replans. Another run needs a
+  fresh arm.
 - Loss of the device's Wi-Fi link or DHCP address stops the run and
   invalidates queued output; network recovery never resumes it. A failed
   internet refresh does not stop a run while its cached orbital and clock data
@@ -54,7 +56,7 @@ or building obstruction are outside this design.
 ### Operator requests
 
 Every mutation carries the connection-bound lease generation and a strictly
-increasing, nonzero request number. Select, Arm and Prepare now also carry the
+increasing, nonzero request number. Select, Arm, Prepare now and Rehearse also carry the
 current state revision and a telemetry proof younger than
 [`COMMAND_MAX_AGE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery), and
 Select must name a row the device currently offers. Cancel and Manual ignore
@@ -122,9 +124,21 @@ candidates. Exhausting the search means no supported route was found, not that
 every physical route is impossible.
 
 Work and memory are bounded: at most 2,048 route points, nine scenarios and 16
-gap intervals; one step performs at most one propagation and one simulator
+gap intervals; one step performs at most one sky look-up and one simulator
 service, or bounded route bookkeeping; a job stops at 20 million steps.
 Preparation probes are limited to 300 s and reception windows to 30 minutes.
+
+The device plans against a
+[`PlanningTrack`](../crates/ezal-core/src/tracking/inputs.rs): the job's own
+orbit, station and window, with SGP4 run once a minute and cubic Hermite
+interpolation of TEME position and velocity between those states. A plan looks
+at the sky hundreds of thousands of times, and on the Pico's software floating
+point one propagation costs about ten times the observer transformation. Counted
+on a Cortex-M33 under QEMU, interpolation cuts planning a 13-minute pass from
+80 to 27 billion instructions: about three minutes at 150 MHz, rather than ten.
+It departs from full propagation by about 0.00001°, and the host suite bounds it
+below 0.0001°. A look-up propagates at most the two states either side of it,
+each once per job. A frozen run and reacquisition propagate every look-up.
 
 The offline timing tool,
 [`examples/tracking-plan.rs`](../crates/ezal-core/examples/tracking-plan.rs),
@@ -169,33 +183,61 @@ Preparation probes estimate the worst readiness time from the current position,
 chosen route, backlash, startup, coast and relay state, including a 2 s
 settled dwell. Each complete verification then simulates the scheduled
 preparation and the pass in one run, keeping on-time and relay holds at AOS.
-Far-future idle waiting is skipped with its actual rest credit. Prepare now
-requests a separately evaluated `Immediate` plan, so it cannot spend rest that
-the scheduled start would have gained. A ready dish may wait at the preparation
+Far-future idle waiting is skipped with its actual rest credit. From motors
+with their full duty allowance and settled relays, starting sooner repeats the
+same preparation and only lengthens the wait before AOS, so the verification
+also covers Prepare now from then on, provided every scenario ended that wait
+still for the relay off-time and two readings. Otherwise Prepare now requests a
+separately evaluated `Immediate` plan, so it cannot spend rest that the
+scheduled start would have gained. A ready dish may wait at the preparation
 pose beyond the probe limit; the planning job keeps its fixed work bound, so a
 long early wait can fail with an explicit work-limit reason. Late preparation,
 duty exhaustion, motion faults and travel violations produce explicit
 rejections naming the scenario and phase.
 
+Rehearse, next to Prepare now, prepares immediately and runs the selected pass's
+motion early at real speed. It is available for a supported selection in Manual
+or an armed pass. A fresh `Immediate` planning job evaluates the actual relay and
+duty history; the rehearsal uses the normal preparation lead, including its
+settling margin, followed by the entire selected pass duration. Orbital targets
+use the selected future pass's time, while feedback, relay deadlines, duty and
+clock supervision use real device time.
+
+The button is disabled unless preparation, the complete rehearsal and final
+coast fit strictly before scheduled live preparation. The device supplies a
+countdown, rechecks the deadline on admission and planning publication, and
+inhibits rehearsal work at the live preparation deadline. Closing the browser
+does not stop a rehearsal; Cancel or Return to Manual does. A successful
+rehearsal retains the selection and returns to Manual, or restores Armed if the
+pass was already armed, requesting a fresh live plan from the final measured
+pose and consumed duty. Cancellation or a fault never rearms it.
+
 ### Updating and freezing the plan
 
 Before preparation the device replans the selected pass automatically, in
-either mode, whenever orbital elements, the clock or the measured starting
-state change. Each planning ticket binds the selection to orbital, clock and
-starting-state revisions and the preparation schedule. Publishing newer inputs
+either mode, whenever orbital elements or the measured starting state change,
+or a clock sample stops vouching for the plan's timeline (see
+[Execution clock](#execution-clock)). A routine NTP synchronization does not
+replan: planning takes minutes on the Pico, and a sample every five minutes
+would otherwise restart it for ever. Each planning ticket binds the selection
+to orbital and starting-state revisions and the preparation schedule. Publishing newer inputs
 immediately withdraws the previous plan's permission to prepare; only the
 latest job can publish, even if an older job finishes later; an unsupported or
-failed replacement never falls back to an older success. A change in measured
-pose, feedback health, consumed duty or network generation invalidates a
-preview's starting state, so manual movement does too; fresh ADC timestamps
-alone do not. Noisy, changing starting positions can therefore keep a preview
-from completing.
+failed replacement never falls back to an older success. A change in feedback
+health, consumed duty or network generation invalidates a preview's starting
+state, and so does any output the device drives, and a measured pose more than
+2° from the pose planning started from (or the motion monitor's two codes of
+noise, if larger). Idle feedback flickers by up to five codes near an end stop,
+1.6° of azimuth on the bench; a 2° error lengthens the preparation slew by under
+0.75 s, inside the 20 s scheduled beyond the slowest rehearsal. Fresh ADC
+timestamps and that flicker do not restart planning, while slow drift adds up
+until it does.
 
-Each published plan carries an exclusive `freeze_before_ms` deadline, the
-earliest of its clock's admission deadline, LOS and the plan's own admission
-deadline: AOS, or one millisecond after a late-acquisition entry. The plan
-stays armable only before that instant, while it is the current ticket and
-while its preparation time still fits.
+Each published plan carries an exclusive `freeze_before_ms` deadline: its own
+admission deadline, AOS or one millisecond after a late-acquisition entry. The
+plan stays armable only before that instant, while it is the current ticket,
+while its preparation time still fits and while the newest clock sample
+vouches for its timeline.
 
 Preparation atomically accepts the latest complete, valid plan and freezes its
 orbital elements, observer, clock mapping, motion profile and mechanical route.
@@ -211,7 +253,8 @@ cancellation and faults end with an explicit terminal reason.
 | Event | Behaviour |
 |---|---|
 | Scheduled preparation becomes due | Freeze the current supported plan and issue a new run token |
-| Prepare now | Request an `Immediate` plan; start only after that schedule passes evaluation |
+| Prepare now | Start now if the plan's verification covers it; otherwise request an `Immediate` plan and start only after that schedule passes evaluation |
+| Rehearse | Prepare now and replay the selected trajectory at real speed before live preparation; retain the selection and restore an already armed pass on success |
 | Measured readiness | Enter Ready after 2 s of distinct fresh, settled samples at the preparation pose; keep the frozen route |
 | AOS while Ready | Enter Following, independently of operator presence |
 | AOS during preparation without readiness | Enter a late-acquisition recovery episode counted from AOS |
@@ -274,20 +317,24 @@ the planner's uncertainty allocation for time:
 | Assumed maximum sky rate | 2°/s |
 | Resulting maximum timing error | 250 ms |
 
-Error grows from the original sample by `elapsed × drift_ppm / 1,000,000`: 6 ms
-per minute at 100 ppm, so a sample with 50 ms initial error covers about 33
-minutes from receipt to LOS. A preview checks the sample's current validity, so
-a pass can be armed hours ahead; immediately before preparation the full error
-and age bounds must fit through LOS, or preparation is blocked with a timing
-reason.
+Error grows from a sample by `elapsed × drift_ppm / 1,000,000`: 6 ms per
+minute at 100 ppm, so a sample with 50 ms initial error covers about 33 minutes
+from receipt to LOS.
 
-After preparation, propagation always uses the frozen millisecond anchor. A new
-sample is compared with that mapping: its discrepancy plus its uncertainty and
-drift through LOS must fit the timing share. An acceptable sample validates the
-run without shifting targets or deadlines; repeated small corrections cannot
-move the anchor. An excessive correction, missing time, a stale or reversed
-clock publication, or unusable source data stops the run with an explicit
-reason.
+A plan keeps the millisecond anchor it was captured with, and propagation
+always uses it. Each newer sample is compared with that mapping: true UTC lies
+within the sample's uncertainty and drift of the sample's own mapping, and the
+two differ by a constant, so their discrepancy plus that error bounds the
+frozen timeline's. Before preparation the bound must fit the timing share now,
+so a pass can be selected and armed hours ahead while the device keeps
+synchronizing; immediately before preparation, and on every output admission
+after it, the bound must fit through LOS. The plan's own sample is the newest
+until NTP synchronizes again, so its age matters only then. An acceptable
+sample validates the plan without shifting targets or deadlines; repeated small
+corrections cannot move the anchor. An excessive correction, missing time, a
+lapse in synchronization, a stale or reversed clock publication, or unusable
+source data replaces a preview, blocks preparation, or stops the run, with an
+explicit reason.
 
 ## Deviation and reacquisition
 
@@ -363,7 +410,9 @@ missed interval ends at the latest join plus the recovery dwell and the
 feedback age allowance. For late acquisition the entry is
 `max(AOS, snapshot time + 5 s)`; arming allows the device to freeze and begin
 recovery at that entry with no preparation movement, and a missed entry
-expires the plan rather than shifting it. At a planned gap the run enters
+expires the plan rather than shifting it. A pass that rose before the device
+started cannot be joined: its AOS has no uptime, so capture refuses it with
+`TimingError::BeforeBoot`. At a planned gap the run enters
 Reacquiring, clears queued following commands and revalidates a live intercept
 from actual settled feedback; an earlier unexpected recovery keeps its own
 token and deadline. Summaries keep the original window and the complete or
@@ -394,13 +443,14 @@ its episode. A stalled executor cannot cut output until it resumes or the
 watchdog resets the board, so that interval is an execution requirement, not a
 physical release guarantee.
 
-The separate `tracking` task owns a statically bounded preview planner and
-steps preview and recovery work (`step_reacquisition`) cooperatively, yielding
-after each bounded unit. It never touches GPIO or the watchdog. Downloads yield
+The separate `tracking` task polls a `coordination::PlanningWorker`, which
+owns the statically bounded preview planner. Each poll performs one bounded
+unit of recovery work (`step_reacquisition`) or, when there is none, of preview
+planning, and the task yields after each. It never touches GPIO or the watchdog. Downloads yield
 after every bounded parsing chunk and forecasting keeps its own task; complete
 forecasts and their orbital snapshots publish atomically. A once-per-minute
 `tracking timing maxima` log reports output service time, active service gap,
-planner and recovery step times, worker poll time and planner steps.
+planning and recovery unit times, worker poll time and planning units.
 
 ## Dashboard
 
@@ -409,8 +459,9 @@ complete AOS/LOS window; selection stops any held manual input and previews
 feasibility. The preview shows the route, modeled error bound, pointing
 allowance, predicted reception and missed intervals and the UTC preparation
 time; a partial plan is also named on the arming button. **Enter Tracking**
-arms, **Prepare now** requests the earlier schedule, and **Cancel tracking** or
-**Return to Manual** stops the run.
+arms, **Prepare now** starts preparation early, **Return to Manual** stops
+the run and keeps the pass selected, and **Cancel tracking** stops it and clears
+the selection.
 
 Every viewer sees the selection, preview, phase, measured and desired pointing
 at the same ADC sample time, spherical error and its uncertainty, peak error
@@ -480,6 +531,14 @@ runtime with synthetic and recorded passes covering:
   commands;
 - lease expiry and transfer with tracking continuing, clock steps, duty
   exhaustion and LOS.
+
+[`end_to_end.rs`](../crates/ezal-core/tests/end_to_end.rs) runs a recorded
+pass through the device's planning worker, coordination, feedback validation
+and actuator with the installed settings, while the readings flicker by an ADC
+code. Planning proceeds at the Pico's measured speed, the pass is selected an
+hour ahead and NTP synchronizes every five minutes, as on the bench. It also
+checks that Cancel clears the selection and Return to Manual keeps it
+replanning.
 
 Dashboard tests must preserve the deviation and recovery displays, stale
 deviation removal and Cancel staying available. Commissioning repeats the

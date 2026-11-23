@@ -357,8 +357,10 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
       <button id="tracking-arm" type="button" disabled>Enter Tracking</button>
       <button id="tracking-manual" type="button" disabled>Return to Manual</button>
       <button id="tracking-prepare" type="button" disabled>Prepare now</button>
+      <button id="tracking-rehearse" type="button" aria-describedby="tracking-rehearsal-help" disabled>Rehearse</button>
       <button id="tracking-cancel" type="button" disabled>Cancel tracking</button>
     </div>
+    <p id="tracking-rehearsal-help"></p>
     <p id="tracking-message" role="status"></p>
     <p id="tracking-deviation"></p>
     <p id="tracking-pointing"></p>
@@ -406,8 +408,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
   const config = window.EZAL_CONFIG;
   const configured = config && typeof config.wsPath === "string"
     && Number.isFinite(config.refreshMs) && config.refreshMs > 0
-    && Number.isFinite(config.telemetryTimeoutMs) && config.telemetryTimeoutMs > 0
-    && Number.isFinite(config.feedbackMaxAgeMs) && config.feedbackMaxAgeMs > 0;
+    && Number.isFinite(config.telemetryTimeoutMs) && config.telemetryTimeoutMs > 0;
   const axes = { cw: "azimuth", ccw: "azimuth", up: "elevation", down: "elevation" };
   const idle = () => ({ azimuth: null, elevation: null });
   const hasDesired = (state) => Boolean(state.held.azimuth || state.held.elevation);
@@ -420,6 +421,12 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
   const canTrack = (state, now) => state.connected && state.controller && state.networkReady
     && !state.hidden && telemetryFresh(state, now) && state.tracking?.operator !== null
     && Boolean(state.tracking) && !state.pending && !state.awaitingTracking && !state.startupPending;
+  const canRehearse = (state, now) => canTrack(state, now) && !state.motionFault
+    && feedbackReady(state) && !state.tracking.feedback_stale && !state.tracking.rehearsal
+    && (state.tracking.mode === "manual" || state.tracking.phase === "armed")
+    && ["supported", "partial"].includes(state.tracking.plan.status)
+    && Number.isSafeInteger(state.tracking.rehearsal_available_ms)
+    && state.tracking.rehearsal_available_ms > Math.max(0, now - state.trackingAt);
   const canSkipStartupRest = (state, now) => canTrack(state, now) && !state.motionFault
     && state.tracking.mode === "manual" && state.telemetry?.control.duty_startup_rest === true
     && !hasDesired(state) && !state.drive.azimuth && !state.drive.elevation;
@@ -456,6 +463,9 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
   const validTermination = (t) => t === null || (t && typeof t.reason === "string"
     && optionalIdentity(t.event) && optionalIdentity(t.run));
   const validTracking = (t) => t && identity(t.revision) && optionalIdentity(t.operator)
+    && (t.rehearsal === undefined || typeof t.rehearsal === "boolean")
+    && (t.rehearsal_available_ms === undefined || t.rehearsal_available_ms === null
+      || (Number.isSafeInteger(t.rehearsal_available_ms) && t.rehearsal_available_ms >= 0))
     && ["manual", "tracking"].includes(t.mode)
     && ["idle", "armed", "preparing", "ready", "following", "reacquiring", "complete", "cancelled", "stopped"].includes(t.phase)
     && optionalIdentity(t.run) && typeof t.feedback_stale === "boolean" && optionalNumber(t.feedback_age_ms)
@@ -653,9 +663,10 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
         const t = state.tracking;
         if (event.action === "arm" && (t.mode !== "manual" || !["supported", "partial"].includes(t.plan.status)
           || state.motionFault || !feedbackReady(state) || t.feedback_stale)) break;
-        if (event.action === "prepare" && (t.phase !== "armed" || !["supported", "partial"].includes(t.plan.status))) break;
+        if (event.action === "prepare" && (t.rehearsal || t.phase !== "armed" || !["supported", "partial"].includes(t.plan.status))) break;
+        if (event.action === "rehearse" && !canRehearse(state, now)) break;
         if (event.action === "select" && (t.mode !== "manual" || !event.pass || !identity(event.pass.norad))) break;
-        if (!["select", "arm", "prepare", "cancel", "manual"].includes(event.action)) break;
+        if (!["select", "arm", "prepare", "rehearse", "cancel", "manual"].includes(event.action)) break;
         clearHeld();
         state.trackSequence += 1n;
         const sequence = state.trackSequence.toString();
@@ -731,15 +742,18 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
       TooLate: "Too late for this preparation schedule", Expired: "Plan validity expired",
       StateRevision: "Plan changed; review the refreshed preview", NotReady: "No current supported plan for this action",
       Uncertainty: "Clock uncertainty exceeds the pointing allowance", PointingBudget: "Predicted pointing error exceeds the allowance",
+      BeforeBoot: "Pass rose before the device started, so it cannot be joined",
+      RevisionChanged: "The rotator moved from the pose planning started from; replanning",
       NoRecovery: "No supported route with a reachable recovery", Missing: "The selected pass is missing from the forecast",
       MissingOrbit: "Orbital data for the selected satellite is missing", Ambiguous: "The forecast cannot uniquely identify the selected pass",
       LatePreparation: "Preparation was not complete at AOS", Deviation: "Measured pointing error exceeded tolerance",
       LateAcquisition: "Partial plan starts with a late intercept", PlannedGap: "Planned gap in reception",
+      RehearsalComplete: "Rehearsal complete", RehearsalDeadline: "Rehearsal stopped before live preparation",
     };
     return explanations[reason.match(/(\w+)\)*$/)?.[1]]
       ?? reason.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[()_]+/g, " ").trim();
   };
-  const trackElements = Object.fromEntries(["state", "selection", "plan", "reception", "schedule", "message", "deviation", "pointing", "recovery", "summary", "arm", "manual", "prepare", "cancel"]
+  const trackElements = Object.fromEntries(["state", "selection", "plan", "reception", "schedule", "message", "deviation", "pointing", "recovery", "summary", "arm", "manual", "prepare", "rehearse", "rehearsal-help", "cancel"]
     .map((name) => [name, document.getElementById(`tracking-${name}`)]));
   const receptionText = (r) => {
     const interval = ([start, end]) => `${utc(r.aos_unix_s + start / 1000)}–${utc(r.aos_unix_s + end / 1000)} UTC`;
@@ -752,7 +766,8 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     const writable = canTrack(state, now);
     trackElements.arm.disabled = !writable || t.mode !== "manual" || !["supported", "partial"].includes(t.plan.status)
       || state.motionFault || !feedbackReady(state) || t.feedback_stale;
-    trackElements.prepare.disabled = !writable || t.phase !== "armed" || !["supported", "partial"].includes(t.plan.status);
+    trackElements.prepare.disabled = !writable || t.rehearsal || t.phase !== "armed" || !["supported", "partial"].includes(t.plan.status);
+    trackElements.rehearse.disabled = !canRehearse(state, now);
     trackElements.cancel.disabled = !canCancel(state) || !t?.selection;
     trackElements.manual.disabled = !canCancel(state) || t?.mode !== "tracking";
     setText(trackElements.message, state.trackingMessage);
@@ -760,7 +775,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     if (!t) return;
     const elapsed = Math.max(0, now - state.trackingAt);
     const ended = ["complete", "cancelled", "stopped"].includes(t.phase) && t.termination;
-    setText(trackElements.state, known ? `${t.mode === "tracking" ? "Tracking" : "Manual"} · ${t.phase}${state.controller ? " · you have control" : " · viewer"}${ended ? ` · ${trackingReason(t.termination.reason)}` : ""}`
+    setText(trackElements.state, known ? `${t.rehearsal ? "Rehearsal" : t.mode === "tracking" ? "Tracking" : "Manual"} · ${t.phase}${state.controller ? " · you have control" : " · viewer"}${ended ? ` · ${trackingReason(t.termination.reason)}` : ""}`
       : `Device status unavailable · last known: ${t.mode}, ${t.phase}. Closing this page does not cancel tracking.`);
     const selection = t.selection;
     const name = forecast?.passes.find((p) => p.norad_id === selection?.norad_id)?.name;
@@ -770,11 +785,19 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     const statusText = { unplanned: "Waiting for current inputs", planning: "Evaluating routes and motor limits; waiting for settled feedback if needed", supported: "Full pass supported by the current model", partial: "Partial reception supported by the current model", frozen: "Plan frozen for this run", blocked: `Tracking blocked: ${trackingReason(t.plan.reason || "Unavailable")}` }[t.plan.status];
     setText(trackElements.plan, selection ? `${statusText}.${preview ? ` Route: ${preview.route}, azimuth offset ${preview.azimuth_turns * 360}°. Predicted bound ${preview.bound_deg.toFixed(2)}°; tolerance ${preview.tolerance_deg.toFixed(1)}°, reserved uncertainty ${preview.reserve_deg.toFixed(1)}°.` : ""}` : "");
     setText(trackElements.reception, preview ? receptionText(preview.reception) : "");
-    setText(trackElements.schedule, preview ? `${t.mode === "manual" ? "If armed, preparation" : "Preparation"} at ${utc(preview.prepare_unix_s)} UTC · planned lead ${duration(preview.preparation_lead_ms)}. ${t.phase === "armed" ? "Prepare now requests a new feasibility check before moving." : ""}` : "");
+    setText(trackElements.schedule, t.rehearsal ? "Preparing now, then rehearsing the selected pass at real speed. The live pass stays selected."
+      : preview ? `${t.mode === "manual" ? "If armed, preparation" : "Preparation"} at ${utc(preview.prepare_unix_s)} UTC · planned lead ${duration(preview.preparation_lead_ms)}. ${t.phase === "armed" ? "Prepare now starts at once from rested motors, otherwise after a new feasibility check." : ""}` : "");
+    setText(trackElements["rehearsal-help"], t.rehearsal ? "Rehearsal moves the dish. Return to Manual stops it and keeps the pass; Cancel tracking stops it and clears the selection."
+      : preview && ["supported", "partial"].includes(t.plan.status)
+        ? t.rehearsal_available_ms > elapsed ? "Rehearse prepares the dish now and runs the pass motion at real speed before live preparation is due."
+          : "Rehearsal unavailable: preparation and the full rehearsal must finish before live preparation is due."
+        : "");
     const d = t.deviation;
     const reading = d.current;
-    const stale = t.feedback_stale || t.feedback_age_ms === null || t.feedback_age_ms + elapsed >= config.feedbackMaxAgeMs;
-    const current = known && !stale && reading && reading.age_ms + elapsed < config.feedbackMaxAgeMs;
+    // Freshness is the device's verdict at send time. Telemetry arrives no
+    // faster than feedback expires, so aging it here would expire every frame.
+    const stale = t.feedback_stale || t.feedback_age_ms === null;
+    const current = known && !stale && reading;
     setText(trackElements.deviation, current ? `${d.warning ? "Pointing warning · " : ""}Spherical deviation ${reading.degrees.toFixed(2)}° · uncertainty allowance ${reading.uncertainty_deg.toFixed(2)}° · sample ${Math.floor(reading.age_ms + elapsed)} ms old`
       : !known ? "Current deviation unavailable: device status is stale." : stale ? "Current deviation unavailable: position feedback is stale or invalid." : "Current deviation unavailable until tracking supplies a matched sample.");
     trackElements.deviation.classList.toggle("warning", Boolean(known && (d.warning || stale)));
@@ -903,7 +926,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
 
   take.addEventListener("click", () => dispatch({ type: "take" }));
   startupOverride.addEventListener("click", () => dispatch({ type: "startup-rest" }));
-  for (const action of ["arm", "manual", "prepare", "cancel"]) {
+  for (const action of ["arm", "manual", "prepare", "rehearse", "cancel"]) {
     trackElements[action].addEventListener("click", () => dispatch({ type: "tracking", action }));
   }
   const releasePointer = (event) => dispatch({ type: "release", source: "pointer", id: event.pointerId });

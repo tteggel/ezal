@@ -19,13 +19,15 @@
 //! [`ads1015`] models ADC registers and decoding; [`wifi`] contains credential
 //! validation and reconnect timing. Advisory prediction is separate: [`ntp`]
 //! supplies a revisioned UTC anchor and error estimate, [`http`] frames streamed downloads,
-//! [`orbit`] validates elements, [`catalog`] publishes them, and [`passes`] calculates
-//! reception windows.
+//! [`n2yo`] requests elements and reads them from each reply, [`orbit`] validates
+//! them, [`catalog`] publishes them, and [`passes`] calculates reception windows.
 //! [`tracking`] supplies bounded planning, a device-owned lifecycle, following
 //! and offline simulation. Its execution-input boundary owns orbital/clock
 //! snapshots and enforces source/timing/network validity. [`operator`] supplies
-//! its exclusive controller lease.
+//! its exclusive controller lease, and [`coordination::PlanningWorker`] the
+//! background planning that firmware polls from its own task.
 //! Firmware services tracking independently through that same output boundary.
+//! [`installation`] holds the installed rotator's motion settings.
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
@@ -47,8 +49,10 @@ pub mod drive;
 pub mod duty;
 pub mod feedback;
 pub mod http;
+pub mod installation;
 pub mod interlock;
 pub mod motion;
+pub mod n2yo;
 pub mod network;
 pub mod ntp;
 pub mod operator;

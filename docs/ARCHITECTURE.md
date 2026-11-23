@@ -39,10 +39,10 @@ returns values. It has no peripherals, global runtime state or Embassy tasks.
 
 | Boundary | Core owner | Responsibility |
 |---|---|---|
-| Installation | `position::InstalledCalibration` | Validate immutable geometry and ADC observability once; reuse checked conversion math |
+| Installation | `position::InstalledCalibration`, `installation` | Validate immutable geometry and ADC observability once; reuse checked conversion math; hold the installed motion settings |
 | Observations | `feedback::FeedbackMonitor` | Calibrate timestamped samples, reject bad acquisitions, retain diagnostic readings |
 | Source admission | `session::CommandFreshness` | Bound source age and sequence; distinguish a new press from a continued hold |
-| Coordination | `coordination::CoordinationState` | Exclusive operator lease, tracking runtime, input revisions and coherent command delivery |
+| Coordination | `coordination::CoordinationState`, `coordination::PlanningWorker` | Exclusive operator lease, tracking runtime, input revisions and coherent command delivery; background planning of the selected pass |
 | Output decision | `actuator::Actuator` | Apply all final permissions, physical supervision, leases and relay timing in one step |
 | Representation | `protocol`, `dashboard` | Decode manual/tracking intent, encode telemetry, provide the browser asset and shared timing configuration |
 
@@ -57,7 +57,7 @@ command together with its source deadline.
 
 Other core modules remain independent: `ads1015` models registers and decoding;
 `wifi` validates credentials and selects retry delays; `ntp` validates packets
-and maintains an expiring UTC anchor; `http` and `orbit` parse streamed elements,
+and maintains an expiring UTC anchor; `http`, `n2yo` and `orbit` parse streamed elements,
 `catalog` publishes them and `passes` calculates reception windows. UTC never
 drives motion timers.
 
@@ -78,8 +78,8 @@ executor commands and mailbox drain. `ExecutionInputs` owns its elements,
 observer and millisecond UTC anchor; later publications cannot edit a frozen
 run. Only a completed `OrbitalDownload` can publish element sets and their
 revisions to `catalog::Catalog`. The installation explicitly accepts
-HTTP orbital data; these types establish framing/validation and identity, not
-cryptographic authenticity. NTP also remains unauthenticated.
+unauthenticated orbital data, over TLS without certificate verification; these
+types establish framing/validation and identity, not cryptographic authenticity. NTP also remains unauthenticated.
 
 The same runtime owns deviation monitoring and recovery. One episode retains
 its original deadline across settling and intercept retries. Incremental search
@@ -104,7 +104,7 @@ integration contract.
 | `watchdog` | Hardware reset configuration and reset-cause detection |
 | `wifi` | Radio initialization, one retry owner, association, DHCP, link observations and the onboard LED |
 | `web`, `ws_receive` | HTTP/WebSocket I/O, bounded message assembly and receive deadlines |
-| `time`, `prediction` | NTP I/O, streamed TLE downloads and cooperative forecast work |
+| `time`, `prediction` | NTP I/O, streamed TLE downloads over TLS and cooperative forecast work |
 
 ## Feedback lifecycle
 

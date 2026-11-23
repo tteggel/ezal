@@ -6,6 +6,7 @@ use super::{
     pointing_deviation_deg, FollowingController, MotorProfile, ReceptionCoverage, RestingStart,
     Scenario, Simulation, SimulationError, SimulationSettings, TrackingTarget,
 };
+use crate::feedback::FEEDBACK_PERIOD_MS;
 use crate::passes::Ephemeris;
 use crate::position::{Pointing, PositionCalibration};
 use heapless::Vec;
@@ -79,16 +80,32 @@ pub struct PlanningConfig {
 
 impl Default for PlanningConfig {
     fn default() -> Self {
-        let nominal = Scenario::NOMINAL;
-        let slow = MotorProfile::AC_SLOW;
-        let fast = MotorProfile::AC_FAST;
+        Self::with_motor_profiles(
+            MotorProfile::AC_50HZ,
+            MotorProfile::AC_SLOW,
+            MotorProfile::AC_FAST,
+        )
+    }
+}
+
+impl PlanningConfig {
+    /// Apply the same feedback scenarios to an installation's motor profiles.
+    pub fn with_motor_profiles(
+        reference: MotorProfile,
+        slow: MotorProfile,
+        fast: MotorProfile,
+    ) -> Self {
+        let nominal = Scenario {
+            motor: reference,
+            ..Scenario::NOMINAL
+        };
         Self {
             preparation_timing: PreparationTiming::Scheduled,
             tolerance_deg: 3.0,
             uncertainty_deg: 1.0,
             sky_rate_bound_deg_per_s: 2.0,
             step_ms: 20,
-            reference: MotorProfile::AC_50HZ,
+            reference,
             deadband_deg: 0.15,
             preparation_tolerance_deg: 3.0,
             scenarios: Vec::from_slice(&[
@@ -159,9 +176,7 @@ impl Default for PlanningConfig {
             .expect("fixed scenario capacity"),
         }
     }
-}
 
-impl PlanningConfig {
     /// Pointing error the modeled route may use: the target less reserved uncertainty.
     pub fn allocation_deg(&self) -> f32 {
         self.tolerance_deg - self.uncertainty_deg
@@ -236,6 +251,15 @@ pub struct Assessment {
     pub preparation_lead_ms: u64,
     /// Scheduled start; initial late acquisition freezes at its fixed episode entry.
     pub prepare_at_ms: u64,
+    /// Earliest start this verification also covers, for Prepare now; otherwise
+    /// `prepare_at_ms`. From motors with their full allowance and settled relays,
+    /// starting sooner repeats the same preparation and only lengthens the wait
+    /// before AOS. That wait stays still if every scenario ended it still for
+    /// the relay off-time and two readings: at a fixed target the follower's
+    /// request depends only on the latest reading, which then repeats, and a
+    /// request refused for duty fails the simulation. Extra rest only restores
+    /// duty, so the pass runs the same.
+    pub prepare_from_ms: u64,
     /// Worst sampled actual boresight deviation, including intentional route offset.
     pub sampled_peak_deg: f32,
     /// Conservative intersample upper bound, plus a 0.002° numeric allowance.
@@ -268,6 +292,7 @@ impl Assessment {
             preparation_ms: 0,
             preparation_lead_ms: 60_000,
             prepare_at_ms: 0,
+            prepare_from_ms: 0,
             sampled_peak_deg: 0.0,
             bounded_peak_deg: 0.0,
             gap_time_ms: 0,
@@ -365,7 +390,7 @@ struct RunMetrics {
     truncated: bool,
 }
 
-/// One `step` performs at most one propagation and one simulator service, or
+/// One `step` performs at most one sky look-up and one simulator service, or
 /// bounded route bookkeeping. No allocation, waiting, networking or live GPIO.
 /// The caller yields between steps and can cancel at any phase.
 pub struct Planner<E> {
@@ -878,6 +903,20 @@ impl<E: Ephemeris> Planner<E> {
                             .max(aos.saturating_sub(self.assessment.preparation_lead_ms)),
                         PreparationTiming::Immediate => self.start.at_ms,
                     };
+                    let rested = self
+                        .start
+                        .actuator
+                        .resting_history(self.start.at_ms)
+                        .is_some_and(|(used, _)| used == [0, 0]);
+                    let settled_at = self
+                        .start
+                        .at_ms
+                        .saturating_add(self.start.actuator.configuration().relays.reversal_off_ms);
+                    self.assessment.prepare_from_ms = if rested {
+                        settled_at.min(self.assessment.prepare_at_ms)
+                    } else {
+                        self.assessment.prepare_at_ms
+                    };
                     self.scenario = 0;
                     self.phase = Phase::Verify;
                 }
@@ -987,6 +1026,12 @@ impl<E: Ephemeris> Planner<E> {
     }
 
     fn finish_scenario(&mut self) {
+        let aos = self.window.aos_at_ms;
+        let still_ms = aos.saturating_sub(self.ready_since_ms.unwrap_or(aos));
+        let off_ms = self.start.actuator.configuration().relays.reversal_off_ms;
+        if still_ms < off_ms + 2 * FEEDBACK_PERIOD_MS {
+            self.assessment.prepare_from_ms = self.assessment.prepare_at_ms;
+        }
         self.merge_metrics();
         self.sim = None;
         self.assessment.completed_scenarios += 1;

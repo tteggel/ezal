@@ -56,6 +56,9 @@ fn late_acquisition_before_and_after_aos_preserves_original_pass_and_validates_a
         assert_eq!(plan.assessment.gap_time_ms, u64::from(gap.missed.end_ms));
         assert_eq!(plan.assessment.failure, None);
     }
+    // Even from rested motors, a partial plan only covers its own schedule.
+    let rested = late_plan(1000, [0, 0], 90_000).plan.unwrap().assessment;
+    assert_eq!(rested.prepare_from_ms, rested.prepare_at_ms);
 }
 
 fn keyhole(t: f64) -> Option<LookAngle> {

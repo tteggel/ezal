@@ -46,6 +46,8 @@ impl<E: Ephemeris> Planner<E> {
             assessment.preparation_ms = previous.preparation_ms;
             assessment.preparation_lead_ms = previous.preparation_lead_ms;
         }
+        // A partial plan keeps its schedule; see `Assessment::prepare_from_ms`.
+        assessment.prepare_from_ms = assessment.prepare_at_ms;
         self.assessment = assessment;
         self.partial = Some(PartialEvaluation {
             recovery_at_ms,

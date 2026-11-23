@@ -137,13 +137,13 @@ figure.live[id^="board-"],#boot details {max-width:46rem}
         <input id="board-divider-v" type="range" min="0" max="5" step="0.05" value="4.5"></label>
     </div>
     <p class="board-say" id="board-divider-say" role="status" aria-live="polite"></p>
-    <figcaption>The resistor values are the ones marked in <a href="https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md?plain=1#L169-L195">the hardware notes</a>; real parts differ from their markings by a percent or so. Each axis has its own identical chain.</figcaption>
+    <figcaption>The resistor values are the ones marked in <a href="https://github.com/tteggel/ezal/blob/main/docs/HARDWARE.md?plain=1#L172-L198">the hardware notes</a>; real parts differ from their markings by a percent or so. Each axis has its own identical chain.</figcaption>
   </figure>
   <p>The chain has three resistors: 33 kΩ inside the control box, then 68 kΩ and 82 kΩ on the interface board. (kΩ means thousands of ohms, the unit of resistance; only the proportions matter here.) The sensor measures above the last one, so it sees 82 parts out of 33 + 68 + 82 = 183, about 45 %. The manual’s 4.5 V arrives as 2.02 V.</p>
 
   <h3>From voltage to number to angle</h3>
   <p>The sensor measures a voltage and hands the Pico a whole number. ezal sets it up so that each count is worth 2 millivolts (thousandths of a volt, written mV). The sensor can say 772 mV or 774 mV and nothing in between.</p>
-  <p>A number of millivolts is not yet a position. The link between the two is made by measurement: drive the dish to each end of the travel you intend to use, and write down what the sensor reports there. The numbers checked into the code say that <span class="c-az">azimuth</span> reads 114 mV at 0° and 2033 mV at 360°, and that <span class="c-el">elevation</span> reads 1281 mV at 0° and 58 mV at 90°. Everything in between is taken to lie on a straight line. Drag the dish.</p>
+  <p>A number of millivolts is not yet a position. The link between the two is made by measurement: drive the dish to each end of the travel you intend to use, and write down what the sensor reports there. The numbers checked into the code say that <span class="c-az">azimuth</span> reads 136 mV at 0° and 1898 mV at 360°, and that <span class="c-el">elevation</span> reads 1170 mV at 0° and 84 mV at 90°. Everything in between is taken to lie on a straight line. Drag the dish.</p>
   <figure class="live" id="board-line">
     <canvas id="board-line-view" role="img" aria-label="Three linked drawings: the dish at its current angle; a graph of sensor voltage against angle with one straight line for azimuth and one for elevation; and a close-up of the line showing the 2 millivolt steps the sensor reports."></canvas>
     <div class="controls">
@@ -158,14 +158,14 @@ figure.live[id^="board-"],#boot details {max-width:46rem}
     <figcaption>The lines are <code>HARD_CODED_CALIBRATION</code>. The figure assumes what the firmware assumes, that the voltage really does follow a straight line, and it rounds to the nearest step as an ideal sensor would. Drag inside the close-up, or press − and +, to move by less than one step.</figcaption>
   </figure>
   <p>Three things are worth noticing. <span class="c-az">Azimuth</span>’s voltage rises as the dish turns clockwise, but <span class="c-el">elevation</span>’s falls as the dish tilts up: its line slopes the other way. The firmware does not mind, because it only ever uses the two measured ends.</p>
-  <p>In the close-up, the sensor’s answer moves in steps. The dish has to turn about 0.375° in azimuth, or 0.147° in elevation, before the number changes at all, and the angle the firmware computes is always the middle of a step.</p>
+  <p>In the close-up, the sensor’s answer moves in steps. The dish has to turn about 0.409° in azimuth, or 0.166° in elevation, before the number changes at all, and the angle the firmware computes is always the middle of a step.</p>
   <p>And the lines end at 360° and 90° because those are the ends that were measured for this installation. The rotator itself can turn further, 450° around and 180° over the top, but using that travel means measuring new ends first.</p>
   <figure class="code" data-src="crates/ezal-core/src/position.rs">
     <figcaption>The whole calibration: two angles and two voltages for each axis.</figcaption>
     <pre data-from="pub const HARD_CODED_CALIBRATION" data-to="};"></pre>
     <ol>
-      <li data-at="voltage_min_mv: 114">Not the smaller voltage: the voltage measured at <code>angle_min_deg</code>.</li>
-      <li data-at="voltage_min_mv: 1_281">Which is why elevation’s “min” voltage is the larger of its two.</li>
+      <li data-at="voltage_min_mv: 22">The voltage measured at <code>angle_min_deg</code> for azimuth.</li>
+      <li data-at="voltage_min_mv: 20">The voltage measured at <code>angle_min_deg</code> for elevation.</li>
     </ol>
   </figure>
   <p>These numbers are not stored anywhere else. To recalibrate, you measure again, edit them, and rebuild the firmware.</p>
@@ -261,13 +261,13 @@ figure.live[id^="board-"],#boot details {max-width:46rem}
       </fieldset>
       <div class="board-slide"><label for="board-room-age">The reading is <span id="board-room-age-value">100 ms</span> old</label>
         <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-room-age" type="range" min="0" max="500" step="1" value="100"><button type="button" aria-label="One step more">+</button></div></div>
-      <div class="board-slide"><label for="board-room-mv">The sensor reported <span id="board-room-mv-value">2006 mV, 354.93°</span></label>
-        <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-room-mv" type="range" min="0" max="31" step="1" value="18"><button type="button" aria-label="One step more">+</button></div></div>
+      <div class="board-slide"><label for="board-room-mv">The sensor reported <span id="board-room-mv-value">1872 mV, 354.69°</span></label>
+        <div class="board-fine"><button type="button" aria-label="One step less">−</button><input id="board-room-mv" type="range" min="0" max="29" step="1" value="16"><button type="button" aria-label="One step more">+</button></div></div>
     </div>
     <p class="board-say" id="board-room-say" role="status" aria-live="polite"></p>
     <figcaption>The high-angle end of each axis; the other end works the same way in mirror image. The firmware rounds the time down to whole milliseconds, so it can refuse up to a millisecond before the lengths in the drawing quite touch.</figcaption>
   </figure>
-  <p>With the dish measured at 354.93°, the reading <span class="c-ok">allows</span> clockwise travel at 155 ms old and <span class="c-stop">refuses</span> it at 156 ms. Nothing about the dish changed in that millisecond, only how long ago we looked. The other direction, away from the end, stays allowed throughout. The direction task does not wait for a new reading to find this out: it works out the moment at which the reading in hand will stop allowing a direction that is running, and wakes at that moment to cut it.</p>
+  <p>With the dish measured at 354.69°, the reading <span class="c-ok">allows</span> clockwise travel at 184 ms old and <span class="c-stop">refuses</span> it at 185 ms. Nothing about the dish changed in that millisecond, only how long ago we looked. The other direction, away from the end, stays allowed throughout. The direction task does not wait for a new reading to find this out: it works out the moment at which the reading in hand will stop allowing a direction that is running, and wakes at that moment to cut it.</p>
   <p>The two speeds and the coast are estimates: the fastest figures in the rotator’s manual with a margin added, and a guess at how long the dish coasts. None of them has been measured on this dish yet.</p>
   <figure class="code" data-src="crates/ezal-core/src/interlock.rs" data-comments="omit">
     <figcaption>Three pieces of the feedback interlock: how old a reading may be before a direction is refused, whether it may be used at all, and the test itself.</figcaption>

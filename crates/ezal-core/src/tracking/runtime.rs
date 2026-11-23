@@ -103,6 +103,14 @@ impl TrackingRuntime {
     pub const fn snapshot(&self) -> TrackingSnapshot {
         self.lifecycle.snapshot()
     }
+    /// Whether planning or execution currently belongs to an early rehearsal.
+    pub const fn is_rehearsing(&self) -> bool {
+        self.lifecycle.is_rehearsing()
+    }
+    /// Device countdown to the last admissible rehearsal request.
+    pub fn rehearsal_available_ms(&self, now_ms: u64) -> Option<u64> {
+        self.lifecycle.rehearsal_available_ms(now_ms)
+    }
     /// Fresh timestamp-matched pointing, or unavailable, plus retained metrics.
     pub fn deviation(&self, now_ms: u64) -> DeviationStatus {
         match &self.execution {
@@ -125,6 +133,10 @@ impl TrackingRuntime {
     /// Immutable accepted plan and exact execution inputs.
     pub const fn bound_plan(&self) -> Option<&BoundTrackingPlan<ExecutionInputs>> {
         self.lifecycle.bound_plan()
+    }
+    /// When the armed run starts preparing.
+    pub fn prepare_at_ms(&self) -> Option<u64> {
+        self.lifecycle.prepare_at_ms()
     }
     /// Latest device planning job, if any.
     pub fn planning_ticket(&self) -> Option<PlanTicket> {
@@ -181,7 +193,11 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<u64, RuntimeError> {
         self.check_inputs(observation)?;
-        if request.action == TrackingAction::Arm && !observation.network.ready(observation.now_ms) {
+        if matches!(
+            request.action,
+            TrackingAction::Arm | TrackingAction::Rehearse
+        ) && !observation.network.ready(observation.now_ms)
+        {
             return Err(RuntimeError::NetworkUnavailable);
         }
         let result = self.lifecycle.request(request, observation.now_ms)?;
@@ -238,7 +254,7 @@ impl TrackingRuntime {
                 .invalidate_inputs(error, observation.now_ms)?;
             return Err(error.into());
         }
-        let deadline = inputs.freeze_before_ms()?;
+        let deadline = inputs.freeze_before_ms();
         self.lifecycle
             .publish_plan(ticket, result, inputs, deadline, observation.now_ms)?;
         self.service(observation)?;
@@ -583,7 +599,7 @@ impl TrackingRuntime {
         let plan = bound.plan();
         let state = self.snapshot();
         let phase_deadline = match state.phase {
-            TrackingPhase::Armed => Some(plan.assessment.prepare_at_ms),
+            TrackingPhase::Armed => self.lifecycle.prepare_at_ms(),
             TrackingPhase::Preparing | TrackingPhase::Ready => Some(plan.window.aos_at_ms),
             TrackingPhase::Following => {
                 let gap = plan.reception().gap().map(|g| g.recovery_at_ms);
@@ -674,8 +690,8 @@ impl TrackingRuntime {
         if state.run.is_some() && now >= bound.inputs().clock().through_ms() {
             return Ok(());
         }
-        let freezing =
-            state.phase == TrackingPhase::Armed && now >= bound.plan().assessment.prepare_at_ms;
+        let freezing = state.phase == TrackingPhase::Armed
+            && self.lifecycle.prepare_at_ms().is_some_and(|at| now >= at);
         let error = if clock_regressed {
             Some(InputError::Timing(TimingError::ClockOrder))
         } else if state.run.is_some() {

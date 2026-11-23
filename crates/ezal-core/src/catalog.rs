@@ -2,23 +2,49 @@
 //!
 //! [`orbit`](crate::orbit) parses; this module publishes. Only a completed
 //! download publishes, and per satellite a newer-or-equal epoch replaces the
-//! current entry while an older one is ignored. HTTP is an explicit
-//! installation decision, not an authentication claim; only the device
+//! current entry while an older one is ignored. The download is encrypted but
+//! unauthenticated, an explicit installation decision; only the device
 //! download task publishes data.
 
 use crate::http;
+use crate::n2yo::{ReplyError, TleField};
 use crate::orbit::{Orbit, Update, SATELLITE_COUNT};
 
-/// Bounded HTTP framing and TLE staging in one publication boundary. A partial
-/// or failed response cannot produce the value [`Catalog::commit`] requires.
-pub struct OrbitalDownload {
-    response: http::Response,
-    update: Update,
-    failure: Option<http::Error>,
+/// Why a download cannot publish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadError {
+    /// A reply's HTTP framing failed, or the connection ended inside a reply.
+    Http(http::Error),
+    /// A complete reply did not carry element lines.
+    Reply(ReplyError),
 }
 
-/// Complete, successfully framed response; element validation is still applied
-/// by the catalog. This proves framing, not authentication or orbital accuracy.
+impl From<http::Error> for DownloadError {
+    fn from(error: http::Error) -> Self {
+        Self::Http(error)
+    }
+}
+
+impl From<ReplyError> for DownloadError {
+    fn from(error: ReplyError) -> Self {
+        Self::Reply(error)
+    }
+}
+
+/// One connection's replies, framed, read and staged in one publication
+/// boundary: bounded HTTP framing per reply, its `tle` member, then TLE
+/// staging for them all. A partial or failed reply cannot produce the value
+/// [`Catalog::commit`] requires.
+pub struct OrbitalDownload {
+    response: http::Response,
+    field: TleField,
+    update: Update,
+    failure: Option<DownloadError>,
+}
+
+/// Every reply complete and carrying elements; element validation is still
+/// applied by the catalog. This proves framing, not authentication or
+/// orbital accuracy.
 pub struct CompletedOrbitalDownload(Update);
 
 impl OrbitalDownload {
@@ -26,33 +52,71 @@ impl OrbitalDownload {
     pub fn new(now_unix_s: i64) -> Self {
         Self {
             response: http::Response::new(),
+            field: TleField::new(),
             update: Update::new(now_unix_s),
             failure: None,
         }
     }
-    /// Stream socket bytes with arbitrary read boundaries. The first error is
-    /// latched, so calling finish after a decoding failure cannot publish data.
-    pub fn push(&mut self, bytes: &[u8]) -> Result<(), http::Error> {
-        if let Some(error) = self.failure {
-            return Err(error);
-        }
-        if let Err(error) = self.response.feed(bytes, |body| self.update.push(body)) {
-            self.failure = Some(error);
-            return Err(error);
-        }
-        Ok(())
+
+    /// Stream the current reply's bytes with arbitrary read boundaries. The
+    /// first error is latched, so a later call cannot publish data.
+    pub fn push(&mut self, bytes: &[u8]) -> Result<(), DownloadError> {
+        self.latched()?;
+        let mut reply = Ok(());
+        let framed = self.response.feed(bytes, |body| {
+            if reply.is_ok() {
+                reply = self.field.push(body, |lines| self.update.push(lines));
+            }
+        });
+        let result = framed
+            .map_err(DownloadError::from)
+            .and(reply.map_err(DownloadError::from));
+        self.latch(result)
     }
-    /// Content-Length/chunked message completed; close-delimited requires EOF.
+
+    /// The current reply's message is complete, by Content-Length or chunked
+    /// framing. A close-delimited reply completes only at [`finish`](Self::finish).
     pub fn is_complete(&self) -> bool {
         self.failure.is_none() && self.response.is_done()
     }
-    /// Finish at validated framing completion or socket EOF, never on timeout.
-    pub fn finish(self) -> Result<CompletedOrbitalDownload, http::Error> {
+
+    /// End the current reply and expect another on the same connection. The
+    /// reply must be complete and must have carried elements.
+    pub fn next_reply(&mut self) -> Result<(), DownloadError> {
+        self.latched()?;
+        let result = if self.response.is_done() {
+            self.field.finish().map_err(DownloadError::from)
+        } else {
+            Err(DownloadError::Http(http::Error::Truncated))
+        };
+        self.latch(result)?;
+        // The `tle` string ends without a newline; end its last line here.
+        self.update.push(b"\n");
+        self.response = http::Response::new();
+        self.field = TleField::new();
+        Ok(())
+    }
+
+    /// Finish at the last reply's framing completion or socket EOF, never on
+    /// timeout. Like every other reply, it must have carried elements.
+    pub fn finish(self) -> Result<CompletedOrbitalDownload, DownloadError> {
         if let Some(error) = self.failure {
             return Err(error);
         }
         self.response.finish()?;
+        self.field.finish()?;
         Ok(CompletedOrbitalDownload(self.update))
+    }
+
+    fn latched(&self) -> Result<(), DownloadError> {
+        self.failure.map_or(Ok(()), Err)
+    }
+
+    fn latch(&mut self, result: Result<(), DownloadError>) -> Result<(), DownloadError> {
+        if let Err(error) = result {
+            self.failure = Some(error);
+        }
+        result
     }
 }
 

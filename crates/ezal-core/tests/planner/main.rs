@@ -358,6 +358,36 @@ fn prepare_now_does_not_borrow_future_rest_and_can_hold_after_readiness() {
 }
 
 #[test]
+fn a_rested_schedule_also_covers_preparing_once_the_relays_settle() {
+    let source = |_: f64| {
+        Some(LookAngle {
+            azimuth_deg: 300.0,
+            elevation_deg: 60.0,
+        })
+    };
+    let time = PlanningWindow {
+        aos_at_ms: 1_000_000,
+        ..window(10_000)
+    };
+    let assess = |used| {
+        let start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(100.0, 10.0), used);
+        let report =
+            run(Planner::new(source, time, FULL_TRAVEL_CALIBRATION, start, nominal()).unwrap());
+        let plan = report
+            .plan
+            .unwrap_or_else(|| panic!("{:?}", report.closest_attempt));
+        (start, plan.assessment)
+    };
+    let (start, rested) = assess([0, 0]);
+    let settled = start.at_ms + start.actuator.configuration().relays.reversal_off_ms;
+    assert!(rested.prepare_at_ms > settled);
+    assert_eq!(rested.prepare_from_ms, settled);
+    // Used duty may need the schedule's rest, so only the schedule is verified.
+    let (_, used) = assess([60_000, 0]);
+    assert_eq!(used.prepare_from_ms, used.prepare_at_ms);
+}
+
+#[test]
 fn bad_sources_never_publish_partial_results() {
     let start = resting_start(FULL_TRAVEL_CALIBRATION, Pointing::new(180.0, 10.0), [0, 0]);
     for source in [

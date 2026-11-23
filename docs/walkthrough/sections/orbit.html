@@ -79,16 +79,16 @@
       <button type="button" id="orbit-time-play">Play</button>
     </div>
     <p class="orbit-out" id="orbit-time-out" aria-live="polite"></p>
-    <figcaption>Minutes in; x, y and z out. The dark path shows the three numbers as a route from Earth’s centre: along x, then y, then z. It is dotted where the globe hides it. The minutes are counted as <code>Orbit::look_at</code> counts them; the position comes from this page’s simpler model.</figcaption>
+    <figcaption>Minutes in; x, y and z out. The dark path shows the three numbers as a route from Earth’s centre: along x, then y, then z. It is dotted where the globe hides it. The minutes are counted as <code>Orbit::state</code> counts them; the position comes from this page’s simpler model.</figcaption>
   </figure>
   <p>The three numbers are distances in kilometres from the centre of the Earth, measured along three axes that cross there at right angles. z runs up through the north pole. x and y lie in the plane of the equator, and x is the fixed direction from the first figure. These axes do not turn with the Earth: move the minutes slider and the land slides past them. The code calls this set of axes TEME.</p>
   <p>Now step through the days. The dashed ring is where the orbit was at the record’s date. A satellite circling a perfectly round planet would keep to that ring for ever. The real Earth bulges at the equator, and the bulge’s extra pull swings the ring steadily round: about one degree a day for this orbit. (That rate is chosen. One degree a day keeps pace with the Earth’s year-long trip round the Sun, so the satellite comes over at the same time of day all year.)</p>
   <p>There is also a trace of air, even 820 km up, and it slowly drags the satellite down. The record carries a number for that too. For METOP-B it adds up to about two kilometres in a week. The library allows for the bulge, the drag and several smaller effects. Nobody can predict the air perfectly, though, so a record goes stale, and ezal will not forecast more than <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/orbit.rs#L319-L327">seven days past a record’s date</a>.</p>
   <p class="note">The figures on this page do not run the library. They move the satellite round a plain ellipse and add only the steady swing from the bulge. For the pass we are about to follow, that simpler model points within half a degree of what ezal calculates, and finds the same rise and set times to within two seconds. Everything after this step, from the turning Earth to the final angles, is the same arithmetic as ezal’s and gives the same answers.</p>
   <figure class="code" data-src="crates/ezal-core/src/orbit.rs" data-comments="omit">
-    <figcaption>From <code>Orbit::look_at</code>: ask the library where the satellite is.</figcaption>
+    <figcaption>From <code>Orbit::state</code> and <code>Orbit::look_at</code>: ask the library where the satellite is.</figcaption>
     <pre data-from="let prediction = self" data-to=".ok()?;"></pre>
-    <pre data-from="let look = station.look_at(prediction.position, unix_s);"></pre>
+    <pre data-from="let look = station.look_at(self.state(unix_s)?.position_km, unix_s);"></pre>
     <ol>
       <li data-at="sgp4::MinutesSinceEpoch">Seconds since the record’s date, divided by 60. <code>unix_s</code> is the date and time as one number: seconds since the start of 1970. So this calculation needs to know the real date and time. Where the board gets them is the next chapter’s business.</li>
       <li data-at=".ok()?;">If the library reports a failure, stop here and return nothing rather than a made-up position.</li>
@@ -234,5 +234,5 @@
   </figure>
   <p>This is what the board has at the end of the calculation. For any moment of a pass it can work out an <span class="c-az">azimuth</span> and an <span class="c-el">elevation</span>. In the highest pass of the evening, the satellite rises in the south-east, climbs to 51° in the east-north-east, and sets in the north twelve and a half minutes later.</p>
   <p>A direction for every moment is still only a list of numbers. The motors turn slowly, they cannot turn for ever, and they must not be started by accident. The next chapter turns the list into a route the motors can follow, and explains where the board gets the date and time that every step here depended on.</p>
-  <p class="primer">Optional: <a href="https://celestrak.org/columns/v04n03/">CelesTrak’s column on the two-line format</a> goes through every column of the record. <a href="https://github.com/tteggel/ezal/blob/main/docs/PASS_PREDICTION.md#L150-L342">docs/PASS_PREDICTION.md</a> gives the same steps as equations, with references.</p>
+  <p class="primer">Optional: <a href="https://celestrak.org/columns/v04n03/">CelesTrak’s column on the two-line format</a> goes through every column of the record. <a href="https://github.com/tteggel/ezal/blob/main/docs/PASS_PREDICTION.md#L161-L353">docs/PASS_PREDICTION.md</a> gives the same steps as equations, with references.</p>
 </section>

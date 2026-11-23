@@ -139,7 +139,7 @@ fn full_horizon_uncertainty_and_source_age_are_checked_at_exclusive_boundaries()
         2000,
     )
     .unwrap();
-    assert_eq!(frozen.admission_deadline_ms().unwrap(), 2_472_001);
+    assert_eq!(frozen.validate(current, 2000), Ok(()));
     assert_eq!(
         ExecutionClock::new(
             anchor,
@@ -222,6 +222,22 @@ fn reversed_time_latches_and_deadline_conversions_never_wrap() {
     let anchor = clock(u64::MAX - 1000, UTC).anchor().unwrap();
     assert_eq!(anchor.monotonic_at(UTC + 1001), None);
     assert_eq!(anchor.unix_ms(u64::MAX), Some(UTC + 1000));
+}
+
+/// The anchor maps uptimes before its sample too, but a window cannot open
+/// before uptime zero: a device that started mid-pass cannot join it.
+#[test]
+fn a_window_that_opened_before_boot_is_refused() {
+    let anchor = clock(2000, UTC).anchor().unwrap();
+    assert_eq!(anchor.unix_ms(1), Some(UTC - 1999));
+    assert_eq!(
+        execution_window(anchor, UTC - 2000, UTC + 30_000).map(|window| window.aos_at_ms),
+        Ok(0)
+    );
+    assert_eq!(
+        execution_window(anchor, UTC - 2001, UTC + 30_000),
+        Err(TimingError::BeforeBoot)
+    );
 }
 
 #[test]

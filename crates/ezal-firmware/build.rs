@@ -5,19 +5,21 @@
 //!  1. Put this crate's directory on the linker search path, where the
 //!     `INCLUDE memory.x` in cortex-m-rt's `link.x` finds `memory.x`.
 //!
-//!  2. Bake WiFi credentials and station settings from `.env` into the build
-//!     (`docs/DEVELOPMENT.md` describes provisioning). The credentials become
-//!     `EZAL_WIFI_SSID` / `EZAL_WIFI_PASSWORD` for `env!` in `src/main.rs`.
+//!  2. Bake WiFi credentials, the N2YO API key and station settings from
+//!     `.env` into the build (`docs/DEVELOPMENT.md` describes provisioning).
+//!     The credentials become `EZAL_WIFI_SSID` / `EZAL_WIFI_PASSWORD` for
+//!     `env!` in `src/main.rs`, and the key `EZAL_N2YO_KEY` for
+//!     `src/prediction.rs`, which checks its characters at compile time.
 //!     Station settings become `OUT_DIR/prediction_config.rs`; unset ones
 //!     name `ezal_core`'s defaults, and the firmware checks their ranges at
 //!     compile time with `Config::validate`, so neither is duplicated here.
 //!
 //!     For each value a process environment variable wins, then the `.env`
-//!     file at the workspace root, then empty. An empty SSID only warns: CI
-//!     cross-compiles without a `.env`, and network supervision parks offline
-//!     at boot. Cargo prints a failed build script's stdout, so every check
-//!     that can fail runs before the credentials are printed, as the very
-//!     last step.
+//!     file at the workspace root, then empty. An empty SSID or key only
+//!     warns: CI cross-compiles without a `.env`, network supervision parks
+//!     offline at boot, and N2YO refuses a missing key. Cargo prints a
+//!     failed build script's stdout, so every check that can fail runs
+//!     before the credentials are printed, as the very last step.
 //!
 //!  3. Declare its inputs with `rerun-if-changed` / `rerun-if-env-changed`, so
 //!     Cargo reruns it only when one of them changes.
@@ -28,6 +30,8 @@ use std::path::{Path, PathBuf};
 
 /// Names of the credential variables we surface to the crate via `env!`.
 const WIFI_VARS: [&str; 2] = ["EZAL_WIFI_SSID", "EZAL_WIFI_PASSWORD"];
+/// The N2YO API key, surfaced the same way.
+const N2YO_KEY: &str = "EZAL_N2YO_KEY";
 
 // Names of the station settings generated into `prediction_config.rs`.
 const LATITUDE: &str = "EZAL_LATITUDE_DEG";
@@ -72,7 +76,11 @@ fn bake_configuration(manifest_dir: &Path) {
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={}", env_path.display());
-    for var in WIFI_VARS.into_iter().chain(PREDICTION_VARS) {
+    for var in WIFI_VARS
+        .into_iter()
+        .chain([N2YO_KEY])
+        .chain(PREDICTION_VARS)
+    {
         println!("cargo:rerun-if-env-changed={var}");
     }
 
@@ -95,11 +103,16 @@ fn bake_configuration(manifest_dir: &Path) {
 
     let ssid = lookup("EZAL_WIFI_SSID");
     let password = lookup("EZAL_WIFI_PASSWORD");
+    let key = lookup(N2YO_KEY);
 
     // Cargo reads stdout one line at a time. Reject line breaks before printing
-    // either value, or a credential could be truncated or interpreted as a new
+    // any value, or a credential could be truncated or interpreted as a new
     // build instruction. Diagnostics name the field without exposing its value.
-    for (name, value) in [(WIFI_VARS[0], &ssid), (WIFI_VARS[1], &password)] {
+    for (name, value) in [
+        (WIFI_VARS[0], &ssid),
+        (WIFI_VARS[1], &password),
+        (N2YO_KEY, &key),
+    ] {
         assert!(
             !value.contains(['\r', '\n']),
             "{name} must not contain line breaks"
@@ -118,12 +131,20 @@ fn bake_configuration(manifest_dir: &Path) {
             env_path.display()
         );
     }
+    if key.is_empty() {
+        println!(
+            "cargo:warning=EZAL_N2YO_KEY is empty after environment/.env resolution ({}); \
+             orbital-element downloads will fail until you add an N2YO API key.",
+            env_path.display()
+        );
+    }
 
     // These reach `src/main.rs` as `env!("EZAL_WIFI_SSID")` etc. We always
     // set them (possibly to "") so `env!` never fails the compile. Nothing
     // may follow that can fail, or Cargo would echo the credentials.
     println!("cargo:rustc-env=EZAL_WIFI_SSID={ssid}");
     println!("cargo:rustc-env=EZAL_WIFI_PASSWORD={password}");
+    println!("cargo:rustc-env=EZAL_N2YO_KEY={key}");
 }
 
 /// Generate the station configuration as Rust source. A set value must be a
@@ -207,7 +228,10 @@ fn parse_dotenv(path: &Path) -> Vec<(String, String)> {
             continue;
         };
         let key = key.trim().to_string();
-        if !WIFI_VARS.contains(&key.as_str()) && !PREDICTION_VARS.contains(&key.as_str()) {
+        if !WIFI_VARS.contains(&key.as_str())
+            && key != N2YO_KEY
+            && !PREDICTION_VARS.contains(&key.as_str())
+        {
             continue;
         }
         let value = parse_value(&key, value);

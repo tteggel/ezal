@@ -36,6 +36,9 @@ pub enum TimingError {
     LeapPending,
     /// Invalid drift, age, angular reserve, sky rate or time span.
     Configuration,
+    /// AOS precedes uptime zero: the device started mid-pass, so the window
+    /// has no uptime to start at and the pass cannot be joined.
+    BeforeBoot,
     /// Sample uncertainty plus oscillator drift exceeds its pointing allocation.
     Uncertainty,
     /// A new sample disagrees with the frozen timeline beyond the same allocation.
@@ -46,6 +49,13 @@ pub enum TimingError {
 
 /// Immutable execution timeline. New samples only validate it; they cannot
 /// alter its targets, AOS, LOS or command deadlines.
+///
+/// True UTC lies within the newest sample's uncertainty and drift of that
+/// sample's mapping, and the two mappings differ by a constant, so the frozen
+/// one is out by at most their sum. Until NTP synchronizes again, the newest
+/// sample is the frozen one and the difference is zero. A plan therefore
+/// keeps its timeline across routine synchronizations, however old its own
+/// sample becomes, and no later sample can move it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExecutionClock {
     anchor: UtcAnchor,
@@ -56,8 +66,8 @@ pub struct ExecutionClock {
 
 impl ExecutionClock {
     /// A preview can exist hours before preparation while the device keeps
-    /// synchronizing. Validate today's sample now; the full LOS horizon is
-    /// checked again before freezing. Never use this alone to authorize output.
+    /// synchronizing. Validate the sample now; [`Self::validate`] checks the
+    /// full LOS horizon before freezing. Never use this alone to authorize output.
     pub(super) fn preview(
         anchor: UtcAnchor,
         policy: TimingPolicy,
@@ -123,9 +133,9 @@ impl ExecutionClock {
         self.through_ms
     }
 
-    /// Fractional UTC for propagation, from the frozen timeline only.
+    /// Fractional UTC for propagation, from the frozen timeline only. Its
+    /// accuracy comes from the newest sample; see [`Self::validate`].
     pub fn unix_s(self, now_ms: u64) -> Result<f64, TimingError> {
-        self.check_anchor(self.anchor, now_ms)?;
         if now_ms > self.through_ms {
             return Err(TimingError::Expired);
         }
@@ -135,14 +145,23 @@ impl ExecutionClock {
             .ok_or(TimingError::ClockOrder)
     }
 
-    /// Check the latest live sample without rebasing. Its error interval must
-    /// stay within the frozen timeline's timing allocation through LOS. Failed
-    /// refreshes leave `current` unchanged and cannot renew either source age.
+    /// Bound the frozen timeline's error through LOS with the latest live
+    /// sample, without rebasing: required at preparation and on every output
+    /// admission. Failed refreshes leave `current` unchanged and cannot renew
+    /// a source age.
     pub fn validate(self, current: UtcClock, now_ms: u64) -> Result<(), TimingError> {
+        self.check(current, now_ms, self.through_ms)
+    }
+
+    /// The same bound at `now_ms` only, for a preview that has not frozen:
+    /// it stays valid while synchronization continues, not while its own
+    /// sample would cover LOS.
+    pub fn validate_now(self, current: UtcClock, now_ms: u64) -> Result<(), TimingError> {
+        self.check(current, now_ms, now_ms)
+    }
+
+    fn check(self, current: UtcClock, now_ms: u64, until_ms: u64) -> Result<(), TimingError> {
         self.unix_s(now_ms)?;
-        if self.error_ms(self.anchor, self.through_ms)? > self.allowance_ms {
-            return Err(TimingError::Uncertainty);
-        }
         let latest = current.anchor().ok_or(TimingError::Unavailable)?;
         if latest.revision() < self.anchor.revision()
             || latest.monotonic_ms() < self.anchor.monotonic_ms()
@@ -150,32 +169,16 @@ impl ExecutionClock {
             return Err(TimingError::ClockOrder);
         }
         self.check_anchor(latest, now_ms)?;
+        let error_ms = self.error_ms(latest, until_ms)?;
+        if error_ms > self.allowance_ms {
+            return Err(TimingError::Uncertainty);
+        }
         let frozen = self.anchor.unix_ms(now_ms).ok_or(TimingError::ClockOrder)?;
         let live = latest.unix_ms(now_ms).ok_or(TimingError::ClockOrder)?;
-        let worst_ms = frozen.abs_diff(live) as f64 + self.error_ms(latest, self.through_ms)?;
-        if worst_ms > self.allowance_ms {
+        if frozen.abs_diff(live) as f64 + error_ms > self.allowance_ms {
             return Err(TimingError::Correction);
         }
         Ok(())
-    }
-
-    /// Exclusive deadline for admitting this preview's sample. Future
-    /// execution still requires a complete-horizon check at preparation.
-    pub fn admission_deadline_ms(self) -> Result<u64, TimingError> {
-        let remaining = self.allowance_ms - self.anchor.sample().uncertainty_ms() as f64;
-        if !remaining.is_finite() || remaining < 0.0 {
-            return Err(TimingError::Uncertainty);
-        }
-        let age_limit = (remaining * 1_000_000.0 / f64::from(self.policy.drift_ppm))
-            .min(self.policy.max_sample_age_ms as f64) as u64;
-        self.anchor
-            .monotonic_ms()
-            .checked_add(
-                age_limit
-                    .saturating_add(1)
-                    .min(self.policy.max_sample_age_ms),
-            )
-            .ok_or(TimingError::ClockOrder)
     }
 
     pub(super) fn allowance_ms(self) -> f64 {
@@ -214,6 +217,9 @@ pub fn execution_window(
         .ok_or(TimingError::Configuration)?;
     if !(1..=u64::from(PlanningWindow::MAX_DURATION_MS)).contains(&duration) {
         return Err(TimingError::Configuration);
+    }
+    if aos_unix_ms < anchor.unix_ms(0).ok_or(TimingError::ClockOrder)? {
+        return Err(TimingError::BeforeBoot);
     }
     let aos_at_ms = anchor
         .monotonic_at(aos_unix_ms)

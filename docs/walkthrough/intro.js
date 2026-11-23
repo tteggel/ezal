@@ -8,7 +8,7 @@
   const RATE = {az: 5.14, el: 2.25};
   const TRAVEL = {az: 360, el: 90};
   // mV at each end of travel: HARD_CODED_CALIBRATION in ezal-core's position.rs.
-  const MILLIVOLTS = {az: [114, 2033], el: [1281, 58]};
+  const MILLIVOLTS = {az: [136, 1898], el: [1170, 84]};
   const BUTTONS = {cw: ['az', 1], ccw: ['az', -1], up: ['el', 1], down: ['el', -1]};
   const angle = {az: 180, el: 30};
   const held = {az: null, el: null};

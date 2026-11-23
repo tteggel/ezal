@@ -15,6 +15,8 @@ use embassy_time::{with_deadline, Duration, Instant};
 
 use ezal_core::actuator::Actuator;
 use ezal_core::drive::{AzimuthDirection, DriveCommand, ElevationDirection};
+use ezal_core::duty::DutyHistory;
+use ezal_core::installation;
 
 use crate::state::SharedState;
 
@@ -37,22 +39,23 @@ pub struct DirectionOutputs {
 
 impl DirectionOutputs {
     /// Claim the four direction GPIOs, driven low so no axis is energised.
-    /// The schematic fixes the wiring:
+    /// The schematic fixes the wiring; this installation's elevation drive
+    /// runs reversed, so the G-5500's DOWN line (DIN 5) raises the dish:
     ///
     /// | role        | GPIO | DIN   | LED |
     /// |-------------|------|-------|-----|
     /// | CW (right)  | GP10 | DIN 2 | D1  |
     /// | CCW (left)  | GP11 | DIN 4 | D2  |
-    /// | UP          | GP20 | DIN 3 | D3  |
-    /// | DOWN        | GP21 | DIN 5 | D4  |
+    /// | UP          | GP21 | DIN 5 | D4  |
+    /// | DOWN        | GP20 | DIN 3 | D3  |
     ///
     /// Each pin parameter has its own type, so the compiler rejects pins passed
     /// in the wrong order.
     pub fn new(
         cw: Peri<'static, PIN_10>,
         ccw: Peri<'static, PIN_11>,
-        up: Peri<'static, PIN_20>,
-        down: Peri<'static, PIN_21>,
+        up: Peri<'static, PIN_21>,
+        down: Peri<'static, PIN_20>,
     ) -> Self {
         Self {
             cw: Output::new(cw, Level::Low),
@@ -114,7 +117,7 @@ pub async fn direction_task(
     mut watchdog: Watchdog,
 ) -> ! {
     outputs.stop();
-    let mut actuator = Actuator::new();
+    let mut actuator = Actuator::with_config(installation::ACTUATOR, DutyHistory::Unknown);
     state.record_actuator(&actuator, Instant::now().as_millis());
     crate::watchdog::start(&mut watchdog);
     let mut next_service = Instant::now();

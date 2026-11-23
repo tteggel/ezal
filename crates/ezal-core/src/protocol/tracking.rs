@@ -101,6 +101,7 @@ impl TrackingIntent {
             }),
             "arm" => TrackingAction::Arm,
             "prepare" => TrackingAction::PrepareNow,
+            "rehearse" => TrackingAction::Rehearse,
             "cancel" => TrackingAction::Cancel,
             "manual" => TrackingAction::Manual,
             _ => return None,
@@ -190,7 +191,7 @@ struct Preview {
     choice: RouteChoice,
     window: PlanningWindow,
     reception: ReceptionCoverage,
-    prepare_at_ms: u64,
+    prepare_unix_s: f64,
     lead_ms: u64,
     bound_deg: f32,
     tolerance_deg: f32,
@@ -209,6 +210,8 @@ pub struct TrackingTelemetry {
     feedback_age_ms: Option<u64>,
     feedback_stale: bool,
     now_ms: u64,
+    rehearsal: bool,
+    rehearsal_available_ms: Option<u64>,
 }
 
 impl TrackingTelemetry {
@@ -231,7 +234,16 @@ impl TrackingTelemetry {
                     choice: plan.route.choice(),
                     window: plan.window,
                     reception: plan.reception(),
-                    prepare_at_ms: plan.assessment.prepare_at_ms,
+                    prepare_unix_s: bound
+                        .inputs()
+                        .clock()
+                        .anchor()
+                        .unix_ms(
+                            runtime
+                                .prepare_at_ms()
+                                .unwrap_or(plan.assessment.prepare_at_ms),
+                        )
+                        .map_or(plan.window.aos_unix_s, |ms| ms as f64 / 1000.0),
                     lead_ms: plan.assessment.preparation_lead_ms,
                     bound_deg: plan.assessment.bounded_peak_deg,
                     tolerance_deg: plan.config.tolerance_deg,
@@ -245,6 +257,8 @@ impl TrackingTelemetry {
             feedback_stale: feedback.health != FeedbackHealth::Healthy
                 || feedback_age_ms.is_none_or(|age| age >= FEEDBACK_MAX_AGE_MS),
             now_ms,
+            rehearsal: runtime.is_rehearsing(),
+            rehearsal_available_ms: runtime.rehearsal_available_ms(now_ms),
         }
     }
 
@@ -263,6 +277,12 @@ impl TrackingTelemetry {
             phase(s.phase)
         )?;
         identity(out, s.run.map(RunToken::serial))?;
+        write!(
+            out,
+            ",\"rehearsal\":{},\"rehearsal_available_ms\":",
+            self.rehearsal
+        )?;
+        number(out, self.rehearsal_available_ms)?;
         out.write_str(",\"selection\":")?;
         if let Some(selection) = s.selection {
             let pass = selection.current.unwrap_or(selection.original);
@@ -287,8 +307,7 @@ impl TrackingTelemetry {
                 RouteKind::Inverted => "inverted",
                 RouteKind::OverTop { .. } => "over-the-top",
             };
-            let prepare_unix_s =
-                p.window.aos_unix_s + (p.prepare_at_ms as f64 - p.window.aos_at_ms as f64) / 1000.0;
+            let prepare_unix_s = p.prepare_unix_s;
             write!(out, "{{\"route\":\"{route}\",\"azimuth_turns\":{},\"prepare_unix_s\":{prepare_unix_s:.3},\"preparation_lead_ms\":{},\"bound_deg\":{:.3},\"tolerance_deg\":{:.3},\"reserve_deg\":{:.3},\"reception\":", p.choice.azimuth_turns, p.lead_ms, p.bound_deg, p.tolerance_deg, p.reserve_deg)?;
             reception(out, p.window, p.reception)?;
             out.write_str("}")?;

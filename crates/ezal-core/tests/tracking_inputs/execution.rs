@@ -26,6 +26,10 @@ impl Device {
     }
 
     fn with_preparation_offset(offset_deg: f32) -> Self {
+        Self::with_extra_lead(offset_deg, 0)
+    }
+
+    fn with_extra_lead(offset_deg: f32, extra_ms: u64) -> Self {
         let (preview, _) = preview();
         let plan = preview.bound_plan().unwrap().plan();
         let mut pose = plan.route.pointing_at(0).unwrap();
@@ -49,7 +53,7 @@ impl Device {
             device.apply(at);
         }
         device.now = 2000;
-        device.state.publish_clock(clock(UTC), 2000);
+        device.state.publish_clock(clock(UTC - extra_ms), 2000);
         device.owner = device.state.register_client(2000);
         device.request(1, TrackingAction::Select(EVENT));
         let revisions = PlanRevisions {
@@ -62,12 +66,12 @@ impl Device {
         let inputs = capture(
             device.state.tracking(),
             &catalog(),
-            clock(UTC),
+            clock(UTC - extra_ms),
             UTC + 120_000,
             UTC + 150_000,
         )
         .unwrap();
-        let report = if offset_deg == 0.0 {
+        let report = if offset_deg == 0.0 && extra_ms == 0 {
             report(&inputs)
         } else {
             let mut planner = Planner::new(
@@ -178,6 +182,239 @@ impl Device {
             self.tick((self.now + 10).min(at));
         }
     }
+
+    fn publish_pending_plan(&mut self) {
+        let now = self.now;
+        let revisions = PlanRevisions {
+            start: self.state.start_revision(),
+            ..REVISIONS
+        };
+        let (ticket, current) = self.state.tracking_operation(now, |runtime, obs| {
+            runtime.refresh(&[EVENT], revisions, obs).unwrap();
+            (runtime.planning_ticket().unwrap(), obs.clock)
+        });
+        let config = PlanningConfig {
+            preparation_timing: ticket.preparation_timing(),
+            ..nominal()
+        };
+        let inputs = ExecutionInputs::capture(
+            ticket,
+            catalog().snapshot(EVENT.norad_id).unwrap(),
+            InputSettings::default(),
+            current,
+            execution_window(
+                current.anchor().unwrap(),
+                EVENT.aos_unix_s as u64 * 1000,
+                EVENT.los_unix_s as u64 * 1000,
+            )
+            .unwrap(),
+            &config,
+            now,
+        )
+        .unwrap();
+        let mut planner = Planner::new(
+            inputs.clone(),
+            inputs.window(),
+            FULL_TRAVEL_CALIBRATION,
+            self.state.resting_start().unwrap(),
+            config,
+        )
+        .unwrap();
+        while !planner.is_finished() {
+            planner.step().unwrap();
+        }
+        let report = planner.take_report().unwrap();
+        assert!(report.plan.is_some(), "{report:?}");
+        self.state.tracking_operation(now, |runtime, obs| {
+            runtime
+                .publish_plan(ticket, Ok(report), inputs, obs)
+                .unwrap();
+        });
+    }
+}
+
+#[test]
+fn rehearsal_moves_at_real_speed_before_live_preparation_and_restores_armed_pass() {
+    let mut device = Device::with_extra_lead(5.0, 180_000);
+    let live_prep = device
+        .state
+        .tracking()
+        .bound_plan()
+        .unwrap()
+        .plan()
+        .assessment
+        .prepare_at_ms;
+    assert!(device
+        .state
+        .tracking()
+        .rehearsal_available_ms(device.now)
+        .is_some());
+    device.request(3, TrackingAction::Rehearse);
+    assert!(device.state.tracking().is_rehearsing());
+    assert_eq!(
+        device.state.tracking().snapshot().plan,
+        PlanStatus::Planning
+    );
+    assert!(device.state.tracking().snapshot().run.is_none());
+    device.publish_pending_plan();
+    let bound = device.state.tracking().bound_plan().unwrap();
+    let window = bound.plan().window;
+    let source = bound.inputs().clone();
+    assert_eq!(bound.plan().assessment.prepare_at_ms, device.now);
+    assert_eq!(window.aos_unix_s, EVENT.aos_unix_s as f64);
+    assert!(window.aos_at_ms + u64::from(window.duration_ms) < live_prep);
+    assert_eq!(
+        device.state.tracking().snapshot().phase,
+        TrackingPhase::Preparing
+    );
+    // Propagation follows the selected future pass at one second per second.
+    for offset in [0, 1000, 20_000] {
+        assert_eq!(
+            source.look_at_uptime(window.aos_at_ms + offset),
+            source.look_at(window.aos_unix_s + offset as f64 / 1000.0)
+        );
+    }
+    assert!(device.state.release_client(device.owner, device.now));
+    device.until(window.aos_at_ms + 1000);
+    assert!(device.ready_seen && device.following_seen);
+    assert!(device.applied_transitions > 0);
+    device.until(window.aos_at_ms + u64::from(window.duration_ms));
+    let summary = device.state.tracking().last_summary().unwrap();
+    assert_eq!(summary.termination.reason, TrackingStop::RehearsalComplete);
+    assert!(summary.deviation.maximum_deg.unwrap() < 3.0, "{summary:?}");
+    assert!(!device.state.tracking().is_rehearsing());
+    assert!(!device.actuator.actual().is_active());
+    assert_eq!(
+        device
+            .state
+            .tracking()
+            .snapshot()
+            .selection
+            .unwrap()
+            .current,
+        Some(EVENT)
+    );
+    assert_eq!(
+        device.state.tracking().snapshot().phase,
+        TrackingPhase::Armed
+    );
+    // The regular worker replans from the real final pose and consumed duty.
+    device.until(device.now + 2000);
+    device.publish_pending_plan();
+    let bound = device.state.tracking().bound_plan().unwrap();
+    assert!(!bound.ticket().is_rehearsal());
+    assert_eq!(
+        bound.ticket().preparation_timing(),
+        PreparationTiming::Scheduled
+    );
+    let live_los = bound.plan().window.aos_at_ms + u64::from(bound.plan().window.duration_ms);
+    assert_eq!(
+        device.state.tracking().snapshot().phase,
+        TrackingPhase::Armed
+    );
+    device.until(live_los);
+    assert_eq!(
+        device
+            .state
+            .tracking()
+            .last_summary()
+            .unwrap()
+            .termination
+            .reason,
+        TrackingStop::LossOfSignal
+    );
+}
+
+#[test]
+fn rehearsal_from_manual_returns_to_manual_and_can_be_cancelled() {
+    for cancel in [false, true] {
+        let mut device = Device::with_extra_lead(0.0, 180_000);
+        device.request(3, TrackingAction::Manual);
+        device.publish_pending_plan();
+        device.request(4, TrackingAction::Rehearse);
+        device.publish_pending_plan();
+        let window = device.state.tracking().bound_plan().unwrap().plan().window;
+        if cancel {
+            device.request(5, TrackingAction::Cancel);
+        }
+        device.until(window.aos_at_ms + u64::from(window.duration_ms));
+        assert!(!device.state.tracking().is_rehearsing());
+        assert!(!device.actuator.actual().is_active());
+        assert_eq!(
+            device.state.tracking().snapshot().mode,
+            TrackingMode::Manual
+        );
+        assert_eq!(
+            device
+                .state
+                .tracking()
+                .snapshot()
+                .termination
+                .unwrap()
+                .reason,
+            if cancel {
+                TrackingStop::Cancelled
+            } else {
+                TrackingStop::RehearsalComplete
+            }
+        );
+    }
+}
+
+#[test]
+fn rehearsal_is_rejected_at_the_exact_latest_start_and_cannot_run_past_live_preparation() {
+    let mut device = Device::with_extra_lead(0.0, 180_000);
+    let available = device
+        .state
+        .tracking()
+        .rehearsal_available_ms(device.now)
+        .unwrap();
+    let last_start = device.now + available;
+    assert_eq!(
+        device
+            .state
+            .tracking()
+            .rehearsal_available_ms(last_start - 1),
+        Some(1)
+    );
+    assert_eq!(
+        device.state.tracking().rehearsal_available_ms(last_start),
+        None
+    );
+    device.until(last_start);
+    assert!(device.state.take_control(device.owner, device.now));
+    assert_eq!(
+        device.try_request(1, TrackingAction::Rehearse),
+        Err(ezal_core::protocol::TrackingRejection::Rejected(
+            RuntimeError::Lifecycle(LifecycleError::NotReady)
+        ))
+    );
+    assert!(!device.state.tracking().is_rehearsing());
+
+    // Even if a worker never produces a rehearsal plan, the live deadline wins.
+    let mut device = Device::with_extra_lead(0.0, 180_000);
+    let live_prep = device
+        .state
+        .tracking()
+        .bound_plan()
+        .unwrap()
+        .plan()
+        .assessment
+        .prepare_at_ms;
+    device.request(3, TrackingAction::Rehearse);
+    device.until(live_prep);
+    assert!(!device.state.tracking().is_rehearsing());
+    assert!(!device.actuator.actual().is_active());
+    assert_eq!(
+        device
+            .state
+            .tracking()
+            .snapshot()
+            .termination
+            .unwrap()
+            .reason,
+        TrackingStop::RehearsalDeadline
+    );
 }
 
 #[test]
@@ -195,10 +432,7 @@ fn device_prepares_follows_and_finishes_after_browser_disconnect_under_backgroun
     let station = ezal_core::orbit::GroundStation::new(Observer::CLEVEDON).unwrap();
     let mut prediction =
         Job::new(&catalog, &station, Config::DEFAULT, (UTC / 1000) as i64).unwrap();
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{TLES}",
-        TLES.len()
-    );
+    let response = common::n2yo_reply(TLES);
     let mut download = OrbitalDownload::new((UTC / 1000) as i64);
     let mut bytes = response.as_bytes().chunks(17);
     let mut forecast_finished = false;
@@ -363,8 +597,9 @@ fn changed_start_invalidates_preview_before_a_simultaneous_preparation_deadline(
         .assessment
         .prepare_at_ms;
     device.until(prep - 10);
+    // Beyond the 2° start tolerance.
     let mut pose = device.model.position();
-    pose.azimuth_deg += 1.0;
+    pose.azimuth_deg += 3.0;
     let old_ticket = device.state.tracking().bound_plan().unwrap().ticket();
     device.feedback(full_travel_sample(pose, prep - 10), prep);
     device.state.publish_network(true, prep);
@@ -379,7 +614,7 @@ fn changed_start_invalidates_preview_before_a_simultaneous_preparation_deadline(
 fn a_disarmed_clock_publication_blocks_preview_and_stops_a_run() {
     let mut disarmed = clock(UTC);
     assert_eq!(
-        disarmed.synchronize(1000, sample(UTC)),
+        disarmed.synchronize(1000, ntp_sample(UTC)),
         Err(ntp::ClockDisarmed)
     );
     let unavailable = InputError::Timing(TimingError::Unavailable);

@@ -8,27 +8,24 @@ unit, measuring the motion profile, and then verifying the installation on the
 bench with the [commissioning checklist](#bench-verification).
 
 The tracking installation has an 80 cm parabolic dish with a custom
-helical feed and permits over-the-top movement. Its full-travel calibration
-and pointing tolerance are unmeasured. Follow this procedure before using
-that extra travel. Host acceptance of [tracking](TRACKING.md#verification) does
-not establish physical or RF performance; the tracking defaults and the
-[provisional motor profile](HARDWARE.md#provisional-tracking-profile) are
-assumptions, not measured installation values, and the
-[known model limits](#known-model-limits) say where execution departs from
-prediction.
+helical feed and permits over-the-top movement. The full-travel endpoints and
+steady slew rates are measured. Pointing tolerance and the startup, coast and
+backlash terms in the [tracking profile](HARDWARE.md#provisional-tracking-profile)
+still need bench and RF verification. The [known model limits](#known-model-limits)
+describe where execution can depart from the host rehearsal.
 
 ## Current hard-coded values
 
 The single source of truth is `HARD_CODED_CALIBRATION` in
 [`crates/ezal-core/src/position.rs`](../crates/ezal-core/src/position.rs).
 
-| ADC channel | G-5500 signal | mechanical range | placeholder ADC range |
-|-------------|---------------|------------------|-----------------------|
-| A0          | elevation     | 0°–90°           | 1281 mV at 0°, 58 mV at 90° |
-| A1          | azimuth       | 0°–360°          | 114 mV at 0°, 2033 mV at 360° |
+| ADC channel | G-5500 signal | mechanical range | measured ADC range |
+|-------------|---------------|------------------|--------------------|
+| A0          | elevation     | 0°–180°          | 20 mV at 0°, 2362 mV at 180° |
+| A1          | azimuth       | 0°–450°          | 22 mV at 0°, 2224 mV at 450° |
 
 These checked-in installation values govern manual and tracking movement.
-The mapping accepts at most 25 mV of endpoint noise before declaring feedback
+The mapping accepts at most 15 mV of endpoint noise before declaring feedback
 invalid and inhibiting movement.
 
 ## Safety setup
@@ -73,8 +70,8 @@ The direction buttons stay disabled when the controller reports unusable
 feedback, with the reason shown below the pad. `feedback-invalid` means at
 least one ADC voltage is outside the accepted calibrated range or at an ADC
 rail; being online and owning control does not clear that block. With the
-current values and the 25 mV margin, A0 must be 33–1306 mV and A1 must be
-89–2058 mV. If feedback becomes invalid during a hold, the dashboard stops
+current values and the 15 mV margin, A0 must be 5–2377 mV and A1 must be
+7–2239 mV. If feedback becomes invalid during a hold, the dashboard stops
 the request; recovery requires releasing and pressing again.
 
 For initial measurements, keep the Pico's four direction leads disconnected
@@ -120,9 +117,8 @@ each reading settle before recording it.
 
 Measure at the endpoints of the **permitted installation range**, recording
 both the physical angle and its ADC reading. The current configuration uses
-0°–360° azimuth and 0°–90° elevation; a full-travel G-5500 installation may use
-0°–450° and 0°–180°. Do not measure at one range's endpoints and label those
-voltages with another range's angles.
+0°–450° azimuth and 0°–180° elevation. Pair each voltage with the angle where
+it was measured.
 
 For over-the-top use, measure permitted elevation travel through 90° and
 towards 180°. Record intermediate values at 45°, 90° and 135° as well as the
@@ -131,12 +127,10 @@ different motor position from 45°, although an azimuth shift of 180° can make
 them point in the same sky direction. Similarly, keep azimuth 360°–450° as
 continuous travel if that overlap is available on this installation.
 
-Do not obtain the new calibration by changing the current `90.0` endpoint
-to `180.0` while retaining its voltage. In particular, the current 58 mV
-reading at 90° cannot be extrapolated to infer the far endpoint. Measure the
-entire feedback chain at the actual angles. If the readings reach a rail
-before the allowed mechanical endpoint, investigate the feedback interface
-and controller setup before extending the calibration.
+Measure the entire feedback chain at the actual angles for any new endpoints.
+If the readings reach a rail before the allowed mechanical endpoint,
+investigate the feedback interface and controller setup before extending the
+calibration.
 
 | measurement | physical angle to record | dashboard reading to record |
 |-------------|--------------------------|-----------------------------|
@@ -159,7 +153,7 @@ Sanity-check the worksheet:
   span as 180° travel. Investigate unexpectedly small spans or large changes
   from previous installation measurements;
 - every reading must remain inside the ADS1015 ±4.096 V setting and the
-  board's 0–3.3 V input range; the entire 25 mV endpoint margin must fit
+  board's 0–3.3 V input range; the entire 15 mV endpoint margin must fit
   strictly between zero and **3200 mV**. That ceiling is the supply rail, not
   the ±4.096 V saturation code: the ADS1015 cannot report a reading above its
   own 3.3 V supply, so a band reaching that high would make an input stuck at
@@ -207,10 +201,15 @@ cargo build -p ezal-firmware --release
 ```
 
 The host suite checks that your calibration is one the feedback ADC can
-supervise: endpoints in order, and both 25 mV fault margins clear of ground
+supervise: endpoints in order, and both 15 mV fault margins clear of ground
 and of the supply-rail ceiling. The policy tests use their own fixture rather
 than the installed numbers, so a correct measurement cannot fail them — a
-failure here means the calibration needs another look, not the tests.
+failure here means the calibration needs another look, not the tests. One test
+does use the installed numbers: `tests/end_to_end.rs` runs a recorded pass
+through the device's planning worker with this calibration and the
+[installed motion settings](../crates/ezal-core/src/installation.rs). That
+pass suits both full and 360°/90° travel, so a failure there means the
+installation cannot track it.
 
 Then stop at 0%, 25%, 50%, 75%, and 100% of
 each scale. Compare the dashboard angle with the G-5500 meter or a trusted
@@ -251,11 +250,10 @@ dish's radio beam to agree with the predicted sky direction:
 
 ## Motion-profile worksheet
 
-Until these measurements exist, simulation uses the
-[provisional profile](HARDWARE.md#provisional-tracking-profile). Record actual
-loaded behavior when commissioning hardware, keeping each value separate from
-its assumption. Position endpoints must be measured before extending permitted
-travel. Keep recording and RF measurements in the external receiver system.
+The installed [tracking profile](HARDWARE.md#provisional-tracking-profile)
+uses the measured steady rates of 6.2°/s azimuth and 3.1°/s elevation.
+Record loaded behavior by direction and check the rest of the model on the
+bench. Keep recording and RF measurements in the external receiver system.
 
 | Measurement | CW | CCW | Up | Down |
 |---|---|---|---|---|
@@ -268,16 +266,13 @@ travel. Keep recording and RF measurements in the external receiver system.
 
 Time travel over a known span away from the endpoints, in both directions
 and at several elevations under the normal dish load. Record slow and fast
-runs, not only their average. Repeat pulses with progressively shorter
-intervals, starting from the implemented 500 ms on / 2 s off behavior.
-The proposed shorter off/reversal intervals are commissioning candidates;
-observe useful movement, stopping and supervision before applying them.
+runs, not only their average. Repeat pulses using the installed
+[relay timing](CONTROL_CONTRACT.md#ownership-and-recovery) and observe
+movement, stopping and supervision.
 
 The [planner](TRACKING.md#planning) evaluates fixed and alternating one-code
 offsets, 0–150 ms read latency and up to 150 ms between the two channel
-captures. These are explicit test scenarios, not measured noise limits. In
-the recorded fixture, an alternating-noise case trips the current speed
-supervision during preparation. Record actual noise
+captures. These are explicit test scenarios, not measured noise limits. Record actual noise
 and acquisition timing together before adjusting either the planner assumptions
 or supervision thresholds; increasing noise tolerance also requires enough
 progress resolution to distinguish movement from noise. Replay with the same
@@ -291,24 +286,21 @@ duty specification in [HARDWARE.md](HARDWARE.md#published-specifications).
 
 ## Motion-supervision commissioning
 
-`ActuatorConfig::DEFAULT` in `crates/ezal-core/src/actuator.rs` combines relay,
-travel, motion and duty settings. `MotionConfig::DEFAULT` starts with the
+The [installed actuator configuration](../crates/ezal-core/src/installation.rs)
+combines relay, travel, motion and duty settings. `MotionConfig::DEFAULT` starts with the
 [contract's](CONTROL_CONTRACT.md#ownership-and-recovery) budget of accumulated
 energized time without resolvable progress, three calibrated ADC codes to prove
 movement, and two codes of measurement tolerance. The implausible-speed check
 allows four codes instead (`speed_noise_codes`): azimuth feedback spikes by
-more than two codes when the AC motor starts. `TravelProfile::DEFAULT`
-uses 7°/s azimuth and 3°/s elevation with the contract's release/coast on both
-axes. The same travel profile governs endpoint margins and implausible-speed
-checks.
+more than two codes when the motor starts. The installed travel profile uses
+7.7°/s azimuth and 3.8°/s elevation with the contract's release/coast allowance
+on both axes. The same profile governs endpoint margins and implausible-speed checks.
 
 These are engineering starting points, not measured limits for every
-installation. To install measured settings, pass the complete `ActuatorConfig`
-to `Actuator::with_config` in the firmware output task, retaining
+installation. To install measured settings, change `installation::ACTUATOR`;
+the firmware output task passes it to `Actuator::with_config` with
 `DutyHistory::Unknown` at boot. A reversal off-time shorter than coast plus
-the maximum feedback age is rejected. `RelayConfig::TRACKING_CANDIDATE` offers
-shorter same-direction and reversal off-times for simulation and
-commissioning; firmware keeps `RelayConfig::DEFAULT` until they are verified.
+the maximum feedback age is rejected.
 Select `DutyConfig::CONFIRMED_AC`, the AC
 [operating specification](HARDWARE.md#published-specifications), only after
 identifying the original AC hardware; the
@@ -370,7 +362,7 @@ outputs:
    last output state until boot claims the pin, which is how long the base
    pull-downs take to win.
 5. Stop refreshing a held command: the output is removed at the 750 ms lease
-   deadline. When the 2 s off interval delays an activation, a lease with less
+   deadline. When the off interval delays an activation, a lease with less
    than 500 ms left leaves the relay alone with no brief click, and a refreshed
    lease then starts the output normally.
 6. Make feedback invalid, missing and stalled: each inhibits movement, and
@@ -409,8 +401,8 @@ simulated feedback, then in supervised powered passes:
 
 11. Select one predicted pass, inspect its feasibility and reception windows,
     then Enter Tracking. Selection alone does not move, scheduled preparation
-    starts at the displayed time, and Prepare now evaluates its own schedule
-    before moving. Test full and partial support. With eight viewers open,
+    starts at the displayed time, and Prepare now starts at once from rested
+    motors, otherwise after evaluating its own schedule. Test full and partial support. With eight viewers open,
     exercise forecast computation and a TLE download while preparing and
     following; close and reopen the controller and pause a slow viewer. The
     pass continues, only the current leased controller can cancel it, manual

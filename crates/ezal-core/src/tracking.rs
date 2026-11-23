@@ -35,7 +35,7 @@ pub use deviation::{
     REACQUISITION_LIMIT_MS, REACQUISITION_TOLERANCE_DEG,
 };
 pub use event::{reconcile_event, EventError, EventId, PassEvent};
-pub use inputs::{ExecutionInputs, InputError, InputSettings};
+pub use inputs::{ExecutionInputs, InputError, InputSettings, PlanningTrack};
 pub use lifecycle::{
     BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
     RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingLifecycle,
