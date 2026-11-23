@@ -11,6 +11,8 @@ Groups (default: spur lna sky):
   lna      noise floor with the antenna, with bias off, and with coax off
   pickup   whether the ~1700 MHz line reaches the antenna side: LNA on/off,
            RFOne moved away from the feed, RFOne shielded
+  bench    feed + LNA + RFOne without the dish: sky/ground, LNA off, LNA input
+           terminated, RFOne foil-shielded, short USB cable
   sky      cold sky against ground (antenna and LNA working?)
   sun      on the sun against 20 deg away (pointing and antenna, works in cloud)
   sunscan  step around the sun to find the azimuth/elevation pointing offset
@@ -273,6 +275,30 @@ class Runner:
             self.test("coax_off_1699.3", 1699.3, False,
                       "Disconnect the coax from ANT and leave the port open.")
 
+    def bench(self):
+        """Feed + LNA + RFOne on the bench, no dish or rotator."""
+        if "coax_off_1699.3" not in self.res:
+            self.test("coax_off_1699.3", 1699.3, False,
+                      "Reference: disconnect the coax from the RFOne's ANT port, leave it open.")
+        self.test("sky_bias_on", 1699.3, True,
+                  "Everything connected as normal, bias on. Take the feed OUTDOORS and point it\n"
+                  "  straight up at open sky, clear of walls, trees and people (indoors the\n"
+                  "  walls are as warm as the ground and the next test shows nothing).")
+        self.test("ground", 1699.3, True,
+                  "Same, but point the feed straight down at the ground.")
+        self.test("sky_bias_off", 1699.3, False,
+                  "Feed back up at the sky, bias-tee off (LNA unpowered).")
+        self.test("lna_in_term", 1699.3, True,
+                  "Bias on. Replace the feed with a 50 ohm terminator on the LNA input\n"
+                  "  (s to skip if the LNA input has no connector or you have no terminator).")
+        self.test("rfone_foil", 1699.3, True,
+                  "Feed reconnected and pointing at the sky, bias on. Wrap the RFOne itself in\n"
+                  "  kitchen foil inside the enclosure, or put a metal sheet between the RFOne\n"
+                  "  and the LNA/feed (keep foil off connector contacts and the LNA circuit).")
+        self.test("short_usb", 1699.3, True,
+                  "Foil off. Feed at the sky, bias on. Replace the 5 m USB cable with a short\n"
+                  "  one (bring the Pi to the bench), ferrites as usual.")
+
     def sky(self):
         if "sky_bias_on" not in self.res:
             self.test("sky_bias_on", 1699.3, True,
@@ -350,6 +376,8 @@ class Runner:
         for x in [d("sky_bias_on", "coax_off_1699.3", "antenna+LNA over receiver noise (sky_bias_on - coax_off)"),
                   d("sky_bias_on", "sky_bias_off", "LNA powered vs unpowered (bias on - off)"),
                   d("ground", "sky_bias_on", "ground - cold sky"),
+                  d("lna_in_term", "sky_bias_on", "50 ohm terminator - feed on sky"),
+                  d("short_usb", "sky_bias_on", "floor with short USB - with 5 m USB"),
                   d("sun_on", "sun_off", "sun - off-sun")]:
             if x:
                 lines.append(x)
@@ -357,6 +385,9 @@ class Runner:
         if ref and ref["line"]:
             for n, label in (("sky_bias_on", "antenna on, LNA on"),
                              ("sky_bias_off", "antenna on, LNA off"),
+                             ("lna_in_term", "LNA on, input terminated"),
+                             ("rfone_foil", "antenna on, RFOne foil-shielded"),
+                             ("short_usb", "antenna on, short USB cable"),
                              ("ant_rfone_far", "antenna on, RFOne moved away"),
                              ("ant_rfone_tin", "antenna on, RFOne shielded")):
                 if R.get(n) and R[n]["line"] and abs(R[n]["line"][0] - ref["line"][0]) < 1500:
@@ -384,7 +415,7 @@ class Runner:
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("groups", nargs="*", default=["spur", "lna", "sky"],
-                   help="spur lna pickup sky sun sunscan, or: analyse FILE")
+                   help="spur lna pickup bench sky sun sunscan, or: analyse FILE")
     p.add_argument("--gain", type=int, default=14, help="--general_gain for every test (default 14)")
     p.add_argument("--dir", default="/srv/passes/rftest", help="where recordings and logs go")
     p.add_argument("--zoom", type=float, default=1700.0, help="MHz to search for the narrow line")
@@ -400,7 +431,7 @@ def main():
         print(HEADER + "\n" + fmt_row(os.path.basename(a.groups[1])[:17], a.tuned, False, r))
         return
 
-    bad = [g for g in a.groups if g not in ("spur", "lna", "pickup", "sky", "sun", "sunscan")]
+    bad = [g for g in a.groups if g not in ("spur", "lna", "pickup", "bench", "sky", "sun", "sunscan")]
     if bad:
         sys.exit(f"unknown group(s): {' '.join(bad)}")
     if not os.environ.get("TMUX"):
