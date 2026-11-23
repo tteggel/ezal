@@ -13,6 +13,9 @@ Groups (default: spur lna sky):
            RFOne moved away from the feed, RFOne shielded
   bench    feed + LNA + RFOne without the dish: sky/ground, LNA off, LNA input
            terminated, RFOne foil-shielded, short USB cable
+  foil     RFOne foil off/on three times with the feed fixed, then sky/ground
+           with the foil on
+  usb      5 m USB cable against a short one, bracketed
   sky      cold sky against ground (antenna and LNA working?)
   sun      on the sun against 20 deg away (pointing and antenna, works in cloud)
   sunscan  step around the sun to find the azimuth/elevation pointing offset
@@ -200,9 +203,79 @@ class Runner:
         self.rows.append((name, tuned, bias, r))
         self.res[name] = r
         print("  " + HEADER + "\n  " + fmt_row(name, tuned, bias, r))
+        self.check_lna(name, bias, r)
         return r
 
+    def receiver_floor(self):
+        for n in ("coax_off_1699.3", "sky_bias_off"):
+            if self.res.get(n):
+                return self.res[n]["floor_db"]
+        return None
+
+    def check_lna(self, name, bias, r):
+        """Bias on but the floor at the receiver's own level: the LNA is not working."""
+        ref = self.receiver_floor()
+        if bias and r and ref is not None and r["floor_db"] - ref < 3:
+            msg = (f"!! {name}: bias on but the floor is only {r['floor_db'] - ref:+.1f} dB above the "
+                   "receiver's own noise: LNA not powered? (Pi supply, cable, bias-tee)")
+            print("  " + msg)
+            self.extra.append(msg)
+
+    def need_reference(self):
+        if "coax_off_1699.3" not in self.res:
+            self.test("coax_off_1699.3", 1699.3, False,
+                      "Reference: disconnect the coax from the RFOne's ANT port, leave it open.")
+
+    def avg(self, names, key="floor_db"):
+        vals = [line_abs(self.res[n]) if key == "line_abs" else self.res[n][key]
+                for n in names if self.res.get(n) and (key != "line_abs" or self.res[n]["line"])]
+        return (float(np.mean(vals)), float(np.ptp(vals)), len(vals)) if vals else None
+
     # --- groups
+
+    def foil(self):
+        """Repeat RFOne foil off/on with the feed fixed, then sky/ground with foil on."""
+        self.need_reference()
+        print("\nFor the whole group: feed OUTDOORS, MOUNTED pointing straight up (not hand-held),\n"
+              "nobody within 2 m, cables in the same place each time. Only the foil changes.")
+        for i in (1, 2, 3):
+            self.test(f"foil_off_{i}", 1699.3, True, f"Round {i}: foil OFF the RFOne, bias on.")
+            self.test(f"foil_on_{i}", 1699.3, True,
+                      f"Round {i}: foil ON the RFOne (wrapped, or a metal sheet between it and the LNA).")
+        self.test("ground_foil", 1699.3, True,
+                  "Foil still on. Point the feed straight down at the ground, about 1 m above it.")
+        self.test("sky_foil", 1699.3, True, "Foil still on. Feed back straight up at the sky.")
+        offs = [f"foil_off_{i}" for i in (1, 2, 3)]
+        ons = [f"foil_on_{i}" for i in (1, 2, 3)]
+        a, b = self.avg(offs), self.avg(ons)
+        if a and b:
+            self.extra.append(f"foil: floor {b[0] - a[0]:+.2f} dB with foil (spread off {a[1]:.2f}, "
+                              f"on {b[1]:.2f} dB over {a[2]}/{b[2]} rounds)")
+        a, b = self.avg(offs, "line_abs"), self.avg(ons, "line_abs")
+        if a and b:
+            self.extra.append(f"foil: ~1700 MHz line {b[0] - a[0]:+.1f} dB with foil")
+        sky = self.avg(["foil_on_3", "sky_foil"])
+        if sky and self.res.get("ground_foil"):
+            self.extra.append(f"foil on: ground - cold sky {self.res['ground_foil']['floor_db'] - sky[0]:+.2f} dB "
+                              f"(sky before/after spread {sky[1]:.2f} dB)")
+
+    def usb(self):
+        """5 m USB cable against a short one, bracketed, same feed position."""
+        self.need_reference()
+        print("\nFor the whole group: Pi on its normal 5 A supply. Feed mounted and pointing the\n"
+              "same way for all three tests (if the short cable can't reach the sky, point all\n"
+              "three at the same thing). Foil the same for all three.")
+        self.test("usb_5m", 1699.3, True, "5 m USB cable, ferrites as usual, bias on.")
+        self.test("usb_short", 1699.3, True, "Short USB cable, bias on.")
+        self.test("usb_5m_again", 1699.3, True, "Back to the 5 m cable, bias on.")
+        long = self.avg(["usb_5m", "usb_5m_again"])
+        if long and self.res.get("usb_short"):
+            self.extra.append(f"usb: floor with short cable {self.res['usb_short']['floor_db'] - long[0]:+.2f} dB "
+                              f"vs 5 m (5 m before/after spread {long[1]:.2f} dB)")
+        long = self.avg(["usb_5m", "usb_5m_again"], "line_abs")
+        if long and self.res.get("usb_short") and self.res["usb_short"]["line"]:
+            self.extra.append(f"usb: ~1700 MHz line with short cable "
+                              f"{line_abs(self.res['usb_short']) - long[0]:+.1f} dB vs 5 m")
 
     def spur(self):
         self.test("coax_off_1699.3", 1699.3, False,
@@ -415,7 +488,7 @@ class Runner:
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("groups", nargs="*", default=["spur", "lna", "sky"],
-                   help="spur lna pickup bench sky sun sunscan, or: analyse FILE")
+                   help="spur lna pickup bench foil usb sky sun sunscan, or: analyse FILE")
     p.add_argument("--gain", type=int, default=14, help="--general_gain for every test (default 14)")
     p.add_argument("--dir", default="/srv/passes/rftest", help="where recordings and logs go")
     p.add_argument("--zoom", type=float, default=1700.0, help="MHz to search for the narrow line")
@@ -431,7 +504,7 @@ def main():
         print(HEADER + "\n" + fmt_row(os.path.basename(a.groups[1])[:17], a.tuned, False, r))
         return
 
-    bad = [g for g in a.groups if g not in ("spur", "lna", "pickup", "bench", "sky", "sun", "sunscan")]
+    bad = [g for g in a.groups if g not in ("spur", "lna", "pickup", "bench", "foil", "usb", "sky", "sun", "sunscan")]
     if bad:
         sys.exit(f"unknown group(s): {' '.join(bad)}")
     if not os.environ.get("TMUX"):
