@@ -10,7 +10,8 @@ Writes PNGs next to the input (or to --out):
   *_spectrum.png        median and max-hold spectrum
   *_power.png           total power and in-band excess over the baseline
   *_zoom.png            narrow waterfall around --zoom MHz (Doppler carrier)
-and prints level / clipping / detection statistics.
+and prints level / clipping / detection statistics, plus the frequency and
+strength of the strongest narrow line in the --zoom window.
 
 Start the recording at least a minute before AOS: the first --baseline
 seconds (after --skip) are taken as noise only, and everything later is
@@ -216,6 +217,14 @@ if a.zoom is not None:
     for r, s in enumerate(zs):
         f = np.fft.fftshift(np.fft.fft(chunk(s, zn) * zwin))
         zw[r] = 10 * np.log10(np.abs(f[sel]) ** 2 + 1e-20)
+    # Strongest narrow line in the window, averaged over the recording: use it
+    # to follow a spur across tests (retuned, coax off, devices unplugged).
+    zmean = (10 ** (zw / 10)).mean(0)
+    zi = int(np.argmax(zmean))
+    print(f"strongest line within +/-{a.span/2:g} kHz of {a.zoom} MHz: "
+          f"{zf[sel][zi]:.6f} MHz ({(zf[sel][zi] - a.zoom) * 1e6:+.0f} Hz), "
+          f"{10 * np.log10(zmean[zi] / np.median(zmean)):.1f} dB above the window median "
+          f"({sr / zn:.0f} Hz bins)")
     k = 8  # merge bins for a readable plot
     w = zw.shape[1] // k * k
     zw = 10 * np.log10((10 ** (zw[:, :w] / 10)).reshape(zrows, -1, k).mean(2))
