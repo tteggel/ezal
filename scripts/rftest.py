@@ -22,7 +22,6 @@ Groups (default: spur lna sky):
   usb      5 m USB cable against a short one, bracketed
   sky      cold sky against ground (antenna and LNA working?)
   sun      on the sun against 20 deg away (pointing and antenna, works in cloud)
-  sunscan  step around the sun to find the azimuth/elevation pointing offset
 
   python3 rftest.py [GROUP ...] [--gain 14] [--dir /srv/passes/rftest]
   python3 rftest.py analyse FILE.cs16 --tuned 1699.3   # one existing file
@@ -199,7 +198,7 @@ class Runner:
             raise KeyboardInterrupt
         return r != "s"
 
-    def record(self, name, tuned, bias, delay=0, secs=RECORD_S):
+    def record(self, name, tuned, bias, delay=0):
         base = os.path.join(self.a.dir, name)
         for ext in (".cs16",):
             if os.path.exists(base + ext):
@@ -211,10 +210,10 @@ class Runner:
                # Plain digits only: SatDump's flag parser reads "1e+07" as a string.
                "--samplerate", f"{SR:.0f}", "--frequency", f"{tuned * 1e6:.0f}",
                "--general_gain", str(self.a.gain), "--baseband_format", "cs16",
-               "--timeout", str(secs)]
+               "--timeout", str(RECORD_S)]
         if bias:
             cmd.insert(cmd.index("--baseband_format"), "--bias")
-        print(f"  recording {secs} s at {tuned} MHz, bias {'on' if bias else 'off'} ...", flush=True)
+        print(f"  recording {RECORD_S} s at {tuned} MHz, bias {'on' if bias else 'off'} ...", flush=True)
         with open(base + ".log", "w") as log:
             subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
         path = base + ".cs16"
@@ -224,14 +223,14 @@ class Runner:
             print(f"  !! no recording: {errs[-1] if errs else 'see ' + base + '.log'}")
             return None
         got = os.path.getsize(path) / (4 * SR)
-        if got < 0.9 * secs:
-            print(f"  !! only {got:.1f} s of {secs} s recorded: samples dropped? see {base}.log")
+        if got < 0.9 * RECORD_S:
+            print(f"  !! only {got:.1f} s of {RECORD_S} s recorded: samples dropped? see {base}.log")
         return path
 
-    def test(self, name, tuned, bias, text, delay=0, secs=RECORD_S):
+    def test(self, name, tuned, bias, text, delay=0):
         r = None
         if self.ask(f"[{name}] {text}"):
-            path = self.record(name, tuned, bias, delay, secs)
+            path = self.record(name, tuned, bias, delay)
             if path:
                 r = analyse(path, tuned, self.a.zoom)
                 if not self.a.keep:
@@ -423,35 +422,6 @@ class Runner:
         self.test("sun_off", 1699.3, True,
                   f"Same elevation, 20 deg along in azimuth: az {off:.1f}, el {el:.1f}.")
 
-    def sunscan(self):
-        lat, lon = self.site()
-        steps = [-9, -6, -3, 0, 3, 6, 9]
-        for axis in ("az", "el"):
-            pts = []
-            for o in steps:
-                az, el = sun_azel(lat, lon)
-                if el < 5:
-                    print(f"\nSun at el {el:.1f}: too low; scan stopped.")
-                    return
-                taz = (az + (o / max(math.cos(math.radians(el)), 0.2) if axis == "az" else 0)) % 360
-                tel = el + (o if axis == "el" else 0)
-                name = f"scan_{axis}{o:+d}"
-                r = self.test(name, 1699.3, True,
-                              f"Sun scan, {axis} offset {o:+d} deg on the sky: point az {taz:.1f}, el {tel:.1f}.",
-                              secs=6)
-                if r:
-                    pts.append((o, r["floor_db"]))
-            if len(pts) >= 3:
-                x, y = np.array(pts).T
-                c2, c1, c0 = np.polyfit(x, y, 2)
-                peak = -c1 / (2 * c2) if c2 < 0 else float("nan")
-                rot = (f" = {peak / max(math.cos(math.radians(el)), 0.2):+.1f} deg of rotator azimuth"
-                       if axis == "az" else "")
-                self.extra.append(f"sun scan {axis}: peak at {peak:+.1f} deg on the sky{rot}, "
-                                  f"rise {np.max(y) - np.min(y):.2f} dB over the scan "
-                                  f"(points: {', '.join(f'{int(o)}:{v:.2f}' for o, v in pts)})")
-                print("  " + self.extra[-1])
-
     # --- summary
 
     def summary(self):
@@ -506,7 +476,7 @@ class Runner:
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("groups", nargs="*", default=["spur", "lna", "sky"],
-                   help="spur lna pickup bench foil usb sky sun sunscan, or: analyse FILE")
+                   help="spur lna pickup bench foil usb sky sun, or: analyse FILE")
     p.add_argument("--gain", type=int, default=14, help="--general_gain for every test (default 14)")
     p.add_argument("--dir", default="/srv/passes/rftest", help="where recordings and logs go")
     p.add_argument("--zoom", type=float, default=1700.0,
@@ -523,7 +493,7 @@ def main():
         print(HEADER + "\n" + fmt_row(os.path.basename(a.groups[1])[:17], a.tuned, False, r))
         return
 
-    bad = [g for g in a.groups if g not in ("spur", "lna", "pickup", "bench", "foil", "usb", "sky", "sun", "sunscan")]
+    bad = [g for g in a.groups if g not in ("spur", "lna", "pickup", "bench", "foil", "usb", "sky", "sun")]
     if bad:
         sys.exit(f"unknown group(s): {' '.join(bad)}")
     if not os.environ.get("TMUX"):
