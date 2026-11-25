@@ -5,14 +5,18 @@ Walks through short test recordings, makes each one with SatDump at the
 right tuning, analyses it with matching settings, and prints one summary
 block to copy back. Run it inside tmux: the Wi-Fi test freezes SSH briefly.
 
+No test disconnects the coax: unplugging it once damaged the receive chain.
+The reference for the receiver's own noise, and for lines picked up after
+the LNA, is a recording with the bias-tee off instead.
+
 Groups (default: spur lna sky):
-  spur     where the ~1700 MHz line comes from (coax off, retuned, Pi Wi-Fi
-           off, ezal controller off, RFOne moved)
-  lna      noise floor with the antenna, with bias off, and with coax off
+  spur     where the lines near 1700 MHz come from (retuned, LNA off, Pi
+           Wi-Fi off, ezal controller off, RFOne's USB port)
+  lna      noise floor with the LNA powered and unpowered
   pickup   whether the ~1700 MHz line reaches the antenna side: LNA on/off,
            RFOne moved away from the feed, RFOne shielded
-  bench    feed + LNA + RFOne without the dish: sky/ground, LNA off, LNA input
-           terminated, RFOne foil-shielded, short USB cable
+  bench    feed + LNA + RFOne without the dish: sky/ground, LNA off,
+           RFOne foil-shielded, short USB cable
   foil     RFOne foil off/on three times with the feed fixed, then sky/ground
            with the foil on
   usb      5 m USB cable against a short one, bracketed
@@ -239,10 +243,8 @@ class Runner:
         return r
 
     def receiver_floor(self):
-        for n in ("coax_off_1699.3", "sky_bias_off"):
-            if self.res.get(n):
-                return self.res[n]["floor_db"]
-        return None
+        r = self.res.get("sky_bias_off")
+        return r["floor_db"] if r else None
 
     def check_lna(self, name, bias, r):
         """Bias on but the floor at the receiver's own level: the LNA is not working."""
@@ -254,9 +256,10 @@ class Runner:
             self.extra.append(msg)
 
     def need_reference(self):
-        if "coax_off_1699.3" not in self.res:
-            self.test("coax_off_1699.3", 1699.3, False,
-                      "Reference: disconnect the coax from the RFOne's ANT port, leave it open.")
+        """The receiver's own noise, and the lines picked up after the LNA."""
+        if "sky_bias_off" not in self.res:
+            self.test("sky_bias_off", 1699.3, False,
+                      "Reference: bias-tee off (LNA unpowered), everything else as normal.")
 
     def avg(self, names, key="floor_db"):
         vals = [line_abs(self.res[n]) if key == "line_abs" else self.res[n][key]
@@ -310,24 +313,23 @@ class Runner:
                               f"{line_abs(self.res['usb_short']) - long[0]:+.1f} dB vs 5 m")
 
     def spur(self):
-        self.test("coax_off_1699.3", 1699.3, False,
-                  "Disconnect the coax from the RFOne's ANT port and leave the port open.")
-        self.test("coax_off_1701", 1701.0, False, "Coax still off (retuned to 1701 MHz).")
-        self.test("coax_off_1702.5", 1702.5, False, "Coax still off (retuned to 1702.5 MHz).")
-        self.test("terminated", 1699.3, False,
-                  "Fit a 50 ohm terminator on ANT (s to skip if you have none).")
+        self.test("sky_1699.3", 1699.3, True,
+                  "Everything connected as normal, bias on. Dish at clear sky, away from the sun.")
+        self.test("sky_1701", 1701.0, True, "Same (retuned to 1701 MHz).")
+        self.test("sky_1702.5", 1702.5, True, "Same (retuned to 1702.5 MHz).")
+        self.need_reference()
         self.wifi_off_test()
-        self.test("controller_off", 1699.3, False,
-                  "Coax off. Power off ezal's Pico and the rotator control box.")
-        self.test("rfone_far", 1699.3, False,
-                  "Controller back on if you like. Coax off. Move the RFOne at least 1 m from\n"
-                  "  the Pi on a USB extension, or into a black (USB 2) port.")
+        self.test("controller_off", 1699.3, True,
+                  "Bias on. Power off ezal's Pico and the rotator control box.")
+        self.test("rfone_port", 1699.3, True,
+                  "Controller back on if you like. Bias on. Move the RFOne's USB cable to the\n"
+                  "  Pi's other kind of port (black USB 2 / blue USB 3).")
 
     def wifi_off_test(self):
         """Record with the Pi's Wi-Fi radio off; a detached timer turns it back on."""
         name, tuned = "wifi_off", 1699.3
         r = None
-        if self.ask(f"[{name}] Coax off. The Pi's Wi-Fi is switched off for about 20 s while this\n"
+        if self.ask(f"[{name}] Bias on. The Pi's Wi-Fi is switched off for about 20 s while this\n"
                     "  records, so SSH will freeze, then recover: keep this running in tmux. A\n"
                     "  safety timer turns Wi-Fi back on after 90 s whatever happens. sudo may\n"
                     "  ask for your password first."):
@@ -341,25 +343,22 @@ class Runner:
                 try:
                     subprocess.run(["sudo", "nmcli", "radio", "wifi", "off"])
                     time.sleep(3)
-                    path = self.record(name, tuned, False)
+                    path = self.record(name, tuned, True)
                 finally:
                     subprocess.run(["sudo", "nmcli", "radio", "wifi", "on"])
                 if path:
                     r = analyse(path, tuned, self.a.zoom)
                     if not self.a.keep:
                         os.remove(path)
-        self.rows.append((name, tuned, False, r))
+        self.rows.append((name, tuned, True, r))
         self.res[name] = r
-        print("  " + HEADER + "\n  " + fmt_row(name, tuned, False, r))
+        print("  " + HEADER + "\n  " + fmt_row(name, tuned, True, r))
 
     def lna(self):
         self.test("sky_bias_on", 1699.3, True,
-                  "Reconnect the coax to ANT. Point the dish at clear sky about 45 deg up,\n"
-                  "  away from the sun and buildings.")
+                  "Bias on. Point the dish at clear sky about 45 deg up, away from the sun\n"
+                  "  and buildings.")
         self.test("sky_bias_off", 1699.3, False, "Same pointing, bias-tee off (LNA unpowered).")
-        if "coax_off_1699.3" not in self.res:
-            self.test("coax_off_1699.3", 1699.3, False,
-                      "Disconnect the coax from ANT and leave the port open.")
 
     def pickup(self):
         """Does the ~1700 MHz line reach the antenna side, and from where?"""
@@ -376,15 +375,9 @@ class Runner:
                   "Coax on ANT, bias on, same pointing, RFOne back in its usual place but inside\n"
                   "  a closed metal tin or wrapped in kitchen foil (USB and coax through a small\n"
                   "  gap; keep foil off the connectors' contacts).")
-        if "coax_off_1699.3" not in self.res:
-            self.test("coax_off_1699.3", 1699.3, False,
-                      "Disconnect the coax from ANT and leave the port open.")
 
     def bench(self):
         """Feed + LNA + RFOne on the bench, no dish or rotator."""
-        if "coax_off_1699.3" not in self.res:
-            self.test("coax_off_1699.3", 1699.3, False,
-                      "Reference: disconnect the coax from the RFOne's ANT port, leave it open.")
         self.test("sky_bias_on", 1699.3, True,
                   "Everything connected as normal, bias on. Take the feed OUTDOORS and point it\n"
                   "  straight up at open sky, clear of walls, trees and people (indoors the\n"
@@ -393,9 +386,6 @@ class Runner:
                   "Same, but point the feed straight down at the ground.")
         self.test("sky_bias_off", 1699.3, False,
                   "Feed back up at the sky, bias-tee off (LNA unpowered).")
-        self.test("lna_in_term", 1699.3, True,
-                  "Bias on. Replace the feed with a 50 ohm terminator on the LNA input\n"
-                  "  (s to skip if the LNA input has no connector or you have no terminator).")
         self.test("rfone_foil", 1699.3, True,
                   "Feed reconnected and pointing at the sky, bias on. Wrap the RFOne itself in\n"
                   "  kitchen foil inside the enclosure, or put a metal sheet between the RFOne\n"
@@ -478,31 +468,27 @@ class Runner:
         ]
         lines += [fmt_row(*row) for row in self.rows]
         lines.append("derived:")
-        for x in [d("sky_bias_on", "coax_off_1699.3", "antenna+LNA over receiver noise (sky_bias_on - coax_off)"),
-                  d("sky_bias_on", "sky_bias_off", "LNA powered vs unpowered (bias on - off)"),
+        for x in [d("sky_bias_on", "sky_bias_off", "LNA powered vs unpowered (bias on - off)"),
                   d("ground", "sky_bias_on", "ground - cold sky"),
-                  d("lna_in_term", "sky_bias_on", "50 ohm terminator - feed on sky"),
                   d("short_usb", "sky_bias_on", "floor with short USB - with 5 m USB"),
                   d("sun_on", "sun_off", "sun - off-sun")]:
             if x:
                 lines.append(x)
-        ref = R.get("coax_off_1699.3")
+        ref = R.get("sky_bias_off")
         if ref and ref["line"]:
-            for n, label in (("sky_bias_on", "antenna on, LNA on"),
-                             ("sky_bias_off", "antenna on, LNA off"),
-                             ("lna_in_term", "LNA on, input terminated"),
-                             ("rfone_foil", "antenna on, RFOne foil-shielded"),
-                             ("short_usb", "antenna on, short USB cable"),
-                             ("ant_rfone_far", "antenna on, RFOne moved away"),
-                             ("ant_rfone_tin", "antenna on, RFOne shielded")):
+            for n, label in (("sky_bias_on", "LNA on"),
+                             ("rfone_foil", "LNA on, RFOne foil-shielded"),
+                             ("short_usb", "LNA on, short USB cable"),
+                             ("ant_rfone_far", "LNA on, RFOne moved away"),
+                             ("ant_rfone_tin", "LNA on, RFOne shielded")):
                 if R.get(n) and R[n]["line"] and abs(R[n]["line"][0] - ref["line"][0]) < 1500:
                     lines.append(f"  ~1700 MHz line, {label}: {line_abs(R[n]) - line_abs(ref):+.1f} dB "
-                                 "stronger than with the coax off")
-        offs = [(n, R[n]["line"]) for n in ("coax_off_1699.3", "coax_off_1701", "coax_off_1702.5")
+                                 "stronger than with the LNA off")
+        offs = [(n, R[n]["line"]) for n in ("sky_1699.3", "sky_1701", "sky_1702.5")
                 if R.get(n) and R[n]["line"]]
         if offs:
             strong = [n for n, l in offs if l[1] > 15]
-            lines.append("  ~1700 MHz line, coax off: " + ", ".join(
+            lines.append("  strongest line near 1700 MHz, retuned: " + ", ".join(
                 f"{n.split('_')[-1]} MHz -> {l[0]:+.0f} Hz {l[1]:.1f} dB" for n, l in offs)
                 + (" => present at every tuning (fixed frequency)" if len(strong) == len(offs) else
                    " => absent at some tunings (tuning-dependent)" if strong else
