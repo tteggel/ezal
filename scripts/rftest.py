@@ -39,13 +39,29 @@ import numpy as np
 SR = 10e6
 RECORD_S = 12      # seconds recorded per test
 SKIP_S = 1.0       # SDR start-up transient ignored at the start
-SPAN_HZ = 20e3     # window searched for the narrow line
+SPAN_HZ = 80e3     # window searched for narrow lines: Meteor's Doppler range, about +/-37 kHz
+LINE_DB = 10.0     # a line stands this far above the mean noise in one snapshot
+LINE_STEP_HZ = 1000  # a steady line moves less than this between snapshots
+STEADY = 0.5       # ... and is found in at least this share of them; a satellite carrier is not
 
 
 # ---------------------------------------------------------------- analysis
 
+def find_peaks(snr_db, bin_hz):
+    """Bins at least LINE_DB up, strongest first, one per 200 Hz (a windowed tone's width)."""
+    found = []
+    for i in np.flatnonzero(snr_db >= LINE_DB)[np.argsort(-snr_db[snr_db >= LINE_DB])]:
+        if all(abs(int(i) - j) * bin_hz > 200 for j in found):
+            found.append(int(i))
+    return found
+
+
 def analyse(path, tuned_mhz, zoom_mhz, sr=SR):
-    """Noise floor, level, clipping and the strongest narrow line near zoom_mhz."""
+    """Noise floor, level, clipping and the steady narrow lines near zoom_mhz.
+
+    Lines are found in each of 16 snapshots and followed from one to the next,
+    so a line that drifts as the SDR warms up is still one line, and a
+    satellite carrier, which moves further between snapshots, is not one."""
     data = np.memmap(path, dtype=np.int16, mode="r")
     n = data.size // 2
     start = int(SKIP_S * sr)
@@ -72,23 +88,37 @@ def analyse(path, tuned_mhz, zoom_mhz, sr=SR):
     floor_db = 10 * np.log10(np.median(psd[c:-c]))  # median ignores narrow lines
 
     zn = 1 << 18                         # 38 Hz bins at 10 MS/s
-    zf = tuned_mhz * 1e6 + np.fft.fftshift(np.fft.fftfreq(zn, 1 / sr))
-    sel = np.abs(zf - zoom_mhz * 1e6) <= SPAN_HZ / 2
-    line = None
+    off = tuned_mhz * 1e6 + np.fft.fftshift(np.fft.fftfreq(zn, 1 / sr)) - zoom_mhz * 1e6
+    sel = np.abs(off) <= SPAN_HZ / 2
+    lines = []
     if sel.any():
         zwin = np.hanning(zn).astype(np.float32)
-        zp = np.zeros(np.count_nonzero(sel))
-        zs = np.linspace(start, n - zn, 16).astype(np.int64)
-        for s in zs:
-            zp += np.abs(np.fft.fftshift(np.fft.fft(chunk(s, zn) * zwin))[sel]) ** 2
-        i = int(np.argmax(zp))
-        line = (zf[sel][i] - zoom_mhz * 1e6, 10 * np.log10(zp[i] / np.median(zp)))
+        snaps = np.linspace(start, n - zn, 16).astype(np.int64)
+        tracks = []                      # [offsets, snrs, last snapshot]
+        for k, s in enumerate(snaps):
+            p = np.abs(np.fft.fftshift(np.fft.fft(chunk(s, zn) * zwin))[sel]) ** 2
+            # Noise bins are exponential: median / ln 2 is their mean, unmoved by lines.
+            snr = 10 * np.log10(p * np.log(2) / np.median(p))
+            for i in find_peaks(snr, sr / zn):
+                f = off[sel][i]
+                near = [t for t in tracks if t[2] < k and abs(t[0][-1] - f) <= LINE_STEP_HZ]
+                if near:
+                    t = min(near, key=lambda t: abs(t[0][-1] - f))
+                    t[0].append(f)
+                    t[1].append(snr[i])
+                    t[2] = k
+                else:
+                    tracks.append([[f], [snr[i]], k])
+        lines = sorted(((float(np.median(f)), float(np.median(v)), float(np.ptp(f)))
+                        for f, v, _ in tracks if len(f) >= STEADY * len(snaps)),
+                       key=lambda ln: -ln[1])
 
     return {
         "floor_db": floor_db,
         "level_dbfs": 10 * np.log10(p_tot / nchunks),
         "clip_pct": 100 * clipped / total,
-        "line": line,
+        "line": lines[0][:2] if lines else None,   # the strongest: (offset Hz, dB)
+        "lines": lines,                            # every steady line: (offset Hz, dB, drift Hz)
         "seconds": n / sr,
     }
 
@@ -100,8 +130,10 @@ def fmt_row(name, tuned, bias, r):
     lhz = f"{ln[0]:+7.0f}" if ln else "      -"
     ldb = f"{ln[1]:6.1f}" if ln else "     -"
     lab = f"{line_abs(r):8.2f}" if ln else "       -"
+    rest = "  ".join(f"{f:+.0f}Hz {v:.0f}dB" + (f" drift {d:.0f}Hz" if d > 200 else "")
+                     for f, v, d in r["lines"])
     return (f"{name:<17} {tuned:>9.3f} {('on' if bias else 'off'):>4} {r['floor_db']:8.2f} "
-            f"{r['level_dbfs']:8.2f} {r['clip_pct']:7.4f} {lhz} {ldb} {lab}")
+            f"{r['level_dbfs']:8.2f} {r['clip_pct']:7.4f} {lhz} {ldb} {lab}  {rest}")
 
 
 def line_abs(r):
@@ -110,7 +142,7 @@ def line_abs(r):
 
 
 HEADER = (f"{'test':<17} {'tuned_MHz':>9} {'bias':>4} {'floor_dB':>8} {'lvl_dBFS':>8} "
-          f"{'clip_%':>7} {'line_Hz':>7} {'line_dB':>6} {'line_abs':>8}")
+          f"{'clip_%':>7} {'line_Hz':>7} {'line_dB':>6} {'line_abs':>8}  all steady lines")
 
 
 # ------------------------------------------------------------- sun position
@@ -491,7 +523,8 @@ def main():
                    help="spur lna pickup bench foil usb sky sun sunscan, or: analyse FILE")
     p.add_argument("--gain", type=int, default=14, help="--general_gain for every test (default 14)")
     p.add_argument("--dir", default="/srv/passes/rftest", help="where recordings and logs go")
-    p.add_argument("--zoom", type=float, default=1700.0, help="MHz to search for the narrow line")
+    p.add_argument("--zoom", type=float, default=1700.0,
+                   help=f"centre of the +/-{SPAN_HZ / 2e3:g} kHz search for narrow lines, MHz")
     p.add_argument("--site", type=float, nargs=2, metavar=("LAT", "LON"))
     p.add_argument("--keep", action="store_true", help="keep the .cs16 recordings (480 MB each)")
     p.add_argument("--tuned", type=float, help="analyse: the frequency the file was recorded at, MHz")
