@@ -33,6 +33,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -48,7 +49,7 @@ TOKEN_MAX_AGE_S = 0.9               # the controller rejects tokens older than 1
 TELEMETRY_STALE_S = 1.5
 SR = 10_000_000
 BLOCK = 1 << 19                     # samples per power reading, ~52 ms at 10 MS/s
-NFFT, NAVG = 4096, 8                # power from 8 x 4096-point spectra per block
+NFFT = 4096                        # average every spectrum in the block
 
 
 class Abort(Exception):
@@ -298,12 +299,19 @@ class Radio:
 
     def __init__(self, freq_mhz, gain):
         cmd = ["hydrasdr_rx", "-r", "-", "-f", f"{freq_mhz}", "-a", str(SR), "-b", "1", "-i", str(gain)]
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        # A file cannot fill a pipe and stall the producer while IQ is read.
+        self.stderr = tempfile.TemporaryFile()
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=self.stderr, bufsize=0)
+        except BaseException:
+            self.stderr.close()
+            raise
         self.readings = []             # (unix time at the block's middle, power dB, clipped fraction)
         self.error = None
         self.lock = threading.Lock()
         self.win = np.hanning(NFFT).astype(np.float32)
-        threading.Thread(target=self._reader, daemon=True).start()
+        self.reader = threading.Thread(target=self._reader, daemon=True)
+        self.reader.start()
 
     def _reader(self):
         f = self.proc.stdout
@@ -313,13 +321,16 @@ class Radio:
             while len(buf) < need:
                 chunk = f.read(need - len(buf))
                 if not chunk:
-                    err = self.proc.stderr.read().decode(errors="replace").strip().splitlines()
-                    self.error = f"hydrasdr_rx stopped: {err[-1] if err else 'no output'}"
+                    end = self.stderr.seek(0, os.SEEK_END)
+                    self.stderr.seek(max(0, end - 4096))
+                    err = self.stderr.read().decode(errors="replace").strip().splitlines()
+                    with self.lock:
+                        self.error = f"hydrasdr_rx stopped: {err[-1] if err else 'no output'}"
                     return
                 buf += chunk
             t = time.time() - BLOCK / SR / 2
-            x = np.frombuffer(bytes(buf[: 4 * NFFT * NAVG]), dtype=np.int16).astype(np.float32) / 32768
-            z = (x[0::2] + 1j * x[1::2]).reshape(NAVG, NFFT) * self.win
+            x = np.frombuffer(buf, dtype=np.int16).astype(np.float32) / 32768
+            z = (x[0::2] + 1j * x[1::2]).reshape(-1, NFFT) * self.win
             psd = np.mean(np.abs(np.fft.fft(z, axis=1)) ** 2, axis=0)
             c = NFFT // 10              # central 80 %: off the roll-off; median ignores spurs
             band = np.fft.fftshift(psd)[c:-c]
@@ -350,6 +361,10 @@ class Radio:
             self.proc.wait(3)
         except subprocess.TimeoutExpired:
             self.proc.kill()
+            self.proc.wait()
+        self.reader.join()
+        self.proc.stdout.close()
+        self.stderr.close()
 
 
 # -------------------------------------------------------------- motion

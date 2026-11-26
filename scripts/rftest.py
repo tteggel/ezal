@@ -312,9 +312,10 @@ class Runner:
                               f"{line_abs(self.res['usb_short']) - long[0]:+.1f} dB vs 5 m")
 
     def spur(self):
-        self.test("sky_1699.3", 1699.3, True,
-                  "Everything connected as normal, bias on. Dish at clear sky, away from the sun.")
-        self.test("sky_1701", 1701.0, True, "Same (retuned to 1701 MHz).")
+        self.need_sky()
+        self.test("sky_1701", 1701.0, True,
+                  "Everything as normal, bias on, dish at the baseline's clear-sky pointing\n"
+                  "  about 45 deg up. Retuned to 1701 MHz.")
         self.test("sky_1702.5", 1702.5, True, "Same (retuned to 1702.5 MHz).")
         self.need_reference()
         self.wifi_off_test()
@@ -354,21 +355,23 @@ class Runner:
         print("  " + HEADER + "\n  " + fmt_row(name, tuned, True, r))
 
     def lna(self):
-        self.test("sky_bias_on", 1699.3, True,
-                  "Bias on. Point the dish at clear sky about 45 deg up, away from the sun\n"
-                  "  and buildings.")
-        self.test("sky_bias_off", 1699.3, False, "Same pointing, bias-tee off (LNA unpowered).")
+        self.need_sky()
+        self.need_reference()
+
+    def need_sky(self):
+        """One normal, bias-on sky baseline shared by the dish test groups."""
+        if "sky_bias_on" not in self.res:
+            self.test("sky_bias_on", 1699.3, True,
+                      "Everything connected as normal, coax on ANT, bias on. Point the dish at\n"
+                      "  clear sky about 45 deg up, away from the sun and buildings.")
 
     def pickup(self):
         """Does the ~1700 MHz line reach the antenna side, and from where?"""
-        if "sky_bias_on" not in self.res:
-            self.test("sky_bias_on", 1699.3, True,
-                      "Coax on ANT, bias on. Point the dish at clear sky about 45 deg up, away\n"
-                      "  from the sun and buildings. RFOne and Pi where they normally live.")
-        if "sky_bias_off" not in self.res:
-            self.test("sky_bias_off", 1699.3, False, "Same pointing, bias-tee off (LNA unpowered).")
+        self.need_sky()
+        self.need_reference()
         self.test("ant_rfone_far", 1699.3, True,
-                  "Coax on ANT, bias on, same pointing. Move the RFOne (and the Pi if it can go)\n"
+                  "Coax on ANT, bias on, dish back at the baseline's clear-sky pointing.\n"
+                  "  Move the RFOne (and the Pi if it can go)\n"
                   "  as far from the feed and LNA as the cables allow.")
         self.test("ant_rfone_tin", 1699.3, True,
                   "Coax on ANT, bias on, same pointing, RFOne back in its usual place but inside\n"
@@ -394,13 +397,10 @@ class Runner:
                   "  one (bring the Pi to the bench), ferrites as usual.")
 
     def sky(self):
-        if "sky_bias_on" not in self.res:
-            self.test("sky_bias_on", 1699.3, True,
-                      "Coax on ANT. Point the dish at clear sky about 45 deg up, away from the\n"
-                      "  sun and buildings.")
+        self.need_sky()
         self.test("ground", 1699.3, True,
-                  "Point the dish at the ground or trees (lowest elevation, facing something\n"
-                  "  solid and not a building full of electronics).")
+                  "Everything back to normal, bias on. Point the dish at the ground or trees\n"
+                  "  (lowest elevation, facing something solid, away from buildings with electronics).")
 
     def site(self):
         s = self.a.site or site_from_env()
@@ -454,12 +454,13 @@ class Runner:
                 if R.get(n) and R[n]["line"] and abs(R[n]["line"][0] - ref["line"][0]) < 1500:
                     lines.append(f"  ~1700 MHz line, {label}: {line_abs(R[n]) - line_abs(ref):+.1f} dB "
                                  "stronger than with the LNA off")
-        offs = [(n, R[n]["line"]) for n in ("sky_1699.3", "sky_1701", "sky_1702.5")
+        offs = [(tuned, R[n]["line"]) for n, tuned in
+                (("sky_bias_on", 1699.3), ("sky_1701", 1701.0), ("sky_1702.5", 1702.5))
                 if R.get(n) and R[n]["line"]]
         if offs:
             strong = [n for n, l in offs if l[1] > 15]
             lines.append("  strongest line near 1700 MHz, retuned: " + ", ".join(
-                f"{n.split('_')[-1]} MHz -> {l[0]:+.0f} Hz {l[1]:.1f} dB" for n, l in offs)
+                f"{tuned:g} MHz -> {l[0]:+.0f} Hz {l[1]:.1f} dB" for tuned, l in offs)
                 + (" => present at every tuning (fixed frequency)" if len(strong) == len(offs) else
                    " => absent at some tunings (tuning-dependent)" if strong else
                    " => not present"))
