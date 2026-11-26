@@ -114,29 +114,29 @@
         <input type="range" id="tb-clock-gap" min="-400" max="400" step="5" value="60"></label>
     </div>
     <p class="tb-read" id="tb-clock-read" role="status" aria-live="polite"></p>
-    <figcaption>The thick tie is the matched pair. The dashed tie is the next check, with its disagreement drawn hundreds of times larger than life. The bar is the test in <code>ExecutionClock::check</code>. The times of the two checks, and the 20 ms of uncertainty in the second answer, are invented for the example.</figcaption>
+    <figcaption>The thick tie is the matched pair. The dashed tie is the next check, with its disagreement drawn hundreds of times larger than life. The bar is the test in <code>ExecutionClock::validate_armed</code>. The times of the two checks, and the 20 ms of uncertainty in the second answer, are invented for the example.</figcaption>
   </figure>
 
-  <p>A plan keeps the matched pair it was made with, and uses that pair alone until the window closes. Every later answer from the time server is only compared with it. The bar in the figure is the whole comparison: the disagreement, plus the new answer’s own uncertainty, plus the drift the board’s crystal could add before the window closes (it is allowed 100 parts in a million, or 6 ms a minute), must fit inside 250 ms.</p>
+  <p>A plan keeps the matched pair it was made with, and uses that pair alone until the window closes. Every later answer from the time server is only compared with it. For an armed pass, a later answer stops the run only if even the nearest edge of its uncertainty lies more than 250 ms from the run’s clock. An imprecise answer is weak evidence. If no answer arrives, the Pico keeps counting from its last good answer, for up to six hours. The crystal can drift beyond the planned pointing allowance during that holdover; the dashboard reports it and keeps it in the run’s result.</p>
   <p>Why 250 ms? Half of the reserved degree is given to timing, and the planner assumes nothing it follows crosses the sky faster than 2° per second. A quarter of a second at 2° per second is half a degree.</p>
-  <p>If the sum fits, nothing moves: not the schedule, not a single target. If it does not fit while the dish is moving, the run stops. There is no third outcome in which the schedule quietly slides, because a deadline that can move is not a deadline.</p>
+  <p>An answer consistent with the timeline changes neither the schedule nor a single target. If its whole uncertainty interval contradicts the timeline while the dish is moving, the run stops. There is no third outcome in which the schedule quietly slides, because a deadline that can move is not a deadline.</p>
 
   <figure class="code" data-src="crates/ezal-core/src/tracking/clock.rs" data-comments="omit">
     <figcaption>The run’s clock, and the only thing a later time check can do to it.</figcaption>
     <pre data-from="pub struct ExecutionClock {" data-to="^}"></pre>
-    <pre data-from="fn check(self, current: UtcClock, now_ms: u64, until_ms: u64)" data-to="^    }"></pre>
+    <pre data-from="pub fn validate_armed(" data-to="^    }"></pre>
     <ol>
       <li data-at="anchor: UtcAnchor,">The matched pair. The code calls it an anchor.</li>
       <li data-at="allowance_ms: f64,">The 250 ms, worked out once from the planner’s numbers.</li>
-      <li data-at="let latest = current.anchor()">The newest pair from the time server, which the rest of the firmware is already using.</li>
-      <li data-at="let error_ms">How wrong the new pair could be by <code>until_ms</code>: when the window closes, or for a plan the dish has not started, now.</li>
-      <li data-at="let frozen = self.anchor">Ask both pairs the same question: what is UTC at this uptime?</li>
-      <li data-at="frozen.abs_diff(live)">Their disagreement, plus that.</li>
-      <li data-at="return Err(TimingError::Correction)">Too much: the caller stops the run, or throws away a plan not yet started. Nowhere does this function write to <code>self.anchor</code>.</li>
+      <li data-at="let latest = self.ordered_anchor">Check the newest pair for reversed time, a missing sample or a leap warning.</li>
+      <li data-at="let disagreement =">Ask both pairs what UTC is at this uptime, and take the difference.</li>
+      <li data-at="if disagreement &gt; self.allowance_ms + uncertainty">Stop only if the sample’s whole uncertainty interval lies outside the allowance.</li>
+      <li data-at="*trusted = current;">Only a sample precise enough to vouch for the timeline renews the retained good evidence.</li>
+      <li data-at="let error_ms = self.error_ms(retained, now_ms)?;">Enforce the six-hour age limit, then report when estimated drift has exceeded the pointing budget.</li>
     </ol>
   </figure>
 
-  <p>Before the dish starts to move, the same test counts the drift only up to now. The plan has to be right now, and it meets the full test, to the window’s close, the moment the dish starts. A plan that fails is thrown away, and the Pico plans the pass again from the new pair. It does not do that for every answer: planning takes the Pico minutes, and a plan that started again every five could fall behind for good.</p>
+  <p>Before arming, the timing error must fit the pointing budget now. Once armed, the same holdover policy applies while waiting, replanning and moving; starting the dish adds no forecast of clock error through the window’s close. A definite correction before movement throws away the old plan, and the Pico plans the pass again from the new pair. It does not do that for every answer: planning takes the Pico minutes, and a plan that started again every five could fall behind for good.</p>
   <p class="code-links">Asking the time server, and noting uptime when it answers: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-firmware/src/time.rs#L30-L66"><code>time::synchronize</code></a>. Converting between the clocks: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/ntp.rs#L165-L182"><code>UtcAnchor</code></a>.</p>
 
   <h3>From a row in the forecast to a moving dish</h3>
@@ -178,9 +178,9 @@
     </ol>
   </figure>
 
-  <p>Now take the Pico’s own Wi-Fi away instead. The run stops at once, and bringing the network back does not revive it. Why insist on a network that the run never uses? Because the network is the only way anyone can tell the Pico to stop. While it is reachable, any browser can open the dashboard, take control and press Cancel tracking. A run that nobody could cancel is not allowed to continue.</p>
+  <p>Now take the Pico’s own Wi-Fi away instead. Once armed, the pass still starts at its scheduled uptime and carries on until the window closes. It has the route, orbit data and clock mapping it needs. The network loss takes control away from the browser and stops any manual movement. When the network returns, a browser can claim control and press Cancel tracking on the same pass.</p>
   <p>After a run stops, or the controller presses Return to Manual, the Pico keeps the selection and soon shows a new verdict for whatever is left of the pass. Cancel tracking clears the selection as well, so nothing is planned until someone picks a pass again. Moving again takes a new press of Enter Tracking.</p>
-  <p class="code-links">The network check that every tracking turn passes through: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs#L672-L684"><code>TrackingRuntime::check_inputs</code></a>.</p>
+  <p class="code-links">The input checks that every tracking turn passes through: <a href="https://github.com/tteggel/ezal/blob/main/crates/ezal-core/src/tracking/runtime.rs"><code>TrackingRuntime::check_inputs</code></a>.</p>
 
   <h3>Where the satellite replaces the finger</h3>
   <p>In manual control, the browser writes a note into the mailbox every 150 ms while you hold a button. During a run, this function writes it instead, every 10 ms:</p>
@@ -233,7 +233,7 @@
     <ol>
       <li data-at="interlock: self.interlock,">The newest position reading and the travel limits (chapter 2).</li>
       <li data-at="network: self.network,">Whether the Pico is still on the network (chapter 3).</li>
-      <li data-at="command: self.tracking.take_command(observation),">The note. Nothing here says whether a finger or a follower wrote it, and chapter 4’s decision never finds out.</li>
+      <li data-at="command: self.tracking.take_command(observation),">The note. The runtime checks the run before handing it over. The actuator distinguishes tracking’s <code>Drive</code> notes from manual <code>Jog</code> notes: tracking can continue offline, while manual movement needs the network.</li>
     </ol>
   </figure>
 

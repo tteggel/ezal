@@ -306,8 +306,6 @@ impl Intercept {
         if current.at_ms != self.launch_at_ms
             || current.feedback.position() != self.start.feedback.position()
             || current.actuator.configuration() != self.start.actuator.configuration()
-            || current.network.generation() != self.start.network.generation()
-            || !current.network.ready(current.at_ms)
             || current
                 .at_ms
                 .checked_sub(current.feedback.sampled_at_ms())
@@ -375,7 +373,6 @@ impl InterceptSearch {
         if plan.actuator != start.actuator.configuration()
             || plan.config.scenarios.is_empty()
             || start.at_ms < plan.window.aos_at_ms
-            || !start.network.ready(start.at_ms)
         {
             return None;
         }

@@ -495,6 +495,88 @@ fn freshly_downloaded_elements_must_remain_fresh_through_los_with_time_allowance
 }
 
 #[test]
+fn armed_replanning_recovers_from_expired_evidence_after_resynchronization() {
+    for invalidate_first in [false, true] {
+        let mut obs = observation(2000);
+        let (mut runtime, token) = selected(EVENT, obs);
+        let settings = InputSettings {
+            timing: TimingPolicy {
+                max_sample_age_ms: 1000,
+                ..TimingPolicy::default()
+            },
+            ..InputSettings::default()
+        };
+        let capture = |runtime: &TrackingRuntime, obs: RuntimeObservation| {
+            let current = runtime.planning_clock(obs.clock);
+            ExecutionInputs::capture(
+                runtime.planning_ticket().unwrap(),
+                catalog().snapshot(EVENT.norad_id).unwrap(),
+                settings,
+                current,
+                execution_window(
+                    current.clock().anchor().unwrap(),
+                    UTC + 120_000,
+                    UTC + 150_000,
+                )
+                .unwrap(),
+                &nominal(),
+                obs.now_ms,
+            )
+        };
+        let inputs = capture(&runtime, obs).unwrap();
+        runtime
+            .publish_plan(inputs.ticket(), Ok(report(&inputs)), inputs, obs)
+            .unwrap();
+        action(&mut runtime, token, 2, TrackingAction::Arm, obs).unwrap();
+        if invalidate_first {
+            runtime.invalidate_start(obs);
+        }
+        obs.now_ms = 3000;
+        runtime.refresh(&[EVENT], REVISIONS, obs).unwrap();
+        assert_eq!(runtime.snapshot().mode, TrackingMode::Tracking);
+        assert!(runtime.bound_plan().is_none());
+        assert!(matches!(
+            capture(&runtime, obs),
+            Err(InputError::Timing(TimingError::Expired))
+        ));
+        // A stale or disarmed clock cannot restore planning.
+        runtime.service(obs).unwrap();
+        assert_eq!(runtime.planning_clock(obs.clock).clock(), clock(UTC));
+        runtime
+            .service(RuntimeObservation {
+                clock: UtcClock::new(),
+                ..obs
+            })
+            .unwrap();
+        assert_eq!(runtime.planning_clock(obs.clock).clock(), clock(UTC));
+
+        // A fresh but imprecise response cannot renew the expired evidence.
+        obs.now_ms = 3050;
+        obs.clock
+            .synchronize(3050, common::ntp_sample_with_delay(UTC + 750, 600))
+            .unwrap();
+        runtime.service(obs).unwrap();
+        assert_eq!(runtime.planning_clock(obs.clock).clock(), clock(UTC));
+        assert!(matches!(
+            capture(&runtime, obs),
+            Err(InputError::Timing(TimingError::Expired))
+        ));
+
+        obs.now_ms = 3100;
+        obs.clock.synchronize(3100, ntp_sample(UTC + 1100)).unwrap();
+        runtime.service(obs).unwrap();
+        assert_eq!(runtime.planning_clock(obs.clock).clock(), obs.clock);
+        let inputs = capture(&runtime, obs).unwrap();
+        runtime
+            .publish_plan(inputs.ticket(), Ok(report(&inputs)), inputs, obs)
+            .unwrap();
+        assert_eq!(runtime.snapshot().mode, TrackingMode::Tracking);
+        assert_eq!(runtime.snapshot().phase, TrackingPhase::Armed);
+        assert!(runtime.bound_plan().is_some());
+    }
+}
+
+#[test]
 fn an_early_preview_freezes_hours_later_on_a_newer_sample_that_agrees() {
     const LATER: u64 = 4 * 3_600_000;
     let event = PassEvent {
@@ -515,7 +597,6 @@ fn an_early_preview_freezes_hours_later_on_a_newer_sample_that_agrees() {
     // Its own sample cannot cover LOS, nor, hours on, even the present.
     let prep = AOS + LATER - 60_000;
     let uncertain = Err(InputError::Timing(TimingError::Uncertainty));
-    assert_eq!(inputs.validate_execution(clock(UTC), 2000), uncertain);
     assert_eq!(inputs.validate_preview(clock(UTC), prep), uncertain);
     // A recent sample vouches for the unchanged timeline unless it moves
     // time by more than the 250 ms timing share.
@@ -533,7 +614,6 @@ fn an_early_preview_freezes_hours_later_on_a_newer_sample_that_agrees() {
             )
             .unwrap();
         assert_eq!(inputs.validate_preview(current, prep), expected);
-        assert_eq!(inputs.validate_execution(current, prep), expected);
     }
 }
 
@@ -689,32 +769,46 @@ fn excessive_clock_correction_inhibits_queued_output_and_cannot_resume() {
 }
 
 #[test]
-fn device_outage_expired_network_observation_and_recovered_generation_stop_the_run() {
-    for recovered in [false, true] {
+fn executing_run_survives_network_loss_expiry_and_recovery() {
+    for outage in 0..3 {
         let (mut runtime, _) = following();
-        let mut device = RestedDevice::new(&runtime);
-        let mut obs = observation(AOS + 1);
-        obs.network.observe(AOS + 2, false);
-        if recovered {
+        let mut obs = observation(AOS - 300);
+        if outage != 0 {
+            obs.network.observe(AOS + 2, false);
+        }
+        if outage == 2 {
             obs.network.observe(AOS + 3, true);
         }
         obs.now_ms = AOS + 3;
-        assert_eq!(runtime.take_command(obs), Some(CommandEnvelope::INHIBIT));
-        assert_eq!(
-            runtime.snapshot().termination.unwrap().reason,
-            TrackingStop::NetworkUnavailable
-        );
-        device.turn(&mut runtime, AOS + 4);
-        assert_eq!(runtime.take_command(observation(AOS + 4)), None);
+        let run = runtime.snapshot().run;
+        assert!(is_drive(runtime.take_command(obs)));
+        assert_eq!(runtime.snapshot().run, run);
+        assert_eq!(runtime.snapshot().phase, TrackingPhase::Following);
+        assert!(runtime.snapshot().termination.is_none());
     }
-    let (mut runtime, _) = following();
-    let mut expired = observation(AOS);
-    expired.now_ms = AOS + 300;
-    runtime.service(expired).unwrap();
-    assert_eq!(
-        runtime.snapshot().termination.unwrap().reason,
-        TrackingStop::NetworkUnavailable
-    );
+}
+
+#[test]
+fn armed_pass_starts_after_network_loss_expiry_or_recovery() {
+    for outage in 0..3 {
+        let (mut runtime, _, prep) = armed();
+        let mut obs = observation(prep - 300);
+        if outage != 0 {
+            obs.network.observe(prep - 1, false);
+        }
+        if outage == 2 {
+            obs.network.observe(prep, true);
+        }
+        obs.now_ms = prep;
+        runtime.service(obs).unwrap();
+        assert!(runtime.snapshot().run.is_some());
+        assert_eq!(runtime.snapshot().phase, TrackingPhase::Preparing);
+        assert!(runtime.snapshot().termination.is_none());
+    }
+}
+
+#[test]
+fn offline_arming_is_rejected() {
     let (mut runtime, token) = preview();
     let mut offline = observation(2000);
     offline.network.observe(2000, false);
@@ -808,56 +902,57 @@ fn installation_changes_and_backwards_uptime_inhibit_frozen_work() {
 }
 
 #[test]
-fn clock_that_is_valid_now_but_exceeds_the_los_budget_blocks_preparation() {
-    let (mut runtime, token) = selected(EVENT, observation(2000));
-    let inputs = ExecutionInputs::capture(
-        runtime.planning_ticket().unwrap(),
-        catalog().snapshot(EVENT.norad_id).unwrap(),
-        InputSettings {
-            timing: TimingPolicy {
-                drift_ppm: 2000,
-                ..TimingPolicy::default()
-            },
-            ..InputSettings::default()
+fn armed_pass_starts_on_its_original_clock_when_time_sync_is_unavailable() {
+    for timing in [
+        TimingPolicy {
+            drift_ppm: 2000,
+            ..TimingPolicy::default()
         },
-        clock(UTC),
-        execution_window(clock(UTC).anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
-        &nominal(),
-        2000,
-    )
-    .unwrap();
-    assert_eq!(inputs.validate_preview(clock(UTC), 2000), Ok(()));
-    let planned = report(&inputs);
-    let prep = planned.plan.as_ref().unwrap().assessment.prepare_at_ms;
-    runtime
-        .publish_plan(inputs.ticket(), Ok(planned), inputs, observation(2000))
+        TimingPolicy {
+            drift_ppm: 3000,
+            ..TimingPolicy::default()
+        },
+    ] {
+        let (mut runtime, token) = selected(EVENT, observation(2000));
+        let inputs = ExecutionInputs::capture(
+            runtime.planning_ticket().unwrap(),
+            catalog().snapshot(EVENT.norad_id).unwrap(),
+            InputSettings {
+                timing,
+                ..InputSettings::default()
+            },
+            clock(UTC),
+            execution_window(clock(UTC).anchor().unwrap(), UTC + 120_000, UTC + 150_000).unwrap(),
+            &nominal(),
+            2000,
+        )
         .unwrap();
-    action(
-        &mut runtime,
-        token,
-        2,
-        TrackingAction::Arm,
-        observation(2000),
-    )
-    .unwrap();
-    runtime.service(observation(prep)).unwrap();
-    assert_eq!(runtime.snapshot().phase, TrackingPhase::Armed);
-    assert_eq!(
-        runtime.snapshot().plan,
-        PlanStatus::Blocked(PlanProblem::Inputs(InputError::Timing(
-            TimingError::Uncertainty
-        )))
-    );
-    assert!(runtime.snapshot().run.is_none());
-    assert_eq!(
-        runtime.take_command(observation(prep)),
-        Some(CommandEnvelope::INHIBIT)
-    );
-    runtime.service(observation(AOS)).unwrap();
-    assert_eq!(
-        runtime.snapshot().termination.unwrap().reason,
-        TrackingStop::LatePreparation
-    );
+        assert_eq!(inputs.validate_preview(clock(UTC), 2000), Ok(()));
+        let planned = report(&inputs);
+        let prep = planned.plan.as_ref().unwrap().assessment.prepare_at_ms;
+        runtime
+            .publish_plan(inputs.ticket(), Ok(planned), inputs, observation(2000))
+            .unwrap();
+        action(
+            &mut runtime,
+            token,
+            2,
+            TrackingAction::Arm,
+            observation(2000),
+        )
+        .unwrap();
+        let anchor = runtime.bound_plan().unwrap().inputs().clock().anchor();
+        let mut offline = observation(prep);
+        offline.network = NetworkGate::new();
+        runtime.service(offline).unwrap();
+        assert_eq!(runtime.snapshot().phase, TrackingPhase::Preparing);
+        assert_eq!(runtime.snapshot().plan, PlanStatus::Frozen);
+        assert!(runtime.snapshot().run.is_some());
+        assert_eq!(
+            runtime.bound_plan().unwrap().inputs().clock().anchor(),
+            anchor
+        );
+    }
 }
 
 #[test]

@@ -57,7 +57,7 @@ struct Device {
     catalog: Catalog,
     clock: UtcClock,
     utc0: u64,
-    flicker: bool,
+    noise_codes: [i32; 2],
     reads: u64,
     operator: u32,
     sequence: u64,
@@ -96,7 +96,7 @@ impl Device {
             catalog,
             clock: UtcClock::new(),
             utc0,
-            flicker,
+            noise_codes: [0, i32::from(flicker)],
             reads: 0,
             operator: 0,
             sequence: 0,
@@ -131,11 +131,7 @@ impl Device {
             .position_to_feedback(self.motor.position())
             .unwrap();
         self.reads += 1;
-        let noise = if self.flicker {
-            2 * (self.reads % 2) as i32
-        } else {
-            0
-        };
+        let noise = 2 * self.noise_codes[(self.reads % 2) as usize];
         let code = |mv: i32| (mv + noise) / 2 * 2;
         let readings = FeedbackVoltages {
             a0_elevation_mv: code(exact.a0_elevation_mv),
@@ -241,6 +237,68 @@ impl Device {
 }
 
 #[test]
+fn replanning_waits_for_feedback_taken_after_the_actuator_finishes_coasting() {
+    use ezal_core::drive::{AzimuthDirection, Command, CommandEnvelope, DriveCommand};
+    let mut device = Device::boot(false);
+    device.request(TrackingAction::Select(PASS)).unwrap();
+    device.until(device.now + 1000);
+    assert!(device.state.accept_command(
+        device.operator,
+        CommandEnvelope {
+            command: Command::Jog(DriveCommand {
+                azimuth: Some(AzimuthDirection::Clockwise),
+                elevation: None,
+            }),
+            valid_until_ms: device.now + 750,
+        },
+        device.now,
+    ));
+    device.until(device.now + 200);
+    assert!(device.actuator.actual().is_active());
+    assert!(device
+        .state
+        .accept_command(device.operator, CommandEnvelope::INHIBIT, device.now));
+    device.service();
+    device.wait_for(PLANNING_LIMIT_MS, Device::supported);
+}
+
+#[test]
+fn external_move_during_planning_settles_without_a_restart_loop() {
+    let mut device = Device::boot(false);
+    // Five ADC codes peak to peak, around the original resting reading.
+    device.noise_codes = [-2, 3];
+    device.request(TrackingAction::Select(PASS)).unwrap();
+    device.until(device.now + 10_000);
+    let ticket = device.state.tracking().planning_ticket().unwrap();
+    device.until(device.now + 10_000);
+    assert_eq!(device.state.tracking().planning_ticket(), Some(ticket));
+    // Move during the first job, then from already completed previews. Each
+    // new stationary pose still has the same five-code feedback span.
+    // The second pose also exercises float rounding at that span's boundary.
+    for azimuth_deg in [190.0, 171.6621, 180.0, 210.0] {
+        let before = device.state.start_revision();
+        let pose = Pointing::new(azimuth_deg, device.motor.position().elevation_deg);
+        device.motor = MotorModel::new(
+            installation::planning_config().reference,
+            HARD_CODED_CALIBRATION,
+            pose,
+            [0; 2],
+        )
+        .unwrap();
+        device.until(device.now + 1000);
+        assert!(device.state.start_revision() > before);
+        device.wait_for(PLANNING_LIMIT_MS, Device::supported);
+        let revision = device.state.start_revision();
+        device.until(device.now + 5000);
+        assert!(device.supported(), "{:?}", device.snapshot());
+        assert_eq!(device.state.start_revision(), revision);
+        if device.snapshot().mode == TrackingMode::Manual {
+            device.request(TrackingAction::Arm).unwrap();
+        }
+    }
+}
+
+#[test]
 fn flickering_feedback_plans_arms_and_follows_the_recorded_pass() {
     let mut device = Device::boot(true);
     device.request(TrackingAction::Select(PASS)).unwrap();
@@ -280,8 +338,7 @@ fn prepare_now_from_rested_motors_keeps_the_plan_and_tracks_the_pass() {
     device.request(TrackingAction::Select(PASS)).unwrap();
     device.wait_for(PLANNING_LIMIT_MS, Device::supported);
     device.request(TrackingAction::Arm).unwrap();
-    // Ten minutes ahead, while the clock vouches through LOS; replanning
-    // would take about as long on the device.
+    // Ten minutes ahead; replanning would take about as long on the device.
     device.until(Device::uptime(PASS.aos_unix_s) - 600_000);
     device.request(TrackingAction::PrepareNow).unwrap();
     assert_eq!(device.state.tracking().planning_ticket(), None);

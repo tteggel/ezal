@@ -98,8 +98,20 @@ pub struct RestingStart {
     pub feedback: FeedbackSample,
     /// Output-owner state, including duty and relay availability.
     pub actuator: Actuator,
-    /// Permission generation copied with the actuator snapshot.
-    pub network: NetworkGate,
+}
+
+impl RestingStart {
+    /// Shared admission for live planning and simulation: the position must
+    /// have been acquired after both axes finished their mechanical coast.
+    pub(crate) fn history(&self) -> Option<([u64; 2], [u64; 2])> {
+        let (used, idle) = self.actuator.resting_history(self.at_ms)?;
+        let age = self.at_ms.checked_sub(self.feedback.sampled_at_ms())?;
+        let travel = self.actuator.configuration().travel;
+        (age < crate::feedback::FEEDBACK_MAX_AGE_MS
+            && idle[0] >= age.saturating_add(travel.azimuth.coast_ms)
+            && idle[1] >= age.saturating_add(travel.elevation.coast_ms))
+        .then_some((used, idle))
+    }
 }
 
 /// Bounded, allocation-free simulation using the real feedback and output policy.
@@ -107,8 +119,8 @@ pub struct RestingStart {
 /// Each `step` services at most one acquisition and one actuator decision.
 /// The caller supplies the route position at `now_ms`, and can yield between
 /// steps. The harness honors actuator deadlines as well as its sampling cadence.
-/// Network permission is renewed locally in the model, so a simulation never
-/// sees a network outage or a stalled task.
+/// Device tracking commands use the same network-independent output path as
+/// live execution.
 ///
 /// A target of `None` immediately inhibits output. Continue stepping with
 /// `None` until `is_settled()` to include final coast after cancellation or LOS.
@@ -121,7 +133,6 @@ pub struct Simulation {
     actuator: Actuator,
     monitor: FeedbackMonitor,
     interlock: FeedbackInterlock,
-    network: NetworkGate,
     pending_read: Option<PendingRead>,
     next_read_ms: u64,
     reads: u64,
@@ -168,7 +179,6 @@ impl Simulation {
             actuator: Actuator::with_config(actuator, DutyHistory::Known(used_duty_ms)),
             monitor: FeedbackMonitor::new(calibration, None),
             interlock: FeedbackInterlock::INHIBITED,
-            network: NetworkGate::new(),
             pending_read: None,
             next_read_ms: 0,
             reads: 0,
@@ -188,21 +198,8 @@ impl Simulation {
         settings: SimulationSettings,
         start: RestingStart,
     ) -> Result<Self, SimulationError> {
-        let (used, idle) = start
-            .actuator
-            .resting_history(start.at_ms)
-            .ok_or(SimulationError::InvalidStart)?;
-        let age = start
-            .at_ms
-            .checked_sub(start.feedback.sampled_at_ms())
-            .ok_or(SimulationError::InvalidStart)?;
+        let (used, idle) = start.history().ok_or(SimulationError::InvalidStart)?;
         let actuator = start.actuator.configuration();
-        if age > crate::feedback::FEEDBACK_MAX_AGE_MS
-            || idle[0] < age.saturating_add(actuator.travel.azimuth.coast_ms)
-            || idle[1] < age.saturating_add(actuator.travel.elevation.coast_ms)
-        {
-            return Err(SimulationError::InvalidStart);
-        }
         let mut sim = Self::new(
             calibration,
             start.feedback.position(),
@@ -214,7 +211,6 @@ impl Simulation {
         sim.model
             .set_initial_rest(idle, settings.scenario.initial_engagement);
         sim.actuator = start.actuator;
-        sim.network = start.network;
         sim.now_ms = start.at_ms;
         sim.serviced_ms = start.at_ms;
         sim.next_read_ms = start.at_ms;
@@ -275,22 +271,13 @@ impl Simulation {
         if self.fault.is_some() || !self.is_settled() || self.actuator.target().is_active() {
             return None;
         }
-        let feedback = self.interlock.feedback()?;
-        let age = self.serviced_ms.checked_sub(feedback.sampled_at_ms())?;
-        let (_, idle) = self.actuator.resting_history(self.serviced_ms)?;
-        let travel = self.actuator.configuration().travel;
-        if age >= crate::feedback::FEEDBACK_MAX_AGE_MS
-            || idle[0] < age.saturating_add(travel.azimuth.coast_ms)
-            || idle[1] < age.saturating_add(travel.elevation.coast_ms)
-        {
-            return None;
-        }
-        Some(RestingStart {
+        let start = RestingStart {
             at_ms: self.serviced_ms,
-            feedback,
+            feedback: self.interlock.feedback()?,
             actuator: self.actuator,
-            network: self.network,
-        })
+        };
+        start.history()?;
+        Some(start)
     }
 
     /// Advance one bounded step toward an already planned mechanical target,
@@ -317,7 +304,7 @@ impl Simulation {
             self.actuator.step(
                 ActuatorInput {
                     interlock: self.interlock,
-                    network: self.network,
+                    network: NetworkGate::new(),
                     command: Some(CommandEnvelope {
                         command: Command::Inhibit,
                         valid_until_ms: self.now_ms,
@@ -355,7 +342,6 @@ impl Simulation {
             return Err(SimulationError::InvalidPointing);
         }
         self.acquire_feedback()?;
-        self.network.observe(now_ms, true);
         let feedback = self.interlock.feedback();
         if target.is_none() {
             self.controller.clear_target();
@@ -367,7 +353,7 @@ impl Simulation {
         let update = self.actuator.step(
             ActuatorInput {
                 interlock: self.interlock,
-                network: self.network,
+                network: NetworkGate::new(),
                 command: Some(CommandEnvelope {
                     command: requested,
                     valid_until_ms: now_ms

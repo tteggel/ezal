@@ -59,6 +59,34 @@ fn step(
 }
 
 #[test]
+fn copied_device_output_keeps_its_source_offline_and_manual_input_cannot_reuse_it() {
+    let mut actuator = common::rested_actuator();
+    let network = NetworkGate::new();
+    assert_eq!(
+        step(
+            &mut actuator,
+            0,
+            network,
+            Some(command(Command::Drive(DRIVE), 0))
+        )
+        .output,
+        DRIVE
+    );
+    let mut copied = actuator;
+    assert_eq!(step(&mut copied, 100, network, None).output, DRIVE);
+    assert_eq!(
+        step(&mut copied, 100, network, Some(command(MOVE, 100))).output,
+        DriveCommand::IDLE
+    );
+    assert_eq!(copied.target(), DriveCommand::IDLE);
+    // The original command still expires even though it needed no network.
+    assert_eq!(
+        step(&mut actuator, MOVEMENT_LEASE_MS, network, None).output,
+        DriveCommand::IDLE
+    );
+}
+
+#[test]
 fn boot_and_offline_permission_refuse_movement_without_a_past_wakeup() {
     let mut actuator = common::rested_actuator();
     let update = step(&mut actuator, 0, NetworkGate::new(), Some(command(MOVE, 0)));

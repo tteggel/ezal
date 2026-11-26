@@ -44,7 +44,7 @@ const healthy = servedTelemetry[0].feedback.health;
 function idleTracking(overrides = {}) {
   return {
     revision: "0", operator: null, mode: "manual", phase: "idle", run: null, selection: null,
-    rehearsal: false, rehearsal_available_ms: null,
+    rehearsal: false, rehearsal_available_ms: null, clock_holdover: false,
     plan: { status: "unplanned", reason: null, preview: null },
     feedback_stale: false, feedback_age_ms: 0,
     deviation: { run: null, warning: false, maximum_deg: null, outside_ms: 0, current: null },
@@ -1115,6 +1115,12 @@ const trackClick = (ui, action) => ui.ids.get(`tracking-${action}`).dispatch("cl
 const trackingMessages = (ui) => ui.socket.wireMessages.filter((m) => m.startsWith("track:"));
 const ackTracking = (ui, sequence, ok = true, error = null) => ui.socket.receive({ type: "tracking_result", sequence: String(sequence), ok, revision: "9007199254740998", error });
 
+test("armed clock holdover reports the exceeded pointing budget", () => {
+  const ui = controller();
+  ui.freshness({ tracking: trackingFixture({ mode: "tracking", phase: "armed", clock_holdover: true }) });
+  assert.match(ui.ids.get("tracking-state").textContent, /Clock holdover: timing exceeded the pointing budget/);
+});
+
 test("only the controller can select a pass and selection sends exact identity without arming", async () => {
   const ui = dashboard();
   ui.socket.open();
@@ -1341,11 +1347,12 @@ test("recovery shows its fixed deadline, intercept estimate, retries and retaine
   assert.match(ui.ids.get("tracking-recovery").textContent, /Reacquiring · Measured pointing error exceeded tolerance · attempt 1.*0:28 until fixed deadline.*Predicted join in 0:05; measured recovery still required/);
   ui.freshness({ tracking: { ...t, recovery: { ...t.recovery, attempts: 2, remaining_ms: 25000, hold: "NoIntercept", intercept_in_ms: null } } });
   assert.match(ui.ids.get("tracking-recovery").textContent, /attempt 2.*holding and retrying.*0:25.*No validated intercept/);
-  const summary = { termination: { reason: "ReacquisitionTimeout", event: "3", run: "7" },
+  const summary = { clock_holdover: true, termination: { reason: "ReacquisitionTimeout", event: "3", run: "7" },
     reception: t.plan.preview.reception, deviation: { run: "7", warning: false, current: null, maximum_deg: 10.5, outside_ms: 30000 } };
   ui.freshness({ tracking: trackingFixture({ phase: "stopped", termination: summary.termination, summary }) });
   assert.match(ui.ids.get("tracking-summary").textContent, /Last finished run 7: Recovery deadline reached. Peak measured error 10.50°; observed outside tolerance 0:30/);
   assert.match(ui.ids.get("tracking-summary").textContent, /predictions, not receiver-lock measurements/);
+  assert.match(ui.ids.get("tracking-summary").textContent, /Clock holdover exceeded the planned pointing budget/);
   ui.freshness({ tracking: trackingFixture({ summary }) });
   assert.match(ui.ids.get("tracking-summary").textContent, /Last finished run 7/, "new preview retains the preceding run summary");
 });

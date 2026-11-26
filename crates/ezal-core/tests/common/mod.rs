@@ -163,7 +163,6 @@ pub fn resting_start_with(
         at_ms: 2000,
         feedback: feedback.unwrap(),
         actuator,
-        network,
     }
 }
 
@@ -180,6 +179,11 @@ pub fn nominal() -> PlanningConfig {
 /// `now_unix_s`.
 /// A server reply stamped `utc_ms`, for synchronizing a test clock.
 pub fn ntp_sample(utc_ms: u64) -> ntp::TimeSample {
+    ntp_sample_with_delay(utc_ms, 0)
+}
+
+/// Server timestamp plus a simulated round trip for uncertainty tests.
+pub fn ntp_sample_with_delay(utc_ms: u64, round_trip_ms: u64) -> ntp::TimeSample {
     let mut stamp = [0; 8];
     stamp[..4].copy_from_slice(&((utc_ms / 1000 + 2_208_988_800) as u32).to_be_bytes());
     stamp[4..].copy_from_slice(&((((utc_ms % 1000) << 32).div_ceil(1000)) as u32).to_be_bytes());
@@ -190,7 +194,7 @@ pub fn ntp_sample(utc_ms: u64) -> ntp::TimeSample {
     packet[24..32].fill(1);
     packet[32..40].copy_from_slice(&stamp);
     packet[40..48].copy_from_slice(&stamp);
-    ntp::reply_sample(&packet, [1; 8], 0).unwrap()
+    ntp::reply_sample(&packet, [1; 8], round_trip_ms).unwrap()
 }
 
 /// An N2YO-shaped HTTP reply whose `tle` string is `lines`. Tests about the

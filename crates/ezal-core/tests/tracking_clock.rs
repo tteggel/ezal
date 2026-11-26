@@ -76,16 +76,19 @@ fn fractional_mapping_preserves_original_anchor_across_positive_and_negative_cor
         let sample =
             ntp::reply_sample(&packet((UTC as i64 + 1000 + correction) as u64), COOKIE, 0).unwrap();
         live.synchronize(3000, sample).unwrap();
-        assert_eq!(frozen.validate(live, 3100), Ok(()));
+        assert_eq!(frozen.validate_now(live, 3100), Ok(()));
         assert_eq!(frozen.unix_s(3100).unwrap(), (UTC + 1100) as f64 / 1000.0);
         assert_eq!(frozen.anchor().revision(), 1);
         assert_eq!(live.anchor().unwrap().revision(), 2);
-        assert_eq!(frozen.validate(live, 152_001), Err(TimingError::Expired));
+        assert_eq!(
+            frozen.validate_now(live, 152_001),
+            Err(TimingError::Expired)
+        );
     }
 }
 
 #[test]
-fn corrections_must_fit_remaining_error_through_los_and_never_ratchet_the_anchor() {
+fn preview_corrections_must_fit_current_error_and_never_ratchet_the_anchor() {
     let mut live = clock(2000, UTC);
     let frozen = ExecutionClock::new(
         live.anchor().unwrap(),
@@ -105,7 +108,7 @@ fn corrections_must_fit_remaining_error_through_los_and_never_ratchet_the_anchor
             ntp::reply_sample(&packet(UTC + at - 2000 + correction), COOKIE, 0).unwrap(),
         )
         .unwrap();
-        assert_eq!(frozen.validate(live, at), expected);
+        assert_eq!(frozen.validate_now(live, at), expected);
     }
     let mut early = clock(2000, UTC);
     early
@@ -114,7 +117,10 @@ fn corrections_must_fit_remaining_error_through_los_and_never_ratchet_the_anchor
             ntp::reply_sample(&packet(UTC + 700), COOKIE, 0).unwrap(),
         )
         .unwrap();
-    assert_eq!(frozen.validate(early, 3000), Err(TimingError::Correction));
+    assert_eq!(
+        frozen.validate_now(early, 3000),
+        Err(TimingError::Correction)
+    );
     // A small correction plus a noisy new sample also exceeds the allowance.
     let mut noisy = clock(2000, UTC);
     noisy
@@ -123,46 +129,108 @@ fn corrections_must_fit_remaining_error_through_los_and_never_ratchet_the_anchor
             ntp::reply_sample(&packet(UTC + 1000), COOKIE, 400).unwrap(),
         )
         .unwrap();
-    assert_eq!(frozen.validate(noisy, 3000), Err(TimingError::Correction));
+    assert_eq!(
+        frozen.validate_now(noisy, 3000),
+        Err(TimingError::Correction)
+    );
 }
 
 #[test]
-fn full_horizon_uncertainty_and_source_age_are_checked_at_exclusive_boundaries() {
+fn armed_holdover_exceeds_the_angular_budget_but_obeys_the_hard_age_limit() {
     let current = clock(2000, UTC);
-    let anchor = current.anchor().unwrap();
-    // 3 ms initial error + 100 ppm * 2,470 seconds = the 250 ms allowance.
+    let end = 2000 + ntp::MAX_SYNC_AGE_MS;
     let frozen = ExecutionClock::new(
-        anchor,
+        current.anchor().unwrap(),
         TimingPolicy::default(),
         &PlanningConfig::default(),
-        2_472_000,
+        end,
         2000,
     )
     .unwrap();
-    assert_eq!(frozen.validate(current, 2000), Ok(()));
+    let mut trusted = current;
+    // 3 ms initial error + 100 ppm * 2470 seconds reaches 250 ms.
+    assert_eq!(frozen.validate_now(current, 2_472_000), Ok(()));
     assert_eq!(
-        ExecutionClock::new(
-            anchor,
-            TimingPolicy::default(),
-            &PlanningConfig::default(),
-            2_472_001,
-            2000
-        ),
+        frozen.validate_now(current, 2_472_001),
         Err(TimingError::Uncertainty)
     );
-    let policy = TimingPolicy {
-        max_sample_age_ms: 1000,
-        ..TimingPolicy::default()
-    };
-    assert!(ExecutionClock::new(anchor, policy, &PlanningConfig::default(), 2999, 2000).is_ok());
     assert_eq!(
-        ExecutionClock::new(anchor, policy, &PlanningConfig::default(), 3000, 2000),
-        Err(TimingError::Expired)
+        frozen.validate_armed(current, &mut trusted, 2_472_001),
+        Ok(true)
     );
     assert_eq!(
-        current.anchor(),
-        Some(anchor),
-        "a failed refresh does not replace/renew a sample"
+        frozen.validate_armed(current, &mut trusted, end - 1),
+        Ok(true)
+    );
+    assert_eq!(
+        frozen.validate_armed(current, &mut trusted, end),
+        Err(TimingError::Expired)
+    );
+}
+
+#[test]
+fn uncertain_samples_do_not_cancel_or_renew_armed_time_evidence() {
+    let mut live = clock(2000, UTC);
+    let end = 2000 + ntp::MAX_SYNC_AGE_MS;
+    let frozen = ExecutionClock::new(
+        live.anchor().unwrap(),
+        TimingPolicy::default(),
+        &PlanningConfig::default(),
+        end,
+        2000,
+    )
+    .unwrap();
+    let mut trusted = live;
+    let original = trusted;
+    live.synchronize(
+        3000,
+        ntp::reply_sample(&packet(UTC + 1000), COOKIE, 600).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(frozen.validate_armed(live, &mut trusted, 3000), Ok(false));
+    assert_eq!(trusted, original);
+    // Another slow response cannot evade the original sample's hard deadline.
+    live.synchronize(
+        end,
+        ntp::reply_sample(&packet(UTC + end - 2000), COOKIE, 600).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        frozen.validate_armed(live, &mut trusted, end),
+        Err(TimingError::Expired)
+    );
+    assert_eq!(trusted, original);
+}
+
+#[test]
+fn precise_samples_refresh_evidence_without_moving_the_frozen_timeline() {
+    let mut live = clock(2000, UTC);
+    let end = 2000 + ntp::MAX_SYNC_AGE_MS;
+    let frozen = ExecutionClock::new(
+        live.anchor().unwrap(),
+        TimingPolicy::default(),
+        &PlanningConfig::default(),
+        end + 1000,
+        2000,
+    )
+    .unwrap();
+    let mut trusted = live;
+    live.synchronize(
+        end - 1,
+        ntp::reply_sample(&packet(UTC + end - 2001), COOKIE, 0).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(frozen.validate_armed(live, &mut trusted, end), Ok(false));
+    assert_eq!(trusted, live);
+    assert_eq!(frozen.anchor().revision(), 1);
+    live.synchronize(
+        end + 1,
+        ntp::reply_sample(&packet(UTC + end - 1999 + 1000), COOKIE, 0).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        frozen.validate_armed(live, &mut trusted, end + 1),
+        Err(TimingError::Correction)
     );
 }
 
@@ -196,7 +264,7 @@ fn leap_pending_and_missing_clocks_cannot_authorize_execution() {
     )
     .unwrap();
     assert_eq!(
-        frozen.validate(UtcClock::new(), 2100),
+        frozen.validate_now(UtcClock::new(), 2100),
         Err(TimingError::Unavailable)
     );
 }

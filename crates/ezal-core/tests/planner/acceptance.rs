@@ -45,7 +45,7 @@ fn execute(
     let installed = InstalledCalibration::new(plan.calibration, FEEDBACK_FULL_SCALE).unwrap();
     let mut interlock = FeedbackInterlock::new(installed);
     let mut feedback = start.feedback;
-    let mut network = start.network;
+    let mut network = ezal_core::network::NetworkGate::new();
     let mut now = start.at_ms;
     let mut previous = now;
     let mut next_read = now;

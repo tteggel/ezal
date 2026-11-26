@@ -171,8 +171,9 @@ impl PlanningWorker {
             preparation_timing: ticket.preparation_timing(),
             ..self.config.clone()
         };
-        let inputs = state.tracking_operation(now(), |_, observation| {
-            let anchor = observation.clock.anchor().ok_or(TimingError::Unavailable)?;
+        let inputs = state.tracking_operation(now(), |runtime, observation| {
+            let clock = runtime.planning_clock(observation.clock);
+            let anchor = clock.clock().anchor().ok_or(TimingError::Unavailable)?;
             let pass = ticket.pass();
             let window = execution_window(
                 anchor,
@@ -183,7 +184,7 @@ impl PlanningWorker {
                 ticket,
                 orbit,
                 self.settings,
-                observation.clock,
+                clock,
                 window,
                 &config,
                 observation.now_ms,

@@ -188,9 +188,8 @@ fn rest_at(state: &mut CoordinationState, actuator: &mut Actuator, mv: FeedbackV
     state.record_actuator(actuator, now);
 }
 
-/// The test calibration's azimuth code is 0.4°, so the 2° start tolerance
-/// (`coordination::START_TOLERANCE_DEG`) is five codes; the bench's flicker
-/// at an end stop is four.
+/// Five-code feedback noise fits with headroom; larger motion is measured
+/// from the fixed planning start, independently of endpoint rounding margins.
 #[test]
 fn idle_feedback_noise_keeps_the_planning_start_and_drift_from_it_replaces_it() {
     let mut state = CoordinationState::new();
@@ -205,7 +204,7 @@ fn idle_feedback_noise_keeps_the_planning_start_and_drift_from_it_replaces_it() 
     rest_at(&mut state, &mut actuator, rest, 0);
     rest_at(&mut state, &mut actuator, rest, 2000);
     let start = state.start_revision();
-    for (now, codes) in (2100..4000).step_by(100).zip([4, -4].into_iter().cycle()) {
+    for (now, codes) in (2100..4000).step_by(100).zip([5, -5].into_iter().cycle()) {
         rest_at(&mut state, &mut actuator, offset(codes), now);
     }
     assert_eq!(state.start_revision(), start);
@@ -214,7 +213,7 @@ fn idle_feedback_noise_keeps_the_planning_start_and_drift_from_it_replaces_it() 
         rest_at(&mut state, &mut actuator, offset(codes), now);
     }
     assert_eq!(state.start_revision(), start);
-    rest_at(&mut state, &mut actuator, offset(6), 4300);
+    rest_at(&mut state, &mut actuator, offset(7), 4300);
     let moved = state.start_revision();
     assert!(moved > start);
     // The moved pose is the new start.

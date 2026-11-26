@@ -73,8 +73,9 @@ manual admission uses that runtime's exclusive lease and mailbox too.
 
 `tracking::TrackingRuntime` wraps that lifecycle with the execution-input gate.
 The firmware uses this owner: it validates source snapshots,
-clock corrections and timestamped network generations before preparation,
-executor commands and mailbox drain. `ExecutionInputs` owns its elements,
+clock corrections before preparation, executor commands and mailbox drain.
+Arming commits to the retained timeline across network outages and missed
+time synchronizations. `ExecutionInputs` owns its elements,
 observer and millisecond UTC anchor; later publications cannot edit a frozen
 run. Only a completed `OrbitalDownload` can publish element sets and their
 revisions to `catalog::Catalog`. The installation explicitly accepts
@@ -155,7 +156,8 @@ single-use WebSocket Ping/Pong heartbeats renew the original grant; reading
 telemetry and repeated claims do not. Disconnect or expiry inhibits manual
 movement while an armed pass retains device authority. A viewer must claim
 vacant control explicitly. Network loss revokes browser ownership and stops
-tracking; recovery cannot resume an old run.
+manual movement. An armed pass still prepares, follows, recovers and completes
+under device authority; reconnecting clients can claim and cancel that pass.
 
 The signal is only a wake hint. On every iteration, the GPIO task atomically
 drains the mailbox together with the feedback interlock and network permission.
@@ -166,14 +168,19 @@ a pending movement replaces its entire envelope, including the original expiry.
 
 1. Account for motion and duty under the previously applied output, before any cut.
 2. Assess feedback, duty and latched motion faults; revoke active and pending requests
-   when permission is absent or the network recovery generation changed.
+   when permission is absent or the motion authority changed. Manual output
+   requires current network permission and its generation; executing output
+   uses `Drive` commands admitted and drained against the current run. The
+   actuator retains the command source across commandless steps; manual input
+   uses `Jog`.
 3. Consume a queued command before advancing a pending relay activation at the
    same instant. Expire an old lease before admitting a late refresh.
 4. Record the resulting applied state and return output, fault/duty status and the
    earliest required service deadline.
 
 Command lifetime and remaining duty must both cover an activation's minimum on-time.
-Feedback and network deadlines independently revoke movement; shortening the
+Feedback deadlines independently revoke movement, as do network deadlines
+for manual output; shortening the
 activation lease to the network deadline,
 [`NETWORK_HEALTH_TIMEOUT_MS`](CONTROL_CONTRACT.md#ownership-and-recovery),
 would prevent every activation.

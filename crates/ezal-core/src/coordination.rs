@@ -14,13 +14,15 @@ use crate::operator::{OperatorGrant, OperatorToken};
 use crate::position::{FeedbackVoltages, Pointing};
 
 /// How far an idle pose may stray from the one planning started from before
-/// planning starts again. Idle feedback flickers by a code mid-range but by up
-/// to five near an end stop: 1.6° of azimuth on the bench. A 2° error lengthens
-/// the preparation slew by under 0.75 s at the slowest modelled 2.8°/s, and
+/// planning starts again, unless the calibrated feedback-noise allowance is
+/// larger. Six ADC counts cover the observed five-count span with one count
+/// of headroom. They span about 2.45° in the installed azimuth calibration.
+/// That error adds under 0.9 s of slew at the slowest modelled 2.8°/s, and
 /// preparation is scheduled 20 s beyond the slowest rehearsal. Any output this
 /// device drives restarts planning regardless; a turn of the rotator's own
 /// controller beyond this does too.
 pub const START_TOLERANCE_DEG: f32 = 2.0;
+const START_NOISE_CODES: u8 = 6;
 use crate::tracking::{
     RestingStart, RuntimeObservation, TrackingMode, TrackingRuntime, TrackingStop,
 };
@@ -73,7 +75,7 @@ pub struct CoordinationState {
     applied: Actuator,
     applied_at_ms: Option<u64>,
     start_revision: u64,
-    start_identity: Option<(Pointing, [u64; 2], u64)>,
+    start_identity: Option<(Pointing, [u64; 2])>,
     startup_rest_override: Option<StartupRestOverride>,
 }
 
@@ -125,7 +127,8 @@ impl CoordinationState {
         }
     }
 
-    /// Publish readiness; an outage revokes browser ownership and device motion.
+    /// Publish readiness; an outage revokes browser ownership and manual motion.
+    /// Armed and executing passes retain device authority.
     pub fn publish_network(&mut self, ready: bool, now_ms: u64) -> bool {
         let lost = self.network.observe(now_ms, ready);
         if lost {
@@ -368,25 +371,29 @@ impl CoordinationState {
 
     /// Identity of the physical starting assumptions. Fresh timestamps and
     /// feedback noise do not restart planning; a moved pose or changed
-    /// duty/network history does.
+    /// duty history does.
     pub const fn start_revision(&self) -> u64 {
         self.start_revision
     }
 
     /// Last coherent, settled output snapshot. Its original time is preserved.
     pub fn resting_start(&self) -> Option<RestingStart> {
+        self.resting_snapshot().map(|(start, _)| start)
+    }
+
+    fn resting_snapshot(&self) -> Option<(RestingStart, [u64; 2])> {
         let at_ms = self.applied_at_ms?;
         let feedback = self.feedback.last_valid?;
         if self.feedback.health != FeedbackHealth::Healthy || feedback.sampled_at_ms() > at_ms {
             return None;
         }
-        self.applied.resting_history(at_ms)?;
-        Some(RestingStart {
+        let start = RestingStart {
             at_ms,
             feedback,
             actuator: self.applied,
-            network: self.network,
-        })
+        };
+        let (used, _) = start.history()?;
+        Some((start, used))
     }
 
     /// Record the actuator only AFTER applying its GPIO output, at its service time.
@@ -394,38 +401,36 @@ impl CoordinationState {
         self.applied = *actuator;
         self.applied_at_ms = Some(now_ms);
         self.tracking.observe_output(actuator.actual(), now_ms);
-        let identity = self.resting_start().and_then(|s| {
-            s.actuator
-                .resting_history(now_ms)
-                .map(|(used, _)| (s.feedback.position(), used, self.network.generation()))
-        });
+        let identity = self
+            .resting_snapshot()
+            .map(|(start, used)| (start.feedback.position(), used));
         if !self.same_start(identity) {
             self.start_identity = identity;
             self.changed_start(now_ms);
         }
     }
 
-    /// Duty and network history must match exactly; the pose only within noise.
-    fn same_start(&self, identity: Option<(Pointing, [u64; 2], u64)>) -> bool {
+    /// Duty history must match exactly; the pose only within noise.
+    fn same_start(&self, identity: Option<(Pointing, [u64; 2])>) -> bool {
         match (identity, self.start_identity) {
-            (Some((pose, used, network)), Some((start, start_used, start_network))) => {
-                used == start_used && network == start_network && self.near_start(pose, start)
+            (Some((pose, used)), Some((start, start_used))) => {
+                used == start_used && self.near_start(pose, start)
             }
             (identity, start) => identity.is_none() && start.is_none(),
         }
     }
 
-    /// [`START_TOLERANCE_DEG`], or the motion monitor's measurement noise if
-    /// that is larger, around the pose planning started from. A restart per
+    /// [`START_TOLERANCE_DEG`], or six physical ADC codes if that is larger,
+    /// around the pose planning started from. A restart per
     /// flicker would never let a plan finish. Drift is measured from that
     /// start, so it adds up.
     fn near_start(&self, pose: Pointing, start: Pointing) -> bool {
         let code = self
             .interlock
-            .feedback_resolution_deg()
+            .feedback_code_deg()
             .unwrap_or(Pointing::new(0.0, 0.0));
-        let noise = f32::from(self.applied.configuration().motion.noise_codes);
-        let tolerance = |code_deg: f32| (code_deg * noise).max(START_TOLERANCE_DEG);
+        let tolerance =
+            |code_deg: f32| (code_deg * f32::from(START_NOISE_CODES)).max(START_TOLERANCE_DEG);
         (pose.azimuth_deg - start.azimuth_deg).abs() <= tolerance(code.azimuth_deg)
             && (pose.elevation_deg - start.elevation_deg).abs() <= tolerance(code.elevation_deg)
     }

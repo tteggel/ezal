@@ -71,20 +71,46 @@ pub struct ExecutionInputs {
     config: PlanningConfig,
 }
 
+/// Clock admission for a planning job. Armed replanning uses retained good time
+/// evidence and permits angular drift; new previews require the timing budget.
+#[derive(Clone, Copy, Debug)]
+pub enum PlanningClock {
+    /// New, unarmed intent using the current synchronized clock.
+    Preview(UtcClock),
+    /// Existing armed intent using its retained good clock sample.
+    Armed(UtcClock),
+}
+
+impl PlanningClock {
+    /// Mapping used to construct this job's monotonic window.
+    pub fn clock(self) -> UtcClock {
+        match self {
+            Self::Preview(clock) | Self::Armed(clock) => clock,
+        }
+    }
+}
+
+impl From<UtcClock> for PlanningClock {
+    fn from(clock: UtcClock) -> Self {
+        Self::Preview(clock)
+    }
+}
+
 impl ExecutionInputs {
-    /// Capture a preview. Whole-window orbital validity is required now; the
-    /// clock's complete LOS error bound is checked at preparation, allowing
-    /// early selection while NTP keeps synchronizing.
+    /// Capture a planning job with whole-window orbital validity. A new preview
+    /// requires current timing confidence; an armed replacement permits holdover
+    /// within the retained sample's hard age limit.
     pub fn capture(
         ticket: PlanTicket,
         orbit: OrbitalSnapshot,
         settings: InputSettings,
-        current: UtcClock,
+        current: impl Into<PlanningClock>,
         mut window: PlanningWindow,
         config: &PlanningConfig,
         now_ms: u64,
     ) -> Result<Self, InputError> {
-        let anchor = current.anchor().ok_or(TimingError::Unavailable)?;
+        let current = current.into();
+        let anchor = current.clock().anchor().ok_or(TimingError::Unavailable)?;
         let aos_utc = anchor
             .unix_ms(window.aos_at_ms)
             .ok_or(InputError::Binding)? as f64
@@ -116,7 +142,7 @@ impl ExecutionInputs {
             .checked_add(u64::from(window.duration_ms))
             .ok_or(InputError::Binding)?;
         let station = GroundStation::new(settings.observer).ok_or(InputError::Observer)?;
-        let clock = ExecutionClock::preview(anchor, settings.timing, config, los_ms, now_ms)?;
+        let clock = ExecutionClock::new(anchor, settings.timing, config, los_ms, now_ms)?;
         let inputs = Self {
             orbit,
             station,
@@ -125,7 +151,12 @@ impl ExecutionInputs {
             window,
             config: config.clone(),
         };
-        inputs.validate_preview(current, now_ms)?;
+        match current {
+            PlanningClock::Preview(clock) => inputs.validate_preview(clock, now_ms)?,
+            PlanningClock::Armed(mut clock) => {
+                inputs.validate_armed(clock, &mut clock, now_ms)?;
+            }
+        }
         Ok(inputs)
     }
     /// Clock used for every fractional orbital-time calculation.
@@ -140,8 +171,7 @@ impl ExecutionInputs {
     pub const fn ticket(&self) -> PlanTicket {
         self.ticket
     }
-    /// Exclusive expiry: these inputs authorize nothing from LOS. Their clock
-    /// stays valid only while the newest sample vouches for it.
+    /// Exclusive expiry: these inputs authorize nothing from LOS.
     pub fn freeze_before_ms(&self) -> u64 {
         self.window.aos_at_ms + u64::from(self.window.duration_ms)
     }
@@ -150,7 +180,7 @@ impl ExecutionInputs {
     pub fn matches(&self, plan: &TrackingPlan, ticket: PlanTicket) -> bool {
         self.ticket == ticket && self.window == plan.window && self.config == plan.config
     }
-    /// Before preparation the newest sample must vouch for the frozen
+    /// Before arming the newest sample must vouch for the captured
     /// timeline now. A routine synchronization keeps the preview; one that
     /// moves time beyond the timing share, or a lapse in synchronization,
     /// invalidates it and requests automatic replanning.
@@ -158,11 +188,17 @@ impl ExecutionInputs {
         self.clock.validate_now(current, now_ms)?;
         self.validate_orbit(now_ms)
     }
-    /// Required immediately before freezing, and on every serviced output
-    /// admission thereafter. Full source validity extends through original LOS.
-    pub fn validate_execution(&self, current: UtcClock, now_ms: u64) -> Result<(), InputError> {
-        self.clock.validate(current, now_ms)?;
-        self.validate_orbit(now_ms)
+    /// An armed pass keeps its admitted timeline through missed time syncs.
+    /// Orbital validity and actual clock contradictions remain enforced.
+    pub(super) fn validate_armed(
+        &self,
+        current: UtcClock,
+        trusted: &mut UtcClock,
+        now_ms: u64,
+    ) -> Result<bool, InputError> {
+        let holdover = self.clock.validate_armed(current, trusted, now_ms)?;
+        self.validate_orbit(now_ms)?;
+        Ok(holdover)
     }
     fn validate_orbit(&self, now_ms: u64) -> Result<(), InputError> {
         if now_ms < self.orbit.publication().received_at_ms {
@@ -191,7 +227,7 @@ impl ExecutionInputs {
         Ok(())
     }
     /// Propagate the frozen orbit at fractional uptime-matched UTC. Execution
-    /// services validate live clock/network state separately before output.
+    /// services validate clock state separately before output.
     pub fn look_at_uptime(&self, now_ms: u64) -> Option<LookAngle> {
         if self.ticket.is_rehearsal() {
             let offset = now_ms.checked_sub(self.window.aos_at_ms)?;

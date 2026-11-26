@@ -8,7 +8,8 @@ use crate::ntp::{UtcAnchor, UtcClock, MAX_SYNC_AGE_MS};
 pub struct TimingPolicy {
     /// Maximum local oscillator error, in parts per million (default 100 ppm).
     pub drift_ppm: u32,
-    /// Exclusive maximum age of a good sample; never exceeds the SNTP policy.
+    /// Exclusive maximum age of retained good time evidence, including armed
+    /// holdover. Never exceeds the six-hour SNTP policy.
     pub max_sample_age_ms: u64,
     /// Portion of the planner's uncertainty reserve left for alignment/orbit
     /// error, rather than spending the whole reserve on time (default 0.5°).
@@ -30,7 +31,7 @@ impl Default for TimingPolicy {
 pub enum TimingError {
     /// No synchronized sample, or the live clock was disarmed.
     Unavailable,
-    /// Sample age reaches the exclusive limit before the required end.
+    /// Retained good time evidence reaches the exclusive age limit.
     Expired,
     /// A pending leap is not modeled by the linear monotonic mapping.
     LeapPending,
@@ -50,12 +51,11 @@ pub enum TimingError {
 /// Immutable execution timeline. New samples only validate it; they cannot
 /// alter its targets, AOS, LOS or command deadlines.
 ///
-/// True UTC lies within the newest sample's uncertainty and drift of that
-/// sample's mapping, and the two mappings differ by a constant, so the frozen
-/// one is out by at most their sum. Until NTP synchronizes again, the newest
-/// sample is the frozen one and the difference is zero. A plan therefore
-/// keeps its timeline across routine synchronizations, however old its own
-/// sample becomes, and no later sample can move it.
+/// Unarmed previews require the current error bound to fit the timing share.
+/// Armed passes retain good evidence across missed or imprecise samples, even
+/// when estimated drift exceeds that share. This holdover is reported and ends
+/// at the hard sample-age limit. A later sample stops the pass only when its
+/// whole uncertainty interval contradicts the timeline; it never moves it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExecutionClock {
     anchor: UtcAnchor,
@@ -65,26 +65,9 @@ pub struct ExecutionClock {
 }
 
 impl ExecutionClock {
-    /// A preview can exist hours before preparation while the device keeps
-    /// synchronizing. Validate the sample now; [`Self::validate`] checks the
-    /// full LOS horizon before freezing. Never use this alone to authorize output.
-    pub(super) fn preview(
-        anchor: UtcAnchor,
-        policy: TimingPolicy,
-        config: &PlanningConfig,
-        through_ms: u64,
-        now_ms: u64,
-    ) -> Result<Self, TimingError> {
-        if through_ms < now_ms {
-            return Err(TimingError::Configuration);
-        }
-        let mut clock = Self::new(anchor, policy, config, now_ms, now_ms)?;
-        clock.through_ms = through_ms;
-        Ok(clock)
-    }
-
-    /// Capture a quantified anchor and require its timing error to fit through
-    /// LOS. The sky-rate bound is the same assumption used by the planner.
+    /// Capture a timeline from a synchronized sample younger than the hard age
+    /// limit. Preview admission separately checks its angular timing budget;
+    /// armed capture permits drift beyond that budget until the age limit.
     pub fn new(
         anchor: UtcAnchor,
         policy: TimingPolicy,
@@ -115,9 +98,9 @@ impl ExecutionClock {
             through_ms,
             allowance_ms: 1000.0 * reserve / rate,
         };
-        clock.check_anchor(anchor, now_ms)?;
-        if clock.error_ms(anchor, through_ms)? > clock.allowance_ms {
-            return Err(TimingError::Uncertainty);
+        clock.check_age(anchor, now_ms)?;
+        if anchor.sample().leap_pending() {
+            return Err(TimingError::LeapPending);
         }
         anchor.unix_ms(through_ms).ok_or(TimingError::ClockOrder)?;
         Ok(clock)
@@ -128,13 +111,13 @@ impl ExecutionClock {
         self.anchor
     }
 
-    /// End of the span for which error/freshness were admitted.
+    /// End of the captured timeline; no target may be propagated beyond it.
     pub const fn through_ms(self) -> u64 {
         self.through_ms
     }
 
     /// Fractional UTC for propagation, from the frozen timeline only. Its
-    /// accuracy comes from the newest sample; see [`Self::validate`].
+    /// error is supervised separately by preview or armed validation.
     pub fn unix_s(self, now_ms: u64) -> Result<f64, TimingError> {
         if now_ms > self.through_ms {
             return Err(TimingError::Expired);
@@ -145,57 +128,92 @@ impl ExecutionClock {
             .ok_or(TimingError::ClockOrder)
     }
 
-    /// Bound the frozen timeline's error through LOS with the latest live
-    /// sample, without rebasing: required at preparation and on every output
-    /// admission. Failed refreshes leave `current` unchanged and cannot renew
-    /// a source age.
-    pub fn validate(self, current: UtcClock, now_ms: u64) -> Result<(), TimingError> {
-        self.check(current, now_ms, self.through_ms)
-    }
-
-    /// The same bound at `now_ms` only, for a preview that has not frozen:
-    /// it stays valid while synchronization continues, not while its own
-    /// sample would cover LOS.
+    /// Admit an unarmed preview only while current timing error fits its share
+    /// of the pointing budget. This never shifts the captured timeline.
     pub fn validate_now(self, current: UtcClock, now_ms: u64) -> Result<(), TimingError> {
-        self.check(current, now_ms, now_ms)
+        let latest = self.ordered_anchor(current, now_ms)?;
+        let error_ms = self.error_ms(latest, now_ms)?;
+        if error_ms > self.allowance_ms {
+            return Err(TimingError::Uncertainty);
+        }
+        if self.disagreement_ms(latest, now_ms)? + error_ms > self.allowance_ms {
+            return Err(TimingError::Correction);
+        }
+        Ok(())
     }
 
-    fn check(self, current: UtcClock, now_ms: u64, until_ms: u64) -> Result<(), TimingError> {
+    /// Observe an armed pass's clock without rebasing its timeline. An uncertain
+    /// answer cannot disprove the timeline or renew the retained good sample.
+    /// Returns whether retained timing error exceeds the pointing budget. The
+    /// retained sample must still be younger than the hard age limit.
+    pub fn validate_armed(
+        self,
+        current: UtcClock,
+        trusted: &mut UtcClock,
+        now_ms: u64,
+    ) -> Result<bool, TimingError> {
+        let latest = self.ordered_anchor(current, now_ms)?;
+        let previous = trusted.anchor().ok_or(TimingError::Unavailable)?;
+        if latest.revision() < previous.revision()
+            || latest.monotonic_ms() < previous.monotonic_ms()
+        {
+            return Err(TimingError::ClockOrder);
+        }
+        let disagreement = self.disagreement_ms(latest, now_ms)?;
+        let uncertainty = latest.sample().uncertainty_ms() as f64;
+        // Fail only when the sample's entire uncertainty interval contradicts
+        // the admitted timeline. A wide interval is weak evidence, not a fault.
+        if disagreement > self.allowance_ms + uncertainty {
+            return Err(TimingError::Correction);
+        }
+        if self
+            .error_ms(latest, now_ms)
+            .is_ok_and(|error| disagreement + error <= self.allowance_ms)
+        {
+            *trusted = current;
+        }
+        let retained = trusted.anchor().ok_or(TimingError::Unavailable)?;
+        let error_ms = self.error_ms(retained, now_ms)?;
+        Ok(self.disagreement_ms(retained, now_ms)? + error_ms > self.allowance_ms)
+    }
+
+    fn ordered_anchor(self, current: UtcClock, now_ms: u64) -> Result<UtcAnchor, TimingError> {
         self.unix_s(now_ms)?;
         let latest = current.anchor().ok_or(TimingError::Unavailable)?;
         if latest.revision() < self.anchor.revision()
             || latest.monotonic_ms() < self.anchor.monotonic_ms()
+            || now_ms < latest.monotonic_ms()
         {
             return Err(TimingError::ClockOrder);
         }
-        self.check_anchor(latest, now_ms)?;
-        let error_ms = self.error_ms(latest, until_ms)?;
-        if error_ms > self.allowance_ms {
-            return Err(TimingError::Uncertainty);
+        if latest.sample().leap_pending() {
+            return Err(TimingError::LeapPending);
         }
+        Ok(latest)
+    }
+
+    fn disagreement_ms(self, latest: UtcAnchor, now_ms: u64) -> Result<f64, TimingError> {
         let frozen = self.anchor.unix_ms(now_ms).ok_or(TimingError::ClockOrder)?;
         let live = latest.unix_ms(now_ms).ok_or(TimingError::ClockOrder)?;
-        if frozen.abs_diff(live) as f64 + error_ms > self.allowance_ms {
-            return Err(TimingError::Correction);
-        }
-        Ok(())
+        Ok(frozen.abs_diff(live) as f64)
     }
 
     pub(super) fn allowance_ms(self) -> f64 {
         self.allowance_ms
     }
 
-    fn check_anchor(self, anchor: UtcAnchor, at_ms: u64) -> Result<(), TimingError> {
-        self.error_ms(anchor, at_ms).map(|_| ())
-    }
-
-    fn error_ms(self, anchor: UtcAnchor, at_ms: u64) -> Result<f64, TimingError> {
+    fn check_age(self, anchor: UtcAnchor, at_ms: u64) -> Result<u64, TimingError> {
         let age = at_ms
             .checked_sub(anchor.monotonic_ms())
             .ok_or(TimingError::ClockOrder)?;
         if age >= self.policy.max_sample_age_ms {
             return Err(TimingError::Expired);
         }
+        Ok(age)
+    }
+
+    pub(super) fn error_ms(self, anchor: UtcAnchor, at_ms: u64) -> Result<f64, TimingError> {
+        let age = self.check_age(anchor, at_ms)?;
         let sample = anchor.sample();
         if sample.leap_pending() {
             return Err(TimingError::LeapPending);

@@ -68,7 +68,6 @@ fn plan(name: &str, source: impl Ephemeris, window: PlanningWindow, relays: Rela
             at_ms: 2000,
             feedback: feedback.unwrap(),
             actuator,
-            network,
         },
         PlanningConfig::default(),
     )

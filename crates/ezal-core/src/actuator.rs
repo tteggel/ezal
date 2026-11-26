@@ -58,7 +58,7 @@ impl ActuatorConfig {
 pub struct ActuatorInput {
     /// Latest feedback and installed mechanical limits.
     pub interlock: FeedbackInterlock,
-    /// Expiring operating permission and its recovery generation.
+    /// Expiring manual movement permission and its recovery generation.
     pub network: NetworkGate,
     /// One pending command carrying its original absolute expiry.
     pub command: Option<CommandEnvelope>,
@@ -93,6 +93,7 @@ pub struct Actuator {
     motion: MotionMonitor,
     duty: DutyMonitor,
     network_generation: u64,
+    network_required: bool,
 }
 
 impl Actuator {
@@ -112,12 +113,13 @@ impl Actuator {
             motion: MotionMonitor::new(config.motion, config.travel),
             duty: DutyMonitor::new(config.duty, history, config.relays.min_active_ms),
             network_generation: 0,
+            network_required: true,
         }
     }
 
     /// Service the complete output boundary from one coherent snapshot.
     ///
-    /// Network permission can revoke movement at any instant, independently
+    /// Network permission can revoke manual movement at any instant, independently
     /// of the command lease. It never shortens the lifetime used to decide
     /// whether a relay activation can cover its minimum active time.
     pub fn step(&mut self, input: ActuatorInput, now_ms: u64) -> ActuatorUpdate {
@@ -126,14 +128,25 @@ impl Actuator {
         self.duty.observe(self.guard.actual(), now_ms);
         let interlock = input.interlock.with_travel_profile(self.config.travel);
         self.enforce(&interlock, now_ms);
-        let network_ready = input.network.ready(now_ms);
-        if !network_ready || self.network_generation != input.network.generation() {
+        // Drive and Jog carry device/manual source semantics through the
+        // mailbox. A copied actuator preserves that source on commandless steps.
+        let network_required = match input.command.map(|envelope| envelope.command) {
+            Some(Command::Drive(_)) => false,
+            Some(Command::Jog(_)) => true,
+            _ => self.network_required,
+        };
+        let permitted = !network_required || input.network.ready(now_ms);
+        if !permitted
+            || network_required != self.network_required
+            || (network_required && self.network_generation != input.network.generation())
+        {
             self.guard.command(Command::Inhibit, now_ms);
         }
+        self.network_required = network_required;
         self.network_generation = input.network.generation();
 
         if let Some(envelope) = input.command {
-            let permitted = if !network_ready || self.fault().is_some() {
+            let permitted = if !permitted || self.fault().is_some() {
                 Command::Inhibit
             } else {
                 match interlock.guard_command(envelope.command, now_ms) {
@@ -156,7 +169,9 @@ impl Actuator {
         self.motion.applied(self.guard.actual(), now_ms);
         self.duty.applied(self.guard.actual());
 
-        let network_deadline = network_ready.then(|| input.network.deadline_ms()).flatten();
+        let network_deadline = (network_required && permitted)
+            .then(|| input.network.deadline_ms())
+            .flatten();
         ActuatorUpdate {
             output: self.guard.actual(),
             status: self.status(),

@@ -1,6 +1,6 @@
 mod common;
 
-use common::{full_travel_sample, FULL_TRAVEL_CALIBRATION};
+use common::{full_travel_sample, resting_start, FULL_TRAVEL_CALIBRATION};
 use ezal_core::actuator::ActuatorConfig;
 use ezal_core::drive::{AzimuthDirection, Command, DriveCommand, ElevationDirection, RelayConfig};
 use ezal_core::duty::DutyConfig;
@@ -20,6 +20,31 @@ const CCW: DriveCommand = DriveCommand {
     azimuth: Some(AzimuthDirection::CounterClockwise),
     elevation: None,
 };
+
+#[test]
+fn resting_simulation_rejects_feedback_at_the_exclusive_age_limit() {
+    let pose = Pointing::new(180.0, 45.0);
+    let mut start = resting_start(FULL_TRAVEL_CALIBRATION, pose, [0; 2]);
+    let controller =
+        FollowingController::new(MotorProfile::AC_50HZ, 0.5, RelayConfig::DEFAULT).unwrap();
+    let settings = SimulationSettings {
+        step_ms: 20,
+        scenario: Scenario::NOMINAL,
+    };
+    for (age, accepted) in [
+        (FEEDBACK_MAX_AGE_MS - 1, true),
+        (FEEDBACK_MAX_AGE_MS, false),
+        (FEEDBACK_MAX_AGE_MS + 1, false),
+    ] {
+        start.feedback = full_travel_sample(pose, start.at_ms - age);
+        assert_eq!(
+            Simulation::from_rest(FULL_TRAVEL_CALIBRATION, controller, settings, start).is_ok(),
+            accepted,
+            "feedback age {age}"
+        );
+    }
+}
+
 // Offline output policy: installed relay timing with confirmed AC duty.
 const ACTUATOR: ActuatorConfig = ActuatorConfig {
     duty: DutyConfig::CONFIRMED_AC,

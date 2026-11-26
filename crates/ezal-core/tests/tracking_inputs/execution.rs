@@ -18,6 +18,7 @@ struct Device {
     following_seen: bool,
     applied_transitions: usize,
     event: PassEvent,
+    network_observation: Option<bool>,
 }
 
 impl Device {
@@ -46,6 +47,7 @@ impl Device {
             following_seen: false,
             applied_transitions: 0,
             event: EVENT,
+            network_observation: Some(true),
         };
         for at in (0..=2000).step_by(100) {
             device.state.publish_network(true, at);
@@ -160,7 +162,9 @@ impl Device {
             .advance(self.actuator.actual(), at - self.now)
             .unwrap();
         self.now = at;
-        self.state.publish_network(true, at);
+        if let Some(ready) = self.network_observation {
+            self.state.publish_network(ready, at);
+        }
         // 100 ms paired acquisition followed by the firmware's 100 ms delay.
         if let Some(read) = read.filter(|_| at.is_multiple_of(200)) {
             self.pending
@@ -191,7 +195,10 @@ impl Device {
         };
         let (ticket, current) = self.state.tracking_operation(now, |runtime, obs| {
             runtime.refresh(&[EVENT], revisions, obs).unwrap();
-            (runtime.planning_ticket().unwrap(), obs.clock)
+            (
+                runtime.planning_ticket().unwrap(),
+                runtime.planning_clock(obs.clock),
+            )
         });
         let config = PlanningConfig {
             preparation_timing: ticket.preparation_timing(),
@@ -203,7 +210,7 @@ impl Device {
             InputSettings::default(),
             current,
             execution_window(
-                current.anchor().unwrap(),
+                current.clock().anchor().unwrap(),
                 EVENT.aos_unix_s as u64 * 1000,
                 EVENT.los_unix_s as u64 * 1000,
             )
@@ -231,6 +238,97 @@ impl Device {
                 .unwrap();
         });
     }
+
+    fn replan_with_worker(&mut self) {
+        use ezal_core::coordination::PlanningWorker;
+        let catalog = catalog();
+        let source = |norad| {
+            Some((
+                catalog.snapshot(norad)?,
+                heapless::Vec::from_slice(&[EVENT]).unwrap(),
+            ))
+        };
+        self.state.refresh_tracking(source, self.now);
+        assert!(self.state.tracking().planning_ticket().is_some());
+        let mut worker =
+            PlanningWorker::new(FULL_TRAVEL_CALIBRATION, nominal(), InputSettings::default());
+        for _ in 0..1_000_000 {
+            worker.poll(&mut self.state, source, || self.now);
+            if self.state.tracking().bound_plan().is_some() {
+                return;
+            }
+        }
+        panic!(
+            "worker did not publish: {:?}",
+            self.state.tracking().snapshot()
+        );
+    }
+}
+
+#[test]
+fn armed_worker_replans_after_preview_clock_expiry_and_reports_holdover_through_completion() {
+    let mut device = Device::with_extra_lead(0.0, 45 * 60_000);
+    device.network_observation = Some(false);
+    device.until(2_600_000);
+    assert!(device.state.tracking().clock_holdover());
+    let old = device.state.tracking().bound_plan().unwrap();
+    let old_anchor = old.inputs().clock().anchor();
+    let expected_window = execution_window(
+        old_anchor,
+        EVENT.aos_unix_s as u64 * 1000,
+        EVENT.los_unix_s as u64 * 1000,
+    )
+    .unwrap();
+    assert_eq!(
+        old.inputs()
+            .validate_preview(clock(UTC - 45 * 60_000), device.now),
+        Err(InputError::Timing(TimingError::Uncertainty))
+    );
+    // Wind changes the resting pose enough to invalidate the starting state.
+    let mut pose = device.model.position();
+    pose.elevation_deg += 3.0;
+    device.model =
+        MotorModel::new(MotorProfile::AC_50HZ, FULL_TRAVEL_CALIBRATION, pose, [0; 2]).unwrap();
+    device.pending.clear();
+    device.until(device.now + 3000);
+    device.replan_with_worker();
+    let bound = device.state.tracking().bound_plan().unwrap();
+    assert_eq!(bound.inputs().clock().anchor(), old_anchor);
+    assert_eq!(bound.plan().window, expected_window);
+    let mut wire = String::new();
+    device
+        .state
+        .tracking_telemetry(device.owner, device.now)
+        .write_json(&mut wire)
+        .unwrap();
+    assert!(wire.contains("\"clock_holdover\":true"));
+    device.until(expected_window.aos_at_ms + u64::from(expected_window.duration_ms));
+    assert!(device.ready_seen && device.following_seen);
+    let summary = device.state.tracking().last_summary().unwrap();
+    assert_eq!(summary.termination.reason, TrackingStop::LossOfSignal);
+    assert!(summary.clock_holdover);
+}
+
+#[test]
+fn armed_worker_replaces_a_contradicted_preview_with_the_corrected_clock() {
+    let mut device = Device::new();
+    device.until(3000);
+    let mut corrected = clock(UTC);
+    corrected.synchronize(3000, ntp_sample(UTC + 2000)).unwrap();
+    device.state.publish_clock(corrected, device.now);
+    assert!(device.state.tracking().bound_plan().is_none());
+    device.replan_with_worker();
+    assert_eq!(
+        device
+            .state
+            .tracking()
+            .bound_plan()
+            .unwrap()
+            .inputs()
+            .clock()
+            .anchor(),
+        corrected.anchor().unwrap()
+    );
 }
 
 #[test]
@@ -479,6 +577,142 @@ fn device_prepares_follows_and_finishes_after_browser_disconnect_under_backgroun
 }
 
 #[test]
+fn device_keeps_preparing_and_following_offline_until_los() {
+    for observation in [Some(false), None] {
+        let mut device = Device::with_preparation_offset(5.0);
+        let prep = device.state.tracking().prepare_at_ms().unwrap();
+        device.until(prep + 1000);
+        assert_eq!(
+            device.state.tracking().snapshot().phase,
+            TrackingPhase::Preparing
+        );
+        let run = device.state.tracking().snapshot().run.unwrap();
+        assert!(device.actuator.actual().is_active());
+        let output = device.actuator.actual();
+        let owner = device.state.register_client(device.now);
+        device.network_observation = observation;
+        if let Some(ready) = observation {
+            device.state.publish_network(ready, device.now);
+            device.apply(device.now);
+            assert_eq!(device.actuator.actual(), output);
+        }
+        device.until(device.now + 1000);
+        assert!(!device.state.network().ready(device.now));
+        assert!(device.state.operator(owner, device.now).is_none());
+        assert_eq!(device.state.tracking().snapshot().run, Some(run));
+        device.until(LOS);
+        assert!(device.ready_seen && device.following_seen);
+        let summary = device.state.tracking().last_summary().unwrap();
+        assert_eq!(summary.termination.run, Some(run));
+        assert_eq!(summary.termination.reason, TrackingStop::LossOfSignal);
+        assert!(summary.deviation.maximum_deg.unwrap() < 3.0, "{summary:?}");
+        assert!(!device.actuator.actual().is_active());
+        assert!(!device.actuator.target().is_active());
+    }
+}
+
+#[test]
+fn armed_device_starts_and_completes_offline_without_replanning() {
+    for observation in [Some(false), None, Some(true)] {
+        let mut device = Device::new();
+        let ticket = device.state.tracking().bound_plan().unwrap().ticket();
+        let start_revision = device.state.start_revision();
+        assert_eq!(
+            device.state.tracking().snapshot().phase,
+            TrackingPhase::Armed
+        );
+        device.network_observation = observation;
+        if observation == Some(true) {
+            // The link can drop and recover between two output services.
+            device.state.publish_network(false, device.now);
+            device.state.publish_network(true, device.now);
+        }
+        device.until(device.now + 1000);
+        assert_eq!(device.state.start_revision(), start_revision);
+        assert_eq!(
+            device.state.tracking().bound_plan().unwrap().ticket(),
+            ticket
+        );
+        device.until(LOS);
+        assert!(device.ready_seen && device.following_seen);
+        let summary = device.state.tracking().last_summary().unwrap();
+        assert_eq!(summary.termination.reason, TrackingStop::LossOfSignal);
+        assert!(summary.deviation.maximum_deg.unwrap() < 3.0, "{summary:?}");
+        assert!(!device.actuator.actual().is_active());
+        assert!(!device.actuator.target().is_active());
+    }
+}
+
+#[test]
+fn reconnect_preserves_tracking_output_and_a_new_controller_can_cancel() {
+    let mut device = Device::new();
+    device.until(AOS + 1000);
+    while !device.actuator.actual().is_active() {
+        device.tick(device.now + 10);
+        assert!(device.now < LOS);
+    }
+    let run = device.state.tracking().snapshot().run;
+    let output = device.actuator.actual();
+    device.owner = device.state.register_client(device.now);
+    assert!(device.state.operator(device.owner, device.now).is_some());
+    device.state.publish_network(false, device.now);
+    device.state.publish_network(true, device.now);
+    device.apply(device.now);
+    assert_eq!(device.actuator.actual(), output);
+    assert_eq!(device.state.tracking().snapshot().run, run);
+    assert!(device.state.operator(device.owner, device.now).is_none());
+    device.owner = device.state.register_client(device.now);
+    device.request(1, TrackingAction::Cancel);
+    device.apply(device.now);
+    assert_eq!(
+        device.state.tracking().snapshot().phase,
+        TrackingPhase::Cancelled
+    );
+    assert!(!device.actuator.actual().is_active());
+    assert!(!device.actuator.target().is_active());
+    device.until(device.now + 1000);
+    assert!(!device.actuator.actual().is_active());
+}
+
+#[test]
+fn offline_tracking_still_stops_on_feedback_clock_or_execution_failure() {
+    for failure in 0..3 {
+        let mut device = Device::new();
+        device.until(AOS + 1000);
+        device.network_observation = Some(false);
+        device.state.publish_network(false, device.now);
+        if failure == 0 {
+            let until = device.now + 1000;
+            while device.now < until {
+                device.tick_inner(device.now + 10, None);
+            }
+        } else if failure == 1 {
+            device.state.publish_clock(UtcClock::new(), device.now);
+            device.apply(device.now);
+        } else {
+            device.now += 21;
+            device.apply(device.now);
+            assert_eq!(
+                device
+                    .state
+                    .tracking()
+                    .snapshot()
+                    .termination
+                    .unwrap()
+                    .reason,
+                TrackingStop::ExecutionDeadline
+            );
+        }
+        assert_eq!(
+            device.state.tracking().snapshot().mode,
+            TrackingMode::Manual
+        );
+        assert!(!device.actuator.actual().is_active());
+        assert!(!device.actuator.target().is_active());
+    }
+}
+
+#[test]
 fn delayed_control_or_delayed_drain_inhibits_before_any_pending_relay_can_start() {
     for delayed_drain in [false, true] {
         let mut device = Device::new();
@@ -635,6 +869,15 @@ fn a_disarmed_clock_publication_blocks_preview_and_stops_a_run() {
 
 #[test]
 fn device_late_admission_uses_background_recovery_then_hands_off_to_normal_following() {
+    late_admission_recovery(false);
+}
+
+#[test]
+fn device_plans_and_executes_recovery_while_offline() {
+    late_admission_recovery(true);
+}
+
+fn late_admission_recovery(offline: bool) {
     let mut device = Device::new();
     device.until(AOS + 1000);
     device.owner = device.state.register_client(device.now);
@@ -693,6 +936,10 @@ fn device_late_admission_uses_background_recovery_then_hands_off_to_normal_follo
         device.state.tracking().snapshot().phase,
         TrackingPhase::Reacquiring
     );
+    if offline {
+        device.network_observation = Some(false);
+        device.state.publish_network(false, device.now);
+    }
     let mut recovery_seen = false;
     let mut joined = false;
     while device.now < LOS {

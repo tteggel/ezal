@@ -188,7 +188,6 @@ fn joins_late_and_follows_to_los(synced: u64) {
         at_ms: at,
         feedback: full_travel_sample(pose, at),
         actuator,
-        network: observe(at).network,
     };
     let mut planner = Planner::new(
         inputs.clone(),
@@ -465,28 +464,26 @@ fn cancellation_discards_pending_search_and_retains_final_deviation() {
 }
 
 #[test]
-fn physical_fault_and_network_loss_discard_validated_intercepts() {
-    for physical in [false, true] {
+fn physical_fault_discards_validated_intercepts_even_while_offline() {
+    for offline in [false, true] {
         let mut rig = Rig::new(10.0, [0, 0]);
         rig.entered();
         rig.plan();
         let mut obs = observation(rig.now);
-        let reason = if physical {
-            let mut interlock = FeedbackInterlock::new(full_travel_installed());
-            interlock.publish(rig.feedback.last_valid);
-            rig.actuator.step(
-                ActuatorInput {
-                    interlock,
-                    network: obs.network,
-                    command: None,
-                },
-                rig.now - 1,
-            );
-            TrackingStop::Motion(rig.actuator.fault().unwrap())
-        } else {
+        if offline {
             obs.network.observe(rig.now, false);
-            TrackingStop::NetworkUnavailable
-        };
+        }
+        let mut interlock = FeedbackInterlock::new(full_travel_installed());
+        interlock.publish(rig.feedback.last_valid);
+        rig.actuator.step(
+            ActuatorInput {
+                interlock,
+                network: obs.network,
+                command: None,
+            },
+            rig.now - 1,
+        );
+        let reason = TrackingStop::Motion(rig.actuator.fault().unwrap());
         rig.runtime
             .execution_command(rig.feedback, &rig.actuator, obs);
         assert_eq!(rig.runtime.snapshot().termination.unwrap().reason, reason);
@@ -502,9 +499,7 @@ fn physical_fault_and_network_loss_discard_validated_intercepts() {
             .deviation
             .current
             .is_none());
-        if physical {
-            assert!(rig.actuator.fault().is_some());
-        }
+        assert!(rig.actuator.fault().is_some());
     }
 }
 

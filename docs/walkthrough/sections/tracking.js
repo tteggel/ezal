@@ -836,10 +836,9 @@
   // ── Figure: two clocks tied at one matched pair ──────────────────────────
   {
     // clock.rs: of the 1° held in reserve, 0.5° is left for alignment and orbit and 0.5° goes to timing.
-    // At the planner's 2° per second that is 250 ms. The board's crystal is allowed 100 parts in a million.
+    // At the planner's 2° per second that is 250 ms. Armed passes tolerate oscillator drift during holdover.
     const SPARE_MS = 250;
     const DOUBT_MS = 20;  // how wrong the example's new answer says it might be
-    const DRIFT_MS = Math.round((1949 - 1300) * 100 / 1000);  // from the new answer until the window closes
     const slider = $('tb-clock-gap');
     const description = 'Two timelines, UTC above and uptime below, tied together at one matched pair of readings. ' +
       'Further along, a new time check is compared with the run’s own clock, and a bar shows how much of the ' +
@@ -847,7 +846,7 @@
 
     const repaint = mount('tb-clock-draw', description, (root, w) => {
       const differs = Number(slider.value);
-      const total = Math.abs(differs) + DOUBT_MS + DRIFT_MS;
+      const total = Math.max(0, Math.abs(differs) - DOUBT_MS);
       const stops = total > SPARE_MS;
       const verdict = stops ? C.stop : C.ok;
       const pad = w < 520 ? 34 : 70;
@@ -884,27 +883,27 @@
       dot(root, column(2), uptime, 4, C.navy);
       for (const i of [0, 1, 3]) for (const y of [utc, uptime]) dot(root, column(i), y, 4, C.navy);
 
-      // What the check adds up, against the 250 ms to spare.
+      // The closest possible disagreement after allowing for sample uncertainty.
       const bar = 232;
       const x = ms => pad + ms / 500 * (w - 2 * pad);
-      label(root, 4, bar - 10, 'How much of the 250 ms it uses', strong);
+      label(root, 4, bar - 10, 'Smallest disagreement the answer could mean', strong);
       box(root, x(0), bar, x(500) - x(0), 16, {fill: C.pale});
-      box(root, x(0), bar, x(DOUBT_MS + DRIFT_MS) - x(0), 16, {fill: C.muted});
-      box(root, x(DOUBT_MS + DRIFT_MS), bar, x(Math.min(total, 500)) - x(DOUBT_MS + DRIFT_MS), 16, {fill: verdict});
+      box(root, x(0), bar, x(Math.min(total, 500)) - x(0), 16, {fill: verdict});
+      box(root, x(total), bar, x(Math.min(Math.abs(differs) + DOUBT_MS, 500)) - x(total), 16, {fill: C.muted});
       line(root, x(SPARE_MS), bar - 5, x(SPARE_MS), bar + 21, {stroke: C.warn, 'stroke-width': 2.5});
       label(root, x(SPARE_MS), bar + 37, '250 ms', {'text-anchor': 'middle', fill: C.warn, 'font-size': 13});
       label(root, x(0), bar + 37, '0', {'text-anchor': 'middle', fill: C.muted, 'font-size': 13});
       box(root, 4, bar + 49, 10, 10, {fill: C.muted});
-      label(root, 19, bar + 59, 'uncertainty and drift', {'font-size': 13});
+      label(root, 19, bar + 59, 'uncertainty', {'font-size': 13});
       box(root, 152, bar + 49, 10, 10, {fill: verdict});
-      label(root, 167, bar + 59, 'disagreement', {'font-size': 13});
+      label(root, 167, bar + 59, 'minimum disagreement', {'font-size': 13});
 
       const side = differs < 0 ? 'behind' : 'ahead of';
       slider.setAttribute('aria-valuetext', `${Math.abs(differs)} milliseconds ${side} the run’s clock`);
       $('tb-clock-gap-out').textContent = `${differs < 0 ? '−' : '+'}${Math.abs(differs)} ms`;
       const sum = 'At uptime 1 300 s the run’s clock says 21:45:00.000. The time server’s answer is ' +
-        `${(Math.abs(differs) / 1000).toFixed(3)} s ${side} that. Its own uncertainty (${DOUBT_MS} ms) and the drift ` +
-        `allowed until the window closes (${DRIFT_MS} ms) come on top: ${total} ms, `;
+        `${(Math.abs(differs) / 1000).toFixed(3)} s ${side} that. Its own uncertainty (${DOUBT_MS} ms) ` +
+        `leaves a minimum disagreement of ${total} ms, `;
       if (stops) {
         say($('tb-clock-read'), sum, ['c-stop', 'more than the 250 ms to spare. The run stops.'],
           ' The window would still have opened at uptime 1 220 s: the schedule never moved.');
@@ -937,11 +936,9 @@
       following: ['Following', '#e6d3ee'],
       complete: ['Complete', '#d5eadf'],
       cancelled: ['Cancelled', '#f3e3cf'],
-      stopped: ['Stopped', '#f2d6cf'],
     };
     const MOVING = ['preparing', 'ready', 'following'];
     const ENDINGS = {
-      stopped: ' · Device network unavailable',
       cancelled: ' · Cancelled by controller',
       complete: ' · Pass finished',
     };
@@ -982,9 +979,7 @@
         if (kind === 'cancel') ended = [at, 'cancelled'];
         if (kind === 'wifi') {
           online.push([at, !online.at(-1)[1]]);
-          // Losing the network ends a run that has been armed and has not finished. Nothing brings it back.
-          const running = armed !== null && ended === null && at < CLOSE;
-          if (!online.at(-1)[1] && running) ended = [at, 'stopped'];
+          // An armed pass retains its schedule and execution authority offline.
         }
       }
       if (armed !== null) {
@@ -1033,7 +1028,7 @@
       const rowEnds = [];
       const names = spans(stages).map(([from, to, stage]) => {
         const [name, fill] = STAGES[stage];
-        const stroke = stage === 'stopped' ? C.stop : C.navy;
+        const stroke = C.navy;
         const middle = (x(from) + x(to)) / 2;
         const half = name.length * 3.8 + 4;  // roughly half the width of the name
         const centre = clamp(middle, 6 + half, w - 6 - half);
@@ -1041,7 +1036,7 @@
         if (row < 0) row = rowEnds.length;
         rowEnds[row] = centre + half;
         box(root, x(from), 98, x(to) - x(from), 30, {
-          fill, stroke, 'stroke-width': stage === 'stopped' ? 2 : 1, 'stroke-dasharray': stage === 'idle' ? '4 3' : 'none',
+          fill, stroke, 'stroke-width': 1, 'stroke-dasharray': stage === 'idle' ? '4 3' : 'none',
         });
         line(root, middle, 128, centre, 137 + row * 18, {stroke: C.muted, 'stroke-width': 1});
         return [centre, row, name, stroke, at >= from && at < to];
@@ -1095,10 +1090,6 @@
         complete: ' The window has closed. The Pico has withdrawn its requests and left the dish where it ' +
           'stopped. It will not park it or start another pass.',
         cancelled: ' Someone holding control pressed Cancel tracking. The dish stays where it stopped.',
-        stopped: up
-          ? ' The Pico is back on the network, and the run stays stopped. A new run needs a new preview and a ' +
-            'new press of Enter Tracking.'
-          : ' The Pico lost its own network, so the run ended at once. Nobody could have reached it to cancel.',
       }[stage];
       const absent = holds ? ''
         : !up ? ' No browser can reach the Pico.'
@@ -1204,7 +1195,8 @@
             'Each note is good for 750 ms. No browser is in this loop.'
           : 'A held clockwise button. The browser repeats the request every 150 ms, and each repeat replaces the ' +
             'note and its deadline.',
-        ' The direction task reads the note beside the newest reading and the network permission, and holds ',
+        run ? ' The runtime checks the run before handing over a tracking note. The direction task checks its deadline and the newest reading, and holds '
+          : ' The direction task reads the note beside the newest reading and the network permission, and holds ',
         ['b', 'GP10 high'], '. The switch closes, the G-5500 runs its motor, and the next reading reports the new angle.',
       ],
       quiet: run ? [
@@ -1218,11 +1210,13 @@
         ' after it was written, and the direction task drops the pin when it passes (chapter 3). A connection ' +
         'that closes cleanly is quicker: the Pico knows at once.',
       ],
-      network: [
+      network: run ? [
+        'The Pico loses its own Wi-Fi link or its address. The armed pass keeps its schedule and cached inputs. ',
+        ['b', 'Tracking continues'], '. A browser can claim control and cancel after the network returns.',
+      ] : [
         'The Pico loses its own Wi-Fi link or its address. A good check of the link is trusted for less than ',
         ['b', '300 ms'], '. When it lapses the direction task drops the pin, whatever the note says (chapter 3).',
-        run ? ' The tracking run stops, and does not resume when the network returns.'
-          : ' Control is taken from the browser, too.',
+        ' Control is taken from the browser, too.',
       ],
       reading: [
         'The position readings stop: a broken wire, an ADC that no longer answers. The newest reading keeps ' +
@@ -1253,7 +1247,8 @@
     const repaint = mount('tb-path-draw', description, (root, w) => {
       const run = chosen('tb-path-source') === 'run';
       const name = chosen('tb-path-break');
-      const fault = BREAKS[name];
+      const autonomous = run && name === 'network';
+      const fault = autonomous ? {...BREAKS.none, after: Infinity} : BREAKS[name];
       const bad = C.stop;
       // Six pictures: in a row on a wide page with the reading returning beneath, in a column on a phone
       // with the reading returning up the right-hand side.
@@ -1275,7 +1270,8 @@
       // A link stays solid while something still flows along it once the break has played out.
       const flows = {
         // A tracking run that is stopped or hung writes no more notes; a browser can go on asking in vain.
-        write: !['quiet', 'network', 'stuck'].includes(name) && !(run && ['reading', 'stall', 'hang'].includes(name)),
+        write: !['quiet', 'stuck'].includes(name) && (name !== 'network' || run)
+          && !(run && ['reading', 'stall', 'hang'].includes(name)),
         read: name !== 'hang',
         drive: fault.pin === 'high',
         close: fault.pin === 'high',
@@ -1392,7 +1388,7 @@
       const title = name === 'none' ? 'Nothing broken' : 'Longest the pin can stay high';
       label(root, 12, top, title, {'font-size': 13.5, 'font-weight': 700});
       box(root, x(0), top + 10, x(1000) - x(0), 16, {fill: C.pale});
-      if (name !== 'none') box(root, x(0), top + 10, x(Math.min(fault.after, 1000)) - x(0), 16, {fill: beyond ? bad : C.warn});
+      if (name !== 'none') box(root, x(0), top + 10, x(Math.min(fault.after, 1000)) - x(0), 16, {fill: autonomous ? C.ok : beyond ? bad : C.warn});
       for (const ms of [0, 300, 500, 750, 1000]) {
         const anchor = ms === 0 ? 'start' : ms === 1000 ? 'end' : 'middle';
         line(root, x(ms), top + 26, x(ms), top + 31, {'stroke-width': 1});
@@ -1400,7 +1396,7 @@
         label(root, x(ms), top + 46, tick, {'text-anchor': anchor, fill: C.muted, 'font-size': 13});
       }
       if (beyond) {
-        const limit = fault.after === Infinity ? 'no limit in software' : '5 s of running';
+        const limit = autonomous ? 'tracking continues' : fault.after === Infinity ? 'no limit in software' : '5 s of running';
         label(root, x(1000) - 6, top + 23, limit, {'text-anchor': 'end', fill: '#fff', 'font-size': 13, 'font-weight': 700});
       }
       if (name === 'hang') label(root, x(500) + 6, top + 23, '+ restart, unmeasured', {fill: C.warn, 'font-size': 13});

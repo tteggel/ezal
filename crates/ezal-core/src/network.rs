@@ -1,7 +1,8 @@
-//! Expiring permission to move while the network supervisor reports readiness.
+//! Expiring permission for manual movement and new operator intent.
+//! Armed passes execute under device authority independently of this gate.
 //!
 //! A cached `connected` flag is insufficient: if the task maintaining it stops,
-//! the actuator would keep treating its last successful observation as current.
+//! manual output would keep treating its last successful observation as current.
 //! This small gate gives every observation an absolute deadline. The GPIO owner
 //! evaluates that deadline independently, including while a relay transition is
 //! pending. Link/address recovery grants a new generation, so command sources

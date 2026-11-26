@@ -712,7 +712,7 @@ fn cancellation_and_safety_interruptions_invalidate_pending_worker_and_executor_
     lifecycle.tick(PREP).unwrap();
     let run = lifecycle.snapshot().run.unwrap();
     lifecycle
-        .interrupt(TrackingStop::NetworkUnavailable, PREP)
+        .interrupt(TrackingStop::SourceInvalid, PREP)
         .unwrap();
     assert_eq!(lifecycle.take_command(PREP), Some(CommandEnvelope::INHIBIT));
     assert!(!lifecycle.preparation_ready(run, PREP).unwrap());

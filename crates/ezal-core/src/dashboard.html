@@ -482,8 +482,9 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
       && typeof t.recovery.planning === "boolean" && [t.recovery.attempts, t.recovery.work_steps, t.recovery.remaining_ms].every(Number.isFinite)
       && [t.recovery.launch_in_ms, t.recovery.intercept_in_ms].every(optionalNumber)
       && (t.recovery.hold === null || typeof t.recovery.hold === "string")))
+    && typeof t.clock_holdover === "boolean"
     && (t.summary === null || (t.summary && t.summary.termination && validTermination(t.summary.termination)
-      && validReception(t.summary.reception) && validDeviation(t.summary.deviation)));
+      && typeof t.summary.clock_holdover === "boolean" && validReception(t.summary.reception) && validDeviation(t.summary.deviation)));
 
   const dutyPair = (value) => Array.isArray(value) && value.length === 2
     && value.every((ms) => Number.isSafeInteger(ms) && ms >= 0);
@@ -775,7 +776,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     if (!t) return;
     const elapsed = Math.max(0, now - state.trackingAt);
     const ended = ["complete", "cancelled", "stopped"].includes(t.phase) && t.termination;
-    setText(trackElements.state, known ? `${t.rehearsal ? "Rehearsal" : t.mode === "tracking" ? "Tracking" : "Manual"} · ${t.phase}${state.controller ? " · you have control" : " · viewer"}${ended ? ` · ${trackingReason(t.termination.reason)}` : ""}`
+    setText(trackElements.state, known ? `${t.rehearsal ? "Rehearsal" : t.mode === "tracking" ? "Tracking" : "Manual"} · ${t.phase}${t.clock_holdover ? " · Clock holdover: timing exceeded the pointing budget" : ""}${state.controller ? " · you have control" : " · viewer"}${ended ? ` · ${trackingReason(t.termination.reason)}` : ""}`
       : `Device status unavailable · last known: ${t.mode}, ${t.phase}. Closing this page does not cancel tracking.`);
     const selection = t.selection;
     const name = forecast?.passes.find((p) => p.norad_id === selection?.norad_id)?.name;
@@ -806,7 +807,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     const r = t.recovery;
     setText(trackElements.recovery, r ? `${known ? "Reacquiring" : "Last reported recovery"} · ${trackingReason(r.cause)} · attempt ${r.attempts} · ${r.planning ? "searching" : r.hold ? trackingReason(r.hold) : "moving to intercept"} · ${duration(Math.max(0, r.remaining_ms - (known ? elapsed : 0)))} until fixed deadline.${r.intercept_in_ms === null ? " No validated intercept yet." : ` Predicted join in ${duration(Math.max(0, r.intercept_in_ms - (known ? elapsed : 0)))}; measured recovery still required.`}` : "");
     const summary = t.summary;
-    setText(trackElements.summary, summary ? `Last finished run ${summary.termination.run}: ${trackingReason(summary.termination.reason)}. Peak measured error ${summary.deviation.maximum_deg?.toFixed(2) ?? "—"}°; observed outside tolerance ${duration(summary.deviation.outside_ms)}. ${receptionText(summary.reception)} These windows are predictions, not receiver-lock measurements.`
+    setText(trackElements.summary, summary ? `Last finished run ${summary.termination.run}: ${trackingReason(summary.termination.reason)}. Peak measured error ${summary.deviation.maximum_deg?.toFixed(2) ?? "—"}°; observed outside tolerance ${duration(summary.deviation.outside_ms)}. ${summary.clock_holdover ? "Clock holdover exceeded the planned pointing budget. " : ""}${receptionText(summary.reception)} These windows are predictions, not receiver-lock measurements.`
       : t.termination ? `${trackingReason(t.termination.reason)}. Holding final position.` : "");
   };
 

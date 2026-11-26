@@ -212,6 +212,7 @@ pub struct TrackingTelemetry {
     now_ms: u64,
     rehearsal: bool,
     rehearsal_available_ms: Option<u64>,
+    clock_holdover: bool,
 }
 
 impl TrackingTelemetry {
@@ -259,6 +260,7 @@ impl TrackingTelemetry {
             now_ms,
             rehearsal: runtime.is_rehearsing(),
             rehearsal_available_ms: runtime.rehearsal_available_ms(now_ms),
+            clock_holdover: runtime.clock_holdover(),
         }
     }
 
@@ -279,8 +281,8 @@ impl TrackingTelemetry {
         identity(out, s.run.map(RunToken::serial))?;
         write!(
             out,
-            ",\"rehearsal\":{},\"rehearsal_available_ms\":",
-            self.rehearsal
+            ",\"clock_holdover\":{},\"rehearsal\":{},\"rehearsal_available_ms\":",
+            self.clock_holdover, self.rehearsal
         )?;
         number(out, self.rehearsal_available_ms)?;
         out.write_str(",\"selection\":")?;
@@ -351,7 +353,7 @@ impl TrackingTelemetry {
             reception(out, summary.window, summary.reception)?;
             out.write_str(",\"deviation\":")?;
             deviation(out, summary.deviation, self.now_ms)?;
-            out.write_str("}")?;
+            write!(out, ",\"clock_holdover\":{}}}", summary.clock_holdover)?;
         } else {
             out.write_str("null")?;
         }

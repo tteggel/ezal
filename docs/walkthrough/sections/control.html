@@ -191,16 +191,16 @@
   </figure>
 
   <h3>One look, in a fixed order</h3>
-  <p>Now we can read the function that decides. Each time the direction task wakes, it hands <code>Actuator::step</code> the note if there is one, the latest position reading, the state of the network and the time. It gets back which pins may be high. The order of the lines is the order of the checks.</p>
+  <p>Now we can read the function that decides. Each time the direction task wakes, it hands the actuator the note if there is one, the latest position reading, the network permission and the time. The note distinguishes a manual move from a tracking move; chapter 6 checks the tracking run before its note reaches this function. It gets back which pins may be high. The order of the lines is the order of the checks.</p>
   <figure class="code" data-src="crates/ezal-core/src/actuator.rs" data-comments="omit">
-    <figcaption><code>Actuator::step</code>, up to the point where the answer is known.</figcaption>
-    <pre data-from="pub fn step(&amp;mut self, input: ActuatorInput, now_ms: u64)" data-to="self.duty.applied(self.guard.actual());"></pre>
+    <figcaption>The actuator’s shared output decision, up to the point where the answer is known.</figcaption>
+    <pre data-from="pub fn step(" data-to="self.duty.applied(self.guard.actual());"></pre>
     <ol>
       <li data-at="self.duty.observe(self.guard.actual(), now_ms);">First the bill. Charge the tank for however long the pin has been high since the last look, before anything below can switch it off.</li>
       <li data-at="self.enforce(&amp;interlock, now_ms);">Then whatever is already running is checked again. The position reading must be fresh and the dish clear of the end of its travel (chapter 2). The tank must not be dry. And the dish must be moving the way the pins say: after 5 seconds of running with no change in position, or any movement the wrong way or impossibly fast, both motors are switched off and stay off until the board is restarted.</li>
-      <li data-at="if !network_ready || self.network_generation">The board’s own Wi-Fi link unseen for 300 ms, or lost and found again since the last look: stop both axes.</li>
+      <li data-at="if !permitted">Manual movement stops if the board’s own Wi-Fi link is unseen for 300 ms, or lost and found again since the last look. Changing between manual and tracking movement also clears both axes.</li>
       <li data-at="if let Some(envelope) = input.command">Only now is the note read.</li>
-      <li data-at="match interlock.guard_command(envelope.command, now_ms)">And trimmed. With the network down or a fault standing it becomes a stop. Otherwise any direction the position reading forbids is struck out, and then, in <code>guard_drive</code>, any direction the tank cannot afford. <code>Jog</code> is a move made by hand and <code>Drive</code> a move made by the tracker of chapter 6; they differ only in what letting go means, as the second case above showed.</li>
+      <li data-at="match interlock.guard_command(envelope.command, now_ms)">And trimmed. With permission missing or a fault standing it becomes a stop. Otherwise any direction the position reading forbids is struck out, and then, in <code>guard_drive</code>, any direction the tank cannot afford. <code>Jog</code> is a move made by hand and <code>Drive</code> a move made by the tracker of chapter 6; they differ in what letting go means, as the second case above showed.</li>
       <li data-at=".command_until(permitted, now_ms, envelope.valid_until_ms);">What is left goes to the timing rules, with the note’s own deadline. Because the note is dealt with before any waiting start may go ahead, a stop always wins a tie. That was the fourth case.</li>
       <li data-at="self.guard.update(now_ms);">No note: just move the clocks on. A lease that has run out is cut first; then a waiting start may go ahead.</li>
     </ol>

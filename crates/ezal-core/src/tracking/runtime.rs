@@ -4,11 +4,11 @@
 use super::deviation::DeviationMonitor;
 use super::recovery::Recovery;
 use super::{
-    BoundTrackingPlan, DeviationStatus, ExecutionInputs, FollowingController, InputError,
-    LifecycleError, PassEvent, PlanRevisions, PlanTicket, PlanningError, PlanningReport,
-    PlanningWindow, ReceptionCoverage, RecoveryStatus, RestingStart, RunToken, TimingError,
-    TrackingAction, TrackingLifecycle, TrackingMode, TrackingPhase, TrackingPlan, TrackingRequest,
-    TrackingSnapshot, TrackingStop, TrackingTermination, REACQUISITION_DWELL_MS,
+    BoundTrackingPlan, DeviationStatus, ExecutionClock, ExecutionInputs, FollowingController,
+    InputError, LifecycleError, PassEvent, PlanRevisions, PlanTicket, PlanningClock, PlanningError,
+    PlanningReport, PlanningWindow, ReceptionCoverage, RecoveryStatus, RestingStart, RunToken,
+    TimingError, TrackingAction, TrackingLifecycle, TrackingMode, TrackingPhase, TrackingPlan,
+    TrackingRequest, TrackingSnapshot, TrackingStop, TrackingTermination, REACQUISITION_DWELL_MS,
 };
 use crate::actuator::Actuator;
 use crate::ads1015::FEEDBACK_FULL_SCALE;
@@ -21,8 +21,8 @@ use crate::ntp::{UtcAnchor, UtcClock};
 use crate::operator::{OperatorGrant, OperatorToken};
 use crate::position::{InstalledCalibration, Pointing};
 
-/// Coherent current inputs supplied by the device, never by a browser. A
-/// timestamped network gate detects outages even if it recovers between calls.
+/// Coherent current inputs supplied by the device, never by a browser.
+/// Network permission gates new operator intent; an armed pass is autonomous.
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeObservation {
     /// Current monotonic instant, shared with output leases.
@@ -58,6 +58,8 @@ impl From<InputError> for RuntimeError {
 /// Final pointing metrics paired with their pass/run and termination reason.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrackingSummary {
+    /// Timing exceeded the admitted pointing budget during this armed pass.
+    pub clock_holdover: bool,
     /// Original pass coordinates for the retained predicted reception windows.
     pub window: PlanningWindow,
     /// Frozen prediction retained after LOS/cancellation, including missed reception.
@@ -73,12 +75,32 @@ pub struct TrackingSummary {
 /// duty and motion protection remain the production actuator's responsibility.
 pub struct TrackingRuntime {
     lifecycle: TrackingLifecycle<ExecutionInputs>,
-    network_generation: Option<u64>,
     latest_clock: Option<UtcAnchor>,
+    trusted_clock: Option<ArmedClock>,
+    clock_holdover: bool,
     observed_ms: Option<u64>,
     last_summary: Option<TrackingSummary>,
     /// Some exactly while the lifecycle has a run, once `sync_execution` has run.
     execution: Option<Execution>,
+}
+
+/// Keep the admission policy when invalidation drops the bound inputs, so a
+/// fresh, precise sample can restore planning after retained evidence expires.
+struct ArmedClock {
+    trusted: UtcClock,
+    admission: ExecutionClock,
+}
+
+impl ArmedClock {
+    fn retain_for_planning(&mut self, observation: RuntimeObservation) {
+        if observation.clock.anchor().is_some_and(|anchor| {
+            self.admission
+                .error_ms(anchor, observation.now_ms)
+                .is_ok_and(|error| error <= self.admission.allowance_ms())
+        }) {
+            self.trusted = observation.clock;
+        }
+    }
 }
 
 impl Default for TrackingRuntime {
@@ -92,8 +114,9 @@ impl TrackingRuntime {
     pub const fn new() -> Self {
         Self {
             lifecycle: TrackingLifecycle::new(),
-            network_generation: None,
             latest_clock: None,
+            trusted_clock: None,
+            clock_holdover: false,
             observed_ms: None,
             last_summary: None,
             execution: None,
@@ -121,6 +144,19 @@ impl TrackingRuntime {
     /// Most recent finished run, retained even while another pass is executing.
     pub const fn last_summary(&self) -> Option<TrackingSummary> {
         self.last_summary
+    }
+
+    /// Whether this armed pass has exceeded its admitted timing budget.
+    pub const fn clock_holdover(&self) -> bool {
+        self.clock_holdover
+    }
+
+    /// Preserve the same clock admission when an armed pass needs a new plan.
+    pub fn planning_clock(&self, current: UtcClock) -> PlanningClock {
+        match (self.snapshot().mode, self.trusted_clock.as_ref()) {
+            (TrackingMode::Tracking, Some(clock)) => PlanningClock::Armed(clock.trusted),
+            _ => PlanningClock::Preview(current),
+        }
     }
     /// Active episode and intercept ETA, without renewing its deadline.
     pub fn recovery(&self) -> Option<RecoveryStatus> {
@@ -201,11 +237,6 @@ impl TrackingRuntime {
             return Err(RuntimeError::NetworkUnavailable);
         }
         let result = self.lifecycle.request(request, observation.now_ms)?;
-        if self.lifecycle.snapshot().mode == TrackingMode::Tracking
-            && self.network_generation.is_none()
-        {
-            self.network_generation = Some(observation.network.generation());
-        }
         self.service(observation)?;
         Ok(result)
     }
@@ -245,9 +276,13 @@ impl TrackingRuntime {
         {
             Some(InputError::Binding)
         } else {
-            inputs
-                .validate_preview(observation.clock, observation.now_ms)
-                .err()
+            Self::validate_inputs(
+                &inputs,
+                observation,
+                self.snapshot().mode,
+                &mut self.trusted_clock,
+            )
+            .err()
         };
         if let Some(error) = error {
             self.lifecycle
@@ -295,8 +330,9 @@ impl TrackingRuntime {
         }
         self.sync_execution(now);
         self.check_recovery_schedule(now);
-        if self.lifecycle.snapshot().mode == TrackingMode::Manual {
-            self.network_generation = None;
+        if self.snapshot().mode == TrackingMode::Manual {
+            self.trusted_clock = None;
+            self.clock_holdover = false;
         }
         Ok(())
     }
@@ -332,7 +368,11 @@ impl TrackingRuntime {
             self.execution = state
                 .run
                 .zip(self.lifecycle.bound_plan())
-                .map(|(run, bound)| Execution::new(run, bound.plan()));
+                .map(|(run, bound)| {
+                    let mut execution = Execution::new(run, bound.plan());
+                    execution.clock_holdover = self.clock_holdover;
+                    execution
+                });
         }
         let Some(execution) = self.execution.as_mut() else {
             return;
@@ -535,7 +575,6 @@ impl TrackingRuntime {
                 at_ms: now,
                 feedback,
                 actuator: *actuator,
-                network: observation.network,
             };
             let command = recovery.command(plan, start, now);
             self.lifecycle
@@ -567,12 +606,15 @@ impl TrackingRuntime {
         execution.last_control_at_ms = Some(now);
         if preparing {
             let sample = feedback.last_valid.expect("observed healthy feedback");
-            let age = now.saturating_sub(sample.sampled_at_ms());
-            let acquired = actuator.resting_history(now).is_some_and(|(_, idle)| {
-                idle[0] >= age.saturating_add(plan.actuator.travel.azimuth.coast_ms)
-                    && idle[1] >= age.saturating_add(plan.actuator.travel.elevation.coast_ms)
-            }) && (sample.position().azimuth_deg - target.azimuth_deg).abs()
-                <= plan.config.preparation_tolerance_deg
+            let acquired = RestingStart {
+                at_ms: now,
+                feedback: sample,
+                actuator: *actuator,
+            }
+            .history()
+            .is_some()
+                && (sample.position().azimuth_deg - target.azimuth_deg).abs()
+                    <= plan.config.preparation_tolerance_deg
                 && (sample.position().elevation_deg - target.elevation_deg).abs()
                     <= plan.config.preparation_tolerance_deg;
             if execution
@@ -670,19 +712,16 @@ impl TrackingRuntime {
             self.latest_clock = current;
         }
         let state = self.lifecycle.snapshot();
-        if state.mode == TrackingMode::Tracking
-            && (!observation.network.ready(now)
-                || self
-                    .network_generation
-                    .is_some_and(|generation| generation != observation.network.generation()))
-        {
-            self.lifecycle
-                .interrupt(TrackingStop::NetworkUnavailable, now)?;
-            self.network_generation = None;
-            self.sync_execution(now);
-            return Ok(());
+        if state.mode == TrackingMode::Manual {
+            self.trusted_clock = None;
+            self.clock_holdover = false;
         }
         let Some(bound) = self.lifecycle.bound_plan() else {
+            if !clock_regressed {
+                if let Some(clock) = self.trusted_clock.as_mut() {
+                    clock.retain_for_planning(observation);
+                }
+            }
             return Ok(());
         };
         // At/after LOS, the lifecycle's normal completion/late-preparation rule
@@ -690,38 +729,59 @@ impl TrackingRuntime {
         if state.run.is_some() && now >= bound.inputs().clock().through_ms() {
             return Ok(());
         }
-        let freezing = state.phase == TrackingPhase::Armed
-            && self.lifecycle.prepare_at_ms().is_some_and(|at| now >= at);
         let error = if clock_regressed {
             Some(InputError::Timing(TimingError::ClockOrder))
-        } else if state.run.is_some() {
-            bound
-                .inputs()
-                .validate_execution(observation.clock, now)
-                .err()
         } else {
-            bound
-                .inputs()
-                .validate_preview(observation.clock, now)
-                .and_then(|()| {
-                    if freezing {
-                        bound.inputs().validate_execution(observation.clock, now)
-                    } else {
-                        Ok(())
+            match Self::validate_inputs(
+                bound.inputs(),
+                observation,
+                state.mode,
+                &mut self.trusted_clock,
+            ) {
+                Ok(holdover) => {
+                    self.clock_holdover |= holdover;
+                    if let Some(execution) = self.execution.as_mut() {
+                        execution.clock_holdover |= holdover;
                     }
-                })
-                .err()
+                    None
+                }
+                Err(error) => Some(error),
+            }
         };
         if let Some(error) = error {
             if state.run.is_some() {
                 self.lifecycle.interrupt(TrackingStop::Inputs(error), now)?;
-                self.network_generation = None;
                 self.sync_execution(now);
             } else {
                 self.lifecycle.invalidate_inputs(error, now)?;
             }
         }
         Ok(())
+    }
+    fn validate_inputs(
+        inputs: &ExecutionInputs,
+        observation: RuntimeObservation,
+        mode: TrackingMode,
+        trusted: &mut Option<ArmedClock>,
+    ) -> Result<bool, InputError> {
+        if mode == TrackingMode::Manual {
+            return inputs
+                .validate_preview(observation.clock, observation.now_ms)
+                .map(|()| false);
+        }
+        let clock = trusted.get_or_insert_with(|| ArmedClock {
+            trusted: observation.clock,
+            admission: inputs.clock(),
+        });
+        clock.admission = inputs.clock();
+        let result =
+            inputs.validate_armed(observation.clock, &mut clock.trusted, observation.now_ms);
+        // A replacement may use a precise corrected sample; an executing run
+        // still receives Correction and stops without changing its timeline.
+        if result == Err(InputError::Timing(TimingError::Correction)) {
+            clock.retain_for_planning(observation);
+        }
+        result
     }
     /// Fresh manual intent still passes through the same lease and output gate.
     pub fn manual_command(
@@ -752,7 +812,6 @@ impl TrackingRuntime {
         observation: RuntimeObservation,
     ) -> Result<(), LifecycleError> {
         self.check_inputs(observation)?;
-        self.network_generation = None;
         self.lifecycle.interrupt(reason, observation.now_ms)?;
         self.sync_execution(observation.now_ms);
         Ok(())
@@ -762,6 +821,7 @@ impl TrackingRuntime {
 /// Executor state owned by one run. It begins with the run and is finished
 /// into a [`TrackingSummary`] the instant the run ends.
 struct Execution {
+    clock_holdover: bool,
     run: RunToken,
     window: PlanningWindow,
     reception: ReceptionCoverage,
@@ -776,6 +836,7 @@ struct Execution {
 impl Execution {
     fn new(run: RunToken, plan: &TrackingPlan) -> Self {
         Self {
+            clock_holdover: false,
             run,
             window: plan.window,
             reception: plan.reception(),
@@ -821,6 +882,7 @@ impl Execution {
     fn finish(mut self, termination: TrackingTermination, now_ms: u64) -> TrackingSummary {
         self.monitor.finish(now_ms);
         TrackingSummary {
+            clock_holdover: self.clock_holdover,
             window: self.window,
             reception: self.reception,
             termination,

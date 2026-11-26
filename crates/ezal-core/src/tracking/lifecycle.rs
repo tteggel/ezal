@@ -234,8 +234,6 @@ pub enum TrackingStop {
     InstallationChanged,
     /// Preparation was not established before AOS.
     LatePreparation,
-    /// Device link/address permission was lost; browser loss is separate.
-    NetworkUnavailable,
     /// Frozen plan data could not be evaluated.
     SourceInvalid,
     /// Frozen orbital or clock input failed its execution validity checks;
@@ -375,7 +373,7 @@ struct Receipt {
 
 /// One operator lease, one selection, one plan and one output mailbox. Browser
 /// loss only removes the operator; tracking requests use a separate execution
-/// generation. Keep the final production actuator/network/feedback gates
+/// generation. Keep the final production actuator/feedback gates
 /// downstream of this policy.
 pub struct TrackingLifecycle<S> {
     operator: OperatorLease,
@@ -852,7 +850,8 @@ impl<S> TrackingLifecycle<S> {
 
     /// Publish only the latest completed job. `freeze_before_ms` is an exclusive
     /// admission deadline supplied by the trusted input/clock owner, not a browser.
-    /// `TrackingRuntime` validates inputs through LOS as well as before freezing.
+    /// `TrackingRuntime` checks current clock evidence and orbital validity before
+    /// freezing, then supervises them throughout execution.
     pub fn publish_plan(
         &mut self,
         ticket: PlanTicket,
@@ -1126,7 +1125,7 @@ impl<S> TrackingLifecycle<S> {
         true
     }
 
-    /// Physical/network/source interruption is independent of operator authority.
+    /// Physical/source interruption is independent of operator authority.
     /// Callers pass fault reasons only, so the run ends `Stopped` (see `terminal_phase`).
     pub fn interrupt(&mut self, reason: TrackingStop, now_ms: u64) -> Result<(), LifecycleError> {
         self.advance(now_ms)?;

@@ -60,6 +60,7 @@ fn planned(
         following_seen: false,
         applied_transitions: 0,
         event,
+        network_observation: Some(true),
     };
     for at in (0..=2000).step_by(100) {
         device.state.publish_network(true, at);

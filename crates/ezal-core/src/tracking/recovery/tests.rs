@@ -29,7 +29,6 @@ fn rest(pose: Pointing, now: u64, used: [u64; 2]) -> RestingStart {
         at_ms: now,
         feedback: full_travel_sample(pose, now),
         actuator,
-        network,
     }
 }
 
@@ -211,14 +210,11 @@ fn start_proof_rejects_changed_pose_and_hidden_relay_history() {
     let mut current = start;
     current.at_ms = now;
     current.feedback = full_travel_sample(pose, now);
-    for at in (start.at_ms..=now).step_by(100) {
-        current.network.observe(at, true);
-    }
     service(
         &mut current.actuator,
         pose,
         now,
-        current.network,
+        NetworkGate::new(),
         Command::Inhibit,
     );
     assert!(intercept.start_unchanged(current));
@@ -230,32 +226,27 @@ fn start_proof_rejects_changed_pose_and_hidden_relay_history() {
         azimuth: Some(AzimuthDirection::Clockwise),
         elevation: None,
     });
-    current.network.observe(start.at_ms + 100, true);
     service(
         &mut current.actuator,
         pose,
         start.at_ms + 100,
-        current.network,
+        NetworkGate::new(),
         drive,
     );
-    current.network.observe(start.at_ms + 200, true);
     service(
         &mut current.actuator,
         pose,
         start.at_ms + 200,
-        current.network,
+        NetworkGate::new(),
         Command::Inhibit,
     );
     current.at_ms = now;
     current.feedback = full_travel_sample(pose, now);
-    for at in (start.at_ms + 200..=now).step_by(100) {
-        current.network.observe(at, true);
-    }
     service(
         &mut current.actuator,
         pose,
         now,
-        current.network,
+        NetworkGate::new(),
         Command::Inhibit,
     );
     assert!(!intercept.start_unchanged(current));

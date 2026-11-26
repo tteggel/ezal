@@ -90,6 +90,7 @@ pub struct FeedbackInterlock {
 struct Limits {
     azimuth: AxisLimits,
     elevation: AxisLimits,
+    code_deg: Pointing,
 }
 
 /// One axis's endpoint band, derived once from a validated calibration.
@@ -146,6 +147,7 @@ impl FeedbackInterlock {
         let maximum = calibration.maximum();
         let resolution = calibration.resolution_deg(CODE_ROUNDING_MARGIN_MV);
         let limits = Some(Limits {
+            code_deg: calibration.resolution_deg(0.0),
             azimuth: AxisLimits::new(
                 minimum.azimuth_deg,
                 maximum.azimuth_deg,
@@ -195,6 +197,11 @@ impl FeedbackInterlock {
             limits.azimuth.code_deg,
             limits.elevation.code_deg,
         ))
+    }
+
+    /// Physical ADC step, without the endpoint refusal rounding margin.
+    pub(crate) fn feedback_code_deg(&self) -> Option<Pointing> {
+        Some(self.limits?.code_deg)
     }
 
     /// Limits, position, and age of feedback that currently permits motion.

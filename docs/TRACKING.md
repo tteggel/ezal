@@ -47,11 +47,13 @@ or building obstruction are outside this design.
   result for inspection. Return to Manual keeps the selection, whose preview
   keeps replanning; Cancel clears it, so nothing replans. Another run needs a
   fresh arm.
-- Loss of the device's Wi-Fi link or DHCP address stops the run and
-  invalidates queued output; network recovery never resumes it. A failed
-  internet refresh does not stop a run while its cached orbital and clock data
-  stay valid. Reset always boots in Manual mode with no selection, run or
-  persisted permission.
+- Once armed, a pass starts and finishes even if the device loses Wi-Fi, its
+  DHCP address or internet access. Network loss revokes browser control and
+  stops manual movement, while the armed pass retains its schedule and cached
+  inputs. Reconnection permits a new controller to claim and cancel the same
+  pass. Missed time synchronizations and estimated oscillator drift do not
+  cancel an armed pass. Reset always boots in Manual mode with no selection,
+  run or persisted permission.
 
 ### Operator requests
 
@@ -92,8 +94,8 @@ travel permits, but changing representation alone does not reduce the azimuth
 rate of a near miss of zenith. An over-the-top bridge may offset the sky
 direction on purpose, and every following-error check includes that offset.
 
-The planner needs a serviced, settled copy of the output owner's actuator,
-network generation and fresh feedback acquired after coast. It copies relay
+The planner needs a serviced, settled copy of the output owner's actuator
+and fresh feedback acquired after coast. It copies relay
 availability, duty and supervision history and never mutates live outputs.
 Each candidate is evaluated with the production follower and actuator across
 nine motor and measurement scenarios: nominal, slow and fast rates, mixed axis
@@ -224,20 +226,27 @@ to orbital and starting-state revisions and the preparation schedule. Publishing
 immediately withdraws the previous plan's permission to prepare; only the
 latest job can publish, even if an older job finishes later; an unsupported or
 failed replacement never falls back to an older success. A change in feedback
-health, consumed duty or network generation invalidates a preview's starting
+health or consumed duty invalidates a preview's starting
 state, and so does any output the device drives, and a measured pose more than
-2° from the pose planning started from (or the motion monitor's two codes of
-noise, if larger). Idle feedback flickers by up to five codes near an end stop,
-1.6° of azimuth on the bench; a 2° error lengthens the preparation slew by under
-0.75 s, inside the 20 s scheduled beyond the slowest rehearsal. Fresh ADC
-timestamps and that flicker do not restart planning, while slow drift adds up
-until it does.
+2° from the pose planning started from, or the motion monitor's calibrated
+speed-comparison noise allowance if larger, plus 0.001° for conversion rounding.
+Five ADC counts span about 2.04°
+of installed azimuth travel. Keeping the full noise span avoids repeated
+restarts when the first sample after a move is at either edge of that span.
+The corresponding slew takes under 0.75 s, inside the extra 20 s scheduled
+beyond the slowest rehearsal. Fresh ADC timestamps and that flicker do not
+restart planning, while slow drift adds up until it does.
+
+After movement, the worker waits for a fresh position acquired after both
+axes finish coasting. Live capture and simulation share this admission check;
+an acquisition still covering coast-down cannot leave planning stuck on a
+rejected starting state.
 
 Each published plan carries an exclusive `freeze_before_ms` deadline: its own
 admission deadline, AOS or one millisecond after a late-acquisition entry. The
 plan stays armable only before that instant, while it is the current ticket,
-while its preparation time still fits and while the newest clock sample
-vouches for its timeline.
+while its preparation time still fits and its inputs meet the applicable
+preview or armed timing policy.
 
 Preparation atomically accepts the latest complete, valid plan and freezes its
 orbital elements, observer, clock mapping, motion profile and mechanical route.
@@ -268,7 +277,7 @@ Execution commands are bound to the current run and keep their original source
 deadline of at most
 [`MOVEMENT_LEASE_MS`](CONTROL_CONTRACT.md#ownership-and-recovery); LOS and
 cancellation are checked again on drain. The production actuator remains
-responsible for feedback, network, motion, relay and duty constraints, so a
+responsible for feedback, motion, relay and duty constraints, so a
 change of command source never resets physical accounting.
 
 ## Execution inputs
@@ -289,8 +298,9 @@ as its snapshot.
 [`TrackingRuntime`](../crates/ezal-core/src/tracking/runtime.rs) wraps the
 lifecycle with this input boundary and enforces it before preparation, before
 admitting execution commands and on every mailbox drain. It takes coherent
-device observations, including the timestamped network gate, never a cached
-connected flag. The firmware publishes complete source revisions before
+device observations, with the timestamped network gate required for new
+operator intent. Armed execution does not depend on network readiness or its
+recovery generation. The firmware publishes complete source revisions before
 servicing a simultaneous preparation deadline and supplies current clock and
 network observations on every drain.
 
@@ -311,7 +321,7 @@ the planner's uncertainty allocation for time:
 | Assumption | Default |
 |---|---|
 | Local oscillator drift bound | 100 ppm |
-| Maximum sample age | Six hours, exclusive; angular error usually limits it earlier |
+| Maximum age of retained good time evidence | Six hours, exclusive; previews also enforce the angular budget |
 | Alignment/orbit share of the 1° reserve | 0.5° |
 | Timing share of the 1° reserve | 0.5° |
 | Assumed maximum sky rate | 2°/s |
@@ -319,22 +329,29 @@ the planner's uncertainty allocation for time:
 
 Error grows from a sample by `elapsed × drift_ppm / 1,000,000`: 6 ms per
 minute at 100 ppm, so a sample with 50 ms initial error covers about 33 minutes
-from receipt to LOS.
+from receipt for strict preview admission.
 
 A plan keeps the millisecond anchor it was captured with, and propagation
-always uses it. Each newer sample is compared with that mapping: true UTC lies
-within the sample's uncertainty and drift of the sample's own mapping, and the
-two differ by a constant, so their discrepancy plus that error bounds the
-frozen timeline's. Before preparation the bound must fit the timing share now,
-so a pass can be selected and armed hours ahead while the device keeps
-synchronizing; immediately before preparation, and on every output admission
-after it, the bound must fit through LOS. The plan's own sample is the newest
-until NTP synchronizes again, so its age matters only then. An acceptable
-sample validates the plan without shifting targets or deadlines; repeated small
-corrections cannot move the anchor. An excessive correction, missing time, a
-lapse in synchronization, a stale or reversed clock publication, or unusable
-source data replaces a preview, blocks preparation, or stops the run, with an
-explicit reason.
+always uses it. Before arming, a newer sample's discrepancy from that mapping,
+plus its uncertainty and estimated drift, must fit the timing share now.
+Arming commits to the schedule: missed synchronizations and drift beyond the
+angular budget do not block preparation, replanning or execution. Replanning
+uses retained good time evidence; it does not fall back to strict preview
+admission.
+
+The runtime retains the last sample whose error bound vouches for the timeline.
+That evidence must remain younger than six hours (or the configured shorter
+limit). An imprecise sample cannot extend its age or cancel the pass merely for
+being imprecise. A new sample contradicts the timeline only when its entire
+reported uncertainty interval falls outside the timing allowance. Before
+motion starts, such a correction requests a replacement plan using the new
+clock; during execution it stops the run. Acceptable samples never shift a
+frozen run's targets or deadlines. A disarmed or reversed clock, a leap warning
+or unusable orbital data still blocks preparation or stops execution.
+
+Estimated timing error beyond the angular budget sets `clock_holdover` in live
+telemetry and remains recorded in the final summary. The dashboard explains
+that the planned pointing budget was exceeded, even if the pass reaches LOS.
 
 ## Deviation and reacquisition
 
@@ -377,7 +394,7 @@ the **same frozen mechanical route**:
    must fit the smaller of 2° and the plan's allocation, leaving time for the
    recovery dwell.
 4. Accept the earliest qualifying candidate in this search. At launch, require
-   the same measured pose, policy, network generation and uninterrupted idle
+   the same measured pose, policy and uninterrupted idle
    history; a changed start, missed launch or missed control deadline discards
    the path.
 5. Follow only that validated target with the existing follower and actuator.
@@ -503,7 +520,8 @@ for it before admitting further movement. Its `tracking` projection carries:
 
 - `revision`, `operator`, `mode`, `phase`, `run` and at most one `selection`;
 - `plan.status`, an explicit blocked `reason` and a small supported `preview`;
-- `feedback_stale`, `feedback_age_ms`, `deviation`, `recovery`, `termination`
+- `clock_holdover` (also retained in `summary`), `feedback_stale`,
+  `feedback_age_ms`, `deviation`, `recovery`, `termination`
   and the retained `summary`.
 
 Reception windows and missed intervals are milliseconds relative to their own

@@ -25,7 +25,7 @@ repeats a number.
 | Tracking request: current lease generation and increasing intent number | Protocol admission, then `TrackingLifecycle` | Reject any tracking action from another connection, an expired grant or an old intent number | Claim the lease; send the next intent number |
 | Tracking start or change: current telemetry proof and expected state revision; a selection names a currently offered forecast row | Protocol admission, then `TrackingLifecycle` | Reject Select, Arm and Prepare now; Cancel and Return to Manual skip this rule, so a stale view cannot block a stop | A new request from current telemetry |
 | Tracking mode | `TrackingLifecycle` | Reject manual direction and stop messages | Cancel or Return to Manual |
-| Network observation age, less than 300 ms (`network::NETWORK_HEALTH_TIMEOUT_MS`), renewed every 100 ms (`network::NETWORK_POLL_MS`) | Coordination publishes permission; actuator enforces it | Revoke ownership and clear active and pending movement | New recovery generation and fresh input |
+| Network observation age, less than 300 ms (`network::NETWORK_HEALTH_TIMEOUT_MS`), renewed every 100 ms (`network::NETWORK_POLL_MS`) | Coordination publishes permission; actuator enforces it for manual output | Revoke browser ownership and clear manual movement; an armed pass starts and completes autonomously | New recovery generation and fresh manual input |
 | Command source deadline and unrefreshed lease, at most 750 ms (`drive::MOVEMENT_LEASE_MS`) | Admission stamps; actuator enforces | Clear active and pending movement | A new request, respecting relay off-time |
 | Tracking execution interval, at most the plan's step, 20 ms by default (`tracking::PlanningConfig::step_ms`), outside recovery | `TrackingRuntime` | Stop the run with `ExecutionDeadline`; a stale command cannot start a pending relay | A fresh arm |
 | Motion progress within 5 s of accumulated energized time (`motion::MotionConfig::DEFAULT`), direction and speed | Actuator using applied output | Latch both axes off | Board reset |
@@ -45,8 +45,8 @@ repeats a number.
 - Clear both active and pending requests on inhibition. Recovery alone never
   recreates previous motion. Preserve an unaffected axis's timers and lease.
 - A relay activation requires remaining **command** lifetime and remaining
-  motor duty that each cover the minimum on-time. Feedback and network
-  permission are independently revocable and may cut it short. Their deadlines
+  motor duty that each cover the minimum on-time. Feedback and, for manual
+  output, network permission are independently revocable and may cut it short. Their deadlines
   must not be folded into the activation lifetime.
 - Feedback age is inclusive at its limit; network and command deadlines are
   exclusive. Future timestamps and unrepresentable permission deadlines cannot
@@ -72,6 +72,8 @@ the tracking execution interval is not a physical release guarantee.
 
 All relay/command timing uses monotonic uptime; an armed pass freezes its
 validated UTC-to-uptime mapping before execution.
+Armed passes retain that mapping through missed time synchronizations;
+sample age and estimated oscillator drift alone cannot cancel the pass.
 Every received SNTP sample publishes the clock, whether or not it is accepted;
 reversed uptime or an exhausted revision disarms it until reboot, which stops a
 run with `Inputs(Timing(Unavailable))` and blocks preview.

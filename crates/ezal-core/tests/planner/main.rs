@@ -532,11 +532,10 @@ fn simulation_copies_recent_relay_holds_and_consumed_duty_from_the_output_owner(
         start.feedback = full_travel_sample(Pointing::new(azimuth, 30.0), now);
         let mut interlock = FeedbackInterlock::new(installed);
         interlock.publish(Some(start.feedback));
-        start.network.observe(now, true);
         start.actuator.step(
             ActuatorInput {
                 interlock,
-                network: start.network,
+                network: ezal_core::network::NetworkGate::new(),
                 command: Some(CommandEnvelope {
                     command,
                     valid_until_ms: now + MOVEMENT_LEASE_MS,

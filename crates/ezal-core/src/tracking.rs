@@ -9,7 +9,7 @@
 //! executor generations to an exclusive operator lease. It owns frozen input
 //! snapshots independently of browser connections.
 //! [`TrackingRuntime`] adds validated input publication and execution gating;
-//! firmware uses it to supervise the frozen timeline and device network through
+//! firmware uses it to supervise the retained timeline and execution inputs through
 //! the same coordination/actuator boundary as manual commands. The dashboard
 //! exposes leased selection/arming and a bounded read-only status projection.
 
@@ -35,7 +35,7 @@ pub use deviation::{
     REACQUISITION_LIMIT_MS, REACQUISITION_TOLERANCE_DEG,
 };
 pub use event::{reconcile_event, EventError, EventId, PassEvent};
-pub use inputs::{ExecutionInputs, InputError, InputSettings, PlanningTrack};
+pub use inputs::{ExecutionInputs, InputError, InputSettings, PlanningClock, PlanningTrack};
 pub use lifecycle::{
     BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
     RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingLifecycle,

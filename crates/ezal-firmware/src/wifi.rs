@@ -292,7 +292,7 @@ pub async fn supervise(
                 .is_ok();
                 if configured && network_ready(stack) {
                     retries.connected();
-                    info!("network ready; motion permission available");
+                    info!("network ready; manual motion permission available");
                     let hold = hold_permission(stack, state);
                     if startup_complete {
                         hold.await;
@@ -323,7 +323,7 @@ pub async fn supervise(
                     }
                     _ => error,
                 };
-                warn!("WiFi attempt failed: {}; motion inhibited", error);
+                warn!("WiFi attempt failed: {}; manual motion inhibited", error);
             }
         }
 
@@ -357,7 +357,7 @@ async fn hold_permission(stack: Stack<'_>, state: &SharedState) {
         }
     }
     state.publish_network(false);
-    warn!("network lost or address changed; motion inhibited");
+    warn!("network lost or address changed; manual motion inhibited");
 }
 
 /// Readiness means a current station link and a usable local IPv4 address.
