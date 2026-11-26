@@ -311,6 +311,13 @@ function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = conf
   const clock = new Clock();
   const sockets = [];
   const requests = [];
+  const workers = [];
+  class Worker {
+    constructor(url) { this.url = url; this.terminated = false; workers.push(this); }
+    postMessage(value) { this.input = value; }
+    terminate() { this.terminated = true; }
+    receive(data) { this.onmessage?.({ data }); }
+  }
   let telemetry = {
     tracking: idleTracking(),
     position: { a0_mv: 0, a1_mv: 0 },
@@ -348,6 +355,16 @@ function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = conf
       this.dispatch("message", { data: JSON.stringify(message) });
     }
 
+    planningInput(job, offset, total, bytes) {
+      const frame = new ArrayBuffer(config.planning.headerSize + bytes.length);
+      const header = new DataView(frame);
+      header.setBigUint64(0, BigInt(job), true);
+      header.setUint16(8, offset, true);
+      header.setUint16(10, total, true);
+      new Uint8Array(frame, config.planning.headerSize).set(bytes);
+      this.dispatch("message", { data: frame });
+    }
+
     close() {
       this.readyState = 3;
       this.dispatch("close");
@@ -357,7 +374,7 @@ function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = conf
     document,
     location: { protocol, host: "ezal.local" },
     window,
-    WebSocket,
+    WebSocket, Worker, ArrayBuffer, DataView, Uint8Array,
     performance: { now: () => clock.now },
     AbortController,
     fetch: (url, options) => new Promise((resolve, reject) => {
@@ -379,7 +396,7 @@ function dashboard(protocol = "http:", autoTelemetry = true, clientConfig = conf
     if (sockets.at(-1).readyState === WebSocket.OPEN) freshness();
   }, config.telemetryTimeoutMs / 2, true);
   return {
-    ids, buttons, body, window, document, clock, sockets, freshness, requests,
+    ids, buttons, body, window, document, clock, sockets, freshness, requests, workers,
     async forecast(data, ok = true) {
       requests.at(-1).resolve({ ok, json: async () => data });
       await new Promise((resolve) => setImmediate(resolve));
@@ -1416,4 +1433,116 @@ test("real firmware tracking snapshots render arming, independent following, rec
   assert.match(ui.ids.get("tracking-state").textContent, /complete/);
   assert.match(ui.ids.get("tracking-summary").textContent, /Pass finished/);
   assert.deepEqual(ui.socket.wireMessages, [], "reading status never becomes operator input");
+});
+
+
+function planningProgress(overrides = {}) {
+  return { job: "22", elapsed_ms: 2000, idle_ms: 0, restarts: 0, attempt: 1, restart_reason: "new selection",
+    verifying: false, offload_ready: true, upload_error: false, phase: "scenarios", work_steps: 3000,
+    candidates_done: 2, candidate: 3, scenario: 2, scenarios: 9, partial: false, eta_ms: 5000, upper_ms: 60000, ...overrides };
+}
+function planningPage(progress = planningProgress(), autoTelemetry = true) {
+  const ui = controller(autoTelemetry);
+  const selection = { id: "1", norad_id: "43689", aos_unix_s: 1791385770, los_unix_s: 1791385800, associated: true };
+  ui.freshness({ tracking: idleTracking({ operator: "1", selection, plan: { status: "planning", reason: null, preview: null, progress } }) });
+  return ui;
+}
+test("planning reports progress, estimated ETA, waiting, stalled work and repeated restarts", () => {
+  const ui = planningPage();
+  assert.match(ui.ids.get("tracking-progress").textContent, /scenario 2\/9.*3000 steps.*ETA about 0:05/);
+  ui.freshness({ tracking: { ...ui.telemetry.tracking, plan: { ...ui.telemetry.tracking.plan, progress: planningProgress({ idle_ms: 12000, restarts: 4, restart_reason: "starting pose or motor history changed" }) } } });
+  assert.match(ui.ids.get("tracking-progress").textContent, /No work progress.*Restarted 4.*repeated input changes/);
+  ui.freshness({ tracking: { ...ui.telemetry.tracking, plan: { ...ui.telemetry.tracking.plan, progress: planningProgress({ phase: "waiting_for_rest", eta_ms: null }) } } });
+  assert.match(ui.ids.get("tracking-progress").textContent, /Waiting for fresh, settled feedback.*ETA unavailable/);
+});
+test("browser plan uses current device inputs, uploads a compact result and waits for validation", () => {
+  const ui = planningPage();
+  const button = ui.ids.get("tracking-offload");
+  assert.equal(button.disabled, false);
+  button.dispatch("click");
+  assert.match(ui.socket.messages.at(-1), /^plan:\d+:1:22:get$/);
+  ui.socket.planningInput("22", 0, 2, [0, 1]);
+  assert.equal(ui.workers.length, 1);
+  const worker = ui.workers[0];
+  assert.equal(worker.url, "/planner-worker.js");
+  worker.receive({ status: 0, phase: "scenarios", candidate: 1, scenario: 1, scenarios: 9, work_steps: 2048, elapsed_ms: 100, candidates_done: 0, partial: false });
+  assert.match(ui.ids.get("tracking-browser").textContent, /Browser: scenarios.*ETA estimating/);
+  worker.receive({ status: 1, job: "22", candidate: 1, partial: false, digest: "18446744073709551615" });
+  assert.match(ui.socket.messages.at(-1), /^plan:\d+:1:22:put:1:0:18446744073709551615$/);
+  assert.equal(worker.terminated, true);
+  ui.socket.receive({ type: "planning_result", job: "22", upload: true, ok: true });
+  assert.match(ui.ids.get("tracking-browser").textContent, /validating/);
+  ui.freshness({ tracking: { ...ui.telemetry.tracking, plan: { ...ui.telemetry.tracking.plan, status: "supported", progress: planningProgress({ verifying: true, offload_ready: false, phase: "complete" }) } } });
+  assert.match(ui.ids.get("tracking-browser").textContent, /validated and accepted/);
+  assert.equal(button.disabled, true);
+});
+test("replaced jobs, malformed snapshot chunks and worker failure never upload a plan", () => {
+  for (const cause of ["replace", "malformed", "failure", "stall"]) {
+    const ui = planningPage();
+    ui.ids.get("tracking-offload").dispatch("click");
+    if (cause === "malformed") ui.socket.planningInput("22", 1, 2, [0]);
+    else {
+      ui.socket.planningInput("22", 0, 2, [0, 1]);
+      const worker = ui.workers[0];
+      if (cause === "replace") ui.freshness({ tracking: { ...ui.telemetry.tracking, plan: { ...ui.telemetry.tracking.plan, progress: planningProgress({ job: "23" }) } } });
+      if (cause === "failure") worker.onerror();
+      if (cause === "stall") ui.clock.advance(30000);
+      assert.equal(worker.terminated, true);
+      worker.receive({ status: 1, job: "22", candidate: 1, partial: false, digest: "1" });
+    }
+    assert.ok(!ui.socket.messages.some((m) => m.includes(":put:")), cause);
+    assert.match(ui.ids.get("tracking-browser").textContent, /cancelled|Invalid|failed|stopped reporting/);
+  }
+});
+test("malformed planning telemetry cannot keep observation authority alive", () => {
+  const ui = planningPage(planningProgress(), false);
+  ui.socket.receive({ type: "telemetry", ...ui.telemetry, freshness: { token: "900" }, tracking: { ...ui.telemetry.tracking, plan: { ...ui.telemetry.tracking.plan, progress: planningProgress({ work_steps: -1 }) } } });
+  ui.clock.advance(config.telemetryTimeoutMs + 1);
+  assert.equal(ui.ids.get("status").textContent, "telemetry lost");
+  assert.equal(ui.ids.get("tracking-offload").disabled, true);
+});
+
+
+test("browser ETA uses the planner's actual candidate rounds", () => {
+  for (const [total, expected] of [[config.planning.candidates, "0:11"], [2 * config.planning.candidates, "0:23"]]) {
+    const ui = planningPage();
+    ui.ids.get("tracking-offload").dispatch("click");
+    ui.socket.planningInput("22", 0, 2, [0, 1]);
+    ui.workers[0].receive({ status: 0, phase: "partial_recovery", candidate: 3, scenario: 1, scenarios: 9,
+      work_steps: 2048, elapsed_ms: 1000, candidates_done: 2, candidates_total: total, partial: true });
+    assert.ok(ui.ids.get("tracking-browser").textContent.includes(`ETA about ${expected}`));
+  }
+});
+
+test("uploaded browser results resolve after mismatch, blocked fallback, or an unplanned job", () => {
+  for (const status of ["planning", "blocked", "unplanned"]) {
+    const ui = planningPage();
+    ui.ids.get("tracking-offload").dispatch("click");
+    ui.socket.planningInput("22", 0, 2, [0, 1]);
+    ui.workers[0].receive({ status: 1, job: "22", candidate: 1, partial: false, digest: "1" });
+    ui.socket.receive({ type: "planning_result", job: "22", upload: true, ok: true });
+    assert.match(ui.ids.get("tracking-browser").textContent, /validating/);
+    ui.freshness({ tracking: { ...ui.telemetry.tracking, plan: { status, reason: "Unsupported(None)", preview: null,
+      ...(status === "planning" ? { progress: planningProgress({ upload_error: true }) } : {}) } } });
+    assert.doesNotMatch(ui.ids.get("tracking-browser").textContent, /device is validating/);
+    assert.match(ui.ids.get("tracking-browser").textContent, /failed equivalence|ended without|no longer pending/);
+  }
+});
+
+test("interrupted binary snapshot streams are rejected before starting a worker", () => {
+  const ui = planningPage();
+  ui.ids.get("tracking-offload").dispatch("click");
+  ui.socket.planningInput("22", 0, 4, [0, 1]);
+  assert.equal(ui.workers.length, 0);
+  ui.socket.receive({ type: "planning_result", job: "22", upload: false, ok: false });
+  assert.match(ui.ids.get("tracking-browser").textContent, /rejected or became stale/);
+  assert.equal(ui.workers.length, 0);
+});
+
+test("browser calculation stays disabled in firmware without the WASM feature", () => {
+  const localConfig = configScript.replace('"available":true', '"available":false');
+  const ui = dashboard("http:", true, localConfig);
+  ui.socket.open();
+  ui.freshness({ tracking: idleTracking({ operator: "1", plan: { status: "planning", progress: planningProgress() } }) });
+  assert.equal(ui.ids.get("tracking-offload").disabled, true);
 });

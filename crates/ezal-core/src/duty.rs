@@ -260,3 +260,18 @@ impl DutyMonitor {
             .min()
     }
 }
+
+wire_struct!(DutyConfig {
+    energized_ms,
+    rest_ms
+});
+
+wire_struct!(AxisDuty { used_ms, idle_ms });
+
+wire_struct!(DutyMonitor {
+    config,
+    min_active_ms,
+    axes,
+    observed_ms,
+    startup_rest_required
+});

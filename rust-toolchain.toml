@@ -11,7 +11,7 @@
 # dependencies may use newer editions. Update the pin together with CI checks.
 channel    = "1.99.0"
 components = ["rustfmt", "clippy", "rust-src", "llvm-tools"]
-targets    = ["thumbv8m.main-none-eabihf"]
+targets    = ["thumbv8m.main-none-eabihf", "wasm32-unknown-unknown"]
 profile    = "minimal"
 
 # Why each component:

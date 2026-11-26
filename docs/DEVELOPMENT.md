@@ -148,8 +148,18 @@ Node.js and all — that the build is checked against.
 ### Build the firmware
 
 ```bash
-cargo build -p ezal-firmware --release
+cargo build -p ezal-firmware --release --features browser-planner
 ```
+
+The build also compiles `ezal-wasm` for `wasm32-unknown-unknown` in a separate
+build directory and embeds it in flash with the dashboard worker. The pinned
+toolchain installs both the Pico and WASM targets; no wasm-bindgen or npm step
+is needed. Browser and device planning therefore use the same source checkout.
+`build-uf2.sh` enables `browser-planner` automatically. Plain `cargo check`,
+`clippy`, `doc` and editor builds omit the feature and skip the nested WASM
+build. A firmware build without the feature still plans locally; its dashboard
+disables browser calculation. Add `--features browser-planner` to `cargo run`
+when flashing an image with browser calculation enabled.
 
 The firmware POSTs the ADS1015 and starts with all direction outputs idle.
 Movement requires explicit dashboard input and current feedback and network
@@ -172,7 +182,7 @@ take an elf with `-t elf`. To get a drag-and-drop `.uf2` instead, see
 ### Flash and watch logs
 
 ```bash
-cargo run -p ezal-firmware --release
+cargo run -p ezal-firmware --release --features browser-planner
 ```
 
 This is the *one command you'll run most*. It:
@@ -271,6 +281,7 @@ line.
 ```bash
 ./scripts/test-host.sh
 ./scripts/test-dashboard.sh
+./scripts/test-planning-wasm.sh
 ./scripts/test-build-tools.sh
 ```
 
@@ -280,6 +291,8 @@ line.
 - `test-dashboard.sh` exports the production client configuration with Rust,
   then runs the served JavaScript against a simulated DOM, sockets and timers
   with Node's built-in runner, without npm packages.
+- `test-planning-wasm.sh` compares native Rust with the actual WASM module and
+  served worker across complete, partial, unsupported and failed planning cases.
 - `test-build-tools.sh` runs the firmware build script as a host executable
   with synthetic configuration and substitutes Cargo and picotool to check
   artifact selection; it never reads local credentials or flashes hardware.
@@ -301,12 +314,12 @@ Before pushing:
 ```
 
 The script checks formatting, runs clippy with warnings denied on the host
-build of ezal-core (all targets) and on the firmware binary, and builds both
+build of ezal-core (all targets), the WASM module and the firmware binary, and builds both
 crates' rustdoc with warnings denied, so a broken intra-doc link fails. Use
 `cargo fmt --all` to apply formatting. Firmware has no embedded `libtest`, so
 do not select its test targets with `--workspace --all-targets`.
 
-CI runs the same scripts: the lint script, the three test scripts, and
+CI runs the same scripts: the lint script, the four test scripts, and
 `build-uf2.sh`, uploading the firmware's ELF and UF2 under `dist/`.
 
 ### Build the walkthrough
@@ -328,7 +341,7 @@ To dump the CYW43 radio's own console log, enable the driver's
 diagnostic feature with a debug defmt filter:
 
 ```bash
-DEFMT_LOG=debug cargo run -p ezal-firmware --release --features cyw43/firmware-logs
+DEFMT_LOG=debug cargo run -p ezal-firmware --release --features browser-planner,cyw43/firmware-logs
 ```
 
 ### Watching for file changes

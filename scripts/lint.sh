@@ -9,6 +9,7 @@ HOST=$(rustc --print host-tuple)
 
 cargo fmt --all -- --check
 cargo clippy --locked -p ezal-core --target "$HOST" --all-targets -- -D warnings
+cargo clippy --locked -p ezal-wasm --target wasm32-unknown-unknown -- -D warnings
 # The firmware has no embedded libtest, so clippy checks its binary only.
 cargo clippy --locked -p ezal-firmware --bins -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p ezal-core --target "$HOST"

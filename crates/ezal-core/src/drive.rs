@@ -467,3 +467,24 @@ fn activation_ms(
 
 #[cfg(test)]
 mod tests;
+
+wire_struct!(RelayConfig {
+    min_active_ms,
+    same_direction_off_ms,
+    reversal_off_ms
+});
+
+wire_struct!(AxisRelay<AzimuthDirection> { config, target, actual, last_direction, on_until_ms, off_until_ms, reverse_until_ms });
+
+wire_struct!(AxisRelay<ElevationDirection> { config, target, actual, last_direction, on_until_ms, off_until_ms, reverse_until_ms });
+
+wire_struct!(RelayTiming { azimuth, elevation });
+
+wire_struct!(ActuatorGuard {
+    relays,
+    lease_deadline_ms
+});
+
+wire_enum!(AzimuthDirection { 0 => Clockwise, 1 => CounterClockwise });
+
+wire_enum!(ElevationDirection { 0 => Up, 1 => Down });

@@ -951,6 +951,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ezal-wasm"
+version = "0.1.0"
+dependencies = [
+ "ezal-core",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

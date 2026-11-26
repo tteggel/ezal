@@ -410,3 +410,33 @@ fn partial_admission_does_not_bypass_noisy_scenario_motion_faults() {
         Some(CandidateFailure::Simulation(SimulationError::Motion(_)))
     ));
 }
+
+#[test]
+fn compact_partial_upload_replays_every_original_scenario_and_recovery() {
+    use ezal_core::tracking::offload::UploadedPlan;
+    let plan = late_plan(1000, [1000, 2000], 90_000).plan.unwrap();
+    let upload = UploadedPlan::new(7, &plan);
+    assert!(upload.partial);
+    let mut check = Planner::new(
+        fixed,
+        plan.window,
+        FULL_TRAVEL_CALIBRATION,
+        resting_start(
+            FULL_TRAVEL_CALIBRATION,
+            Pointing::new(180.0, 40.0),
+            [1000, 2000],
+        ),
+        PlanningConfig::default(),
+    )
+    .unwrap();
+    check
+        .verify_candidate(upload.candidate, upload.partial)
+        .unwrap();
+    while !check.is_finished() {
+        check.step().unwrap();
+    }
+    let checked = check.take_report().unwrap().plan.unwrap();
+    assert_eq!(checked.assessment.completed_scenarios, 9);
+    assert_eq!(checked, plan);
+    assert!(upload.matches(&checked));
+}

@@ -54,6 +54,9 @@ fn main() {
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
     // Responsibility 1: `link.x` resolves `INCLUDE memory.x` against this path.
     println!("cargo:rustc-link-search={}", manifest_dir.display());
+    if env::var_os("CARGO_FEATURE_BROWSER_PLANNER").is_some() {
+        build_planner(&manifest_dir);
+    }
     bake_configuration(&manifest_dir);
 }
 
@@ -262,4 +265,56 @@ fn parse_value(key: &str, raw: &str) -> String {
         .find(|&(index, c)| c == '#' && raw[..index].ends_with(char::is_whitespace))
         .map_or(raw.len(), |(index, _)| index);
     raw[..comment].trim().to_string()
+}
+
+/// Build the browser module from this checkout, in a distinct target directory
+/// so nested Cargo never contends with the firmware's build-directory lock.
+fn build_planner(manifest_dir: &Path) {
+    let root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace");
+    for input in [
+        "Cargo.toml",
+        "Cargo.lock",
+        ".cargo/config.toml",
+        "rust-toolchain.toml",
+        "crates/ezal-core/src",
+        "crates/ezal-core/Cargo.toml",
+        "crates/ezal-wasm",
+    ] {
+        println!("cargo:rerun-if-changed={}", root.join(input).display());
+    }
+    let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let target = out.join("planner-build");
+    let status = std::process::Command::new(env::var_os("CARGO").expect("CARGO"))
+        .current_dir(root)
+        .args([
+            "build",
+            "--locked",
+            "--release",
+            "-p",
+            "ezal-wasm",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--target-dir",
+        ])
+        .arg(&target)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS")
+        // A firmware clippy invocation must still produce an ordinary WASM
+        // artifact, without inheriting its workspace lint-driver wrapper.
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("CLIPPY_ARGS")
+        .status()
+        .expect("build browser planner");
+    assert!(
+        status.success(),
+        "browser planner build failed; install the pinned wasm32-unknown-unknown Rust target"
+    );
+    fs::copy(
+        target.join("wasm32-unknown-unknown/release/ezal_wasm.wasm"),
+        out.join("planner.wasm"),
+    )
+    .expect("embed planner WASM");
 }

@@ -215,6 +215,10 @@ impl<E: Ephemeris> Planner<E> {
                 end_ms: gap.missed.end_ms,
             })
             .expect("one gap");
+        if self.verification_active() {
+            self.finish_verification(Some(reception));
+            return Ok(());
+        }
         self.report.closest_attempt = Some(self.assessment.clone());
         self.report.plan = Some(TrackingPlan {
             reception,

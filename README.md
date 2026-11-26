@@ -43,7 +43,7 @@ cp .env.example .env && $EDITOR .env
 
 # Build/flash firmware and stream defmt logs.
 # Complete calibration before commanding the connected rotator.
-cargo run -p ezal-firmware --release
+cargo run -p ezal-firmware --release --features browser-planner
 ```
 
 If you don't have a debug probe handy, build a UF2 image and drag-and-drop

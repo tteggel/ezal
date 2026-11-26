@@ -46,7 +46,7 @@ fi
 # Diagnostics stay on stderr while compiler-artifact messages go to this file.
 BUILD_MESSAGES=$(mktemp)
 trap 'rm -f -- "$BUILD_MESSAGES"' EXIT
-cargo build --locked -p ezal-firmware --bin ezal-firmware \
+cargo build --locked -p ezal-firmware --bin ezal-firmware --features browser-planner \
     ${PROFILE_FLAG} "$@" --message-format=json-render-diagnostics > "${BUILD_MESSAGES}"
 ELF=$(jq -ers '
     [.[] | select(.reason == "compiler-artifact")

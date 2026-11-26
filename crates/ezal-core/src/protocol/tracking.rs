@@ -26,12 +26,14 @@ use crate::tracking::{
 impl CoordinationState {
     /// Copy a bounded read-only projection, without servicing or renewing a run.
     pub fn tracking_telemetry(&self, client_id: u32, now_ms: u64) -> TrackingTelemetry {
-        TrackingTelemetry::capture(
+        let mut telemetry = TrackingTelemetry::capture(
             self.tracking(),
             self.feedback(),
             self.operator(client_id, now_ms),
             now_ms,
-        )
+        );
+        telemetry.planning = self.planning_status();
+        telemetry
     }
 
     /// Validate browser intent against its actual connection and current device
@@ -83,11 +85,7 @@ pub struct TrackingIntent {
 
 impl TrackingIntent {
     pub(super) fn parse(message: &str) -> Option<Self> {
-        fn decimal<T: core::str::FromStr>(s: &str) -> Option<T> {
-            (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-                .then(|| s.parse().ok())
-                .flatten()
-        }
+        use super::decimal;
         let mut fields = message.split(':');
         let proof = decimal(fields.next()?)?;
         let lease = decimal(fields.next()?)?;
@@ -201,6 +199,7 @@ struct Preview {
 /// Small copy taken alongside manual telemetry under the same state borrow.
 #[derive(Clone, Copy, Debug)]
 pub struct TrackingTelemetry {
+    planning: Option<crate::coordination::PlanningStatus>,
     snapshot: TrackingSnapshot,
     operator: Option<u64>,
     preview: Option<Preview>,
@@ -227,6 +226,7 @@ impl TrackingTelemetry {
             .last_valid
             .and_then(|s| now_ms.checked_sub(s.sampled_at_ms()));
         Self {
+            planning: None,
             snapshot: runtime.snapshot(),
             operator: operator.map(|g| g.token.generation()),
             preview: runtime.bound_plan().map(|bound| {
@@ -301,6 +301,18 @@ impl TrackingTelemetry {
             write!(out, "\"{problem:?}\"")?;
         } else {
             out.write_str("null")?;
+        }
+        if let Some(p) = self.planning {
+            write!(out, ",\"progress\":{{\"job\":\"{}\",\"elapsed_ms\":{},\"idle_ms\":{},\"restarts\":{},\"attempt\":{},\"restart_reason\":\"{}\",\"verifying\":{},\"offload_ready\":{},\"upload_error\":{},\"eta_ms\":", p.job, self.now_ms.saturating_sub(p.started_at_ms), self.now_ms.saturating_sub(p.last_progress_at_ms), p.restarts, p.attempt, p.restart_reason, p.verifying, p.offload_ready, p.upload_error)?;
+            number(out, p.eta_ms)?;
+            out.write_str(",\"upper_ms\":")?;
+            number(out, p.upper_ms)?;
+            if let Some(w) = p.work {
+                write!(out, ",\"phase\":\"{}\",\"work_steps\":{},\"candidates_done\":{},\"candidate\":{},\"scenario\":{},\"scenarios\":{},\"partial\":{}", w.phase, w.work_steps, w.candidates_done, w.candidate, w.scenario, w.scenarios, w.partial)?;
+            } else {
+                out.write_str(",\"phase\":\"waiting_for_rest\",\"work_steps\":0,\"candidates_done\":0,\"candidate\":0,\"scenario\":0,\"scenarios\":0,\"partial\":false")?;
+            }
+            out.write_str("}")?;
         }
         out.write_str(",\"preview\":")?;
         if let Some(p) = self.preview {

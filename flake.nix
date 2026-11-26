@@ -103,7 +103,7 @@
             echo "  probe-rs: $(probe-rs --version 2>/dev/null | head -1 || echo 'missing')"
             echo "  python:   $(python3 --version 2>/dev/null || echo 'missing') + schemdraw"
             echo
-            echo "  Build & flash : cargo run   -p ezal-firmware --release"
+            echo "  Build & flash : cargo run   -p ezal-firmware --release --features browser-planner"
             echo "  Build UF2     : ./scripts/build-uf2.sh   (BOOTSEL flashing)"
             echo "  Host tests    : ./scripts/test-host.sh"
             echo "  Dashboard     : ./scripts/test-dashboard.sh"

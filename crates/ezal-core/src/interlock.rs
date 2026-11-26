@@ -292,3 +292,10 @@ impl FeedbackInterlock {
         }
     }
 }
+
+wire_struct!(AxisTravel {
+    max_speed_deg_per_s,
+    coast_ms
+});
+
+wire_struct!(TravelProfile { azimuth, elevation });

@@ -326,3 +326,11 @@ words such as "provisional" state a fact and stay. A value that a constant owns
 is linked, not restated. A module doc states what the module owns and where its
 boundary is, links the datasheet or specification instead of teaching the
 technology, and never addresses the reader.
+
+
+Browser planning uses `ezal-wasm`, a thin ABI around the same core planner.
+`coordination::PlanningWorker` exports bounded immutable inputs and independently
+validates an uploaded candidate before publishing through `TrackingRuntime`.
+The browser never supplies authoritative source revisions, actuator history or
+execution timing. See [planning feedback and browser calculation](TRACKING.md#planning-feedback-and-browser-calculation)
+for progress, equivalence, transport and admission rules.

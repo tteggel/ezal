@@ -492,6 +492,73 @@ device state and never resends an earlier intent, and the dashboard never
 retries an action automatically. A rejected or unacknowledged action is
 visible.
 
+### Planning feedback and browser calculation
+
+The planning status identifies the immutable device job and reports its phase,
+route/scenario counters, work steps, elapsed time and time since work last
+advanced. Waiting for fresh, settled feedback is distinct from active search.
+Ten seconds without work produces a possible-stall or recovery-pause message;
+stale telemetry reports unavailable status rather than pretending work is
+continuing. Job restarts include their count and changed-input reason, with
+repeated restarts called out after three. An attempt counter makes the switch
+to browser validation, and a rejected upload's local fallback, visible too.
+Terminal input, propagation, geometry-capacity and work-limit failures retain
+the lifecycle's explicit blocked reason. Unsupported search results remain
+separate from planner errors.
+
+ETA is an estimate from completed candidates and elapsed time, available after
+two candidates and one second. Early rejection makes route costs vary, and a
+partial-reception fallback adds a second search round. Until there is enough
+evidence the UI says it is estimating; waiting inputs have no ETA. A separate
+work-limit ceiling extrapolates the remaining hard step allowance at the
+measured rate. Neither is a guaranteed wall-clock deadline or an execution
+permission.
+
+**Calculate in this browser** starts the same `ezal-core::tracking::Planner`
+inside a Web Worker. The controller receives a device-issued, versioned snapshot
+of the exact resting actuator (including relay, motion-monitor and duty history),
+calibration, scenarios, preparation schedule, execution window, station geometry
+and minute-spaced orbital state knots. Integers and IEEE float bits are encoded
+explicitly, without Rust memory layout or decimal conversions. The ordinary
+planner remains a fallback while the browser searches. Export happens after
+geometry has populated every knot, so it adds no burst of SGP4 propagation.
+`PlanningTrack` and its portable `PreparedTrack` call the same interpolation
+function. Live execution still propagates the frozen orbital inputs directly.
+
+An uploaded plan is compact: job identity, finite candidate index, complete or
+partial search, and a fingerprint of the full chosen result. The candidate is a
+reproducible recipe for the route, so the browser need not upload thousands of
+knots or authoritative feasibility claims. The device independently rebuilds
+and simulates that candidate, including every scenario, preparation, partial
+recovery and final coast, and requires the result to match. The fingerprint is
+an equivalence check, not a security credential. This offloads route search;
+the winning candidate's validation still takes device time. Independent
+validation proves that candidate's feasibility; it does not prove that an
+untrusted browser searched every candidate or chose the highest-ranked one.
+The shipped WASM runs the complete unchanged search, and equivalence tests
+check its selected result against native Rust.
+
+The current controller lease, connection, fresh observation, network generation
+and immutable ticket gate uploads. One upload can enter validation per job;
+duplicate, stale, replaced and cancelled jobs cannot publish. A mismatch or
+unsupported candidate resumes local search and disables further uploads for
+that job. Verification waits for the next candidate boundary, then reuses the
+same workspace while retaining the original resting snapshot, completed
+candidates and best local result. Publication still uses the existing source, clock, starting-state,
+preparation, expiry and rehearsal checks. Uploading never arms a pass or moves
+the dish. Closing or hiding the page cancels its worker; device planning and
+armed execution continue. Accepted plans retain their browser-validation
+provenance in telemetry until their bound job is replaced.
+
+Firmware built with `--features browser-planner` compiles `ezal-wasm` from the
+same checkout and embeds the module and worker script at `/planner.wasm` and
+`/planner-worker.js`. Both assets support ETag revalidation, so repeated
+calculations can reuse downloaded bytes and a reflash invalidates cached
+content. The UF2 build script enables this feature; checks and editor builds
+omit it. The
+input slot is bounded to 4 KiB. Seven HTTP acceptors retain the existing
+192 KiB stack reserve; WASM occupies flash and executes in the browser.
+
 ## Wire contract
 
 The `/ws` connection carries manual and tracking traffic, and each `/api/passes`
@@ -519,7 +586,8 @@ authoritative for mode, selection and execution state, and the browser waits
 for it before admitting further movement. Its `tracking` projection carries:
 
 - `revision`, `operator`, `mode`, `phase`, `run` and at most one `selection`;
-- `plan.status`, an explicit blocked `reason` and a small supported `preview`;
+- `plan.status`, an explicit blocked `reason`, a small supported `preview`,
+  and optional `progress` for a pending or accepted device job;
 - `clock_holdover` (also retained in `summary`), `feedback_stale`,
   `feedback_age_ms`, `deviation`, `recovery`, `termination`
   and the retained `summary`.
@@ -535,6 +603,22 @@ outside it into the bounded telemetry buffer; an encoding failure closes the
 session without touching the running pass.
 [`tracking-telemetry.json`](../crates/ezal-core/tests/fixtures/tracking-telemetry.json)
 pins the format and feeds the dashboard tests.
+
+Browser planning uses the same connection:
+
+```text
+plan:<proof>:<lease>:<job>:get
+plan:<proof>:<lease>:<job>:put:<candidate>:<partial-0-or-1>:<digest>
+```
+
+Input replies are ordered binary WebSocket messages: a little-endian `job`
+(u64), `offset` (u16) and `total` (u16), followed by up to one configured chunk
+of snapshot bytes. The dashboard reads candidate, input and chunk limits from
+`dashboard-config.js`. A JSON `planning_result` carries `job`, `upload` and
+`ok`; a successful download acknowledgement means every chunk was sent, and a
+successful upload acknowledgement means queued for validation. Subsequent
+telemetry is authoritative for acceptance. These frames issue no freshness
+proof and renew no authority.
 
 ## Verification
 
@@ -584,3 +668,15 @@ planner, so these are integration checks under shared physical assumptions,
 not evidence for those assumptions. They use synthetic 450°/180° travel and
 confirmed-AC duty; the installed travel, relay timing, tolerance and scenarios
 are unchanged.
+
+
+`./scripts/test-planning-wasm.sh` compares native Rust, the actual WASM module
+with multiple batch sizes, and the served worker script. The corpus covers
+nominal and nine-scenario complete plans, partial reception, unsupported search,
+invalid configuration and propagation failure through a maximum-length window.
+Native checks also compare the complete report against lazy device knots and
+compare every field of the winning plan against independent candidate replay.
+`planning_offload.rs` exercises upload admission, delayed publication, stale
+jobs, duplicates, malformed snapshots and mismatched-result fallback. These are
+software equivalence checks; device/browser timing and stack high-water use
+still need measurement on the installed hardware.

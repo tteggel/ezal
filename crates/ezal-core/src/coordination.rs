@@ -29,7 +29,7 @@ use crate::tracking::{
 
 mod planning;
 
-pub use planning::{PlanningUnit, PlanningWorker, TrackingSource};
+pub use planning::{PlanningStatus, PlanningUnit, PlanningWorker, TrackingSource};
 
 struct StartupRestOverride {
     operator: OperatorToken,
@@ -77,6 +77,7 @@ pub struct CoordinationState {
     start_revision: u64,
     start_identity: Option<(Pointing, [u64; 2])>,
     startup_rest_override: Option<StartupRestOverride>,
+    planning: planning::PlanningState,
 }
 
 impl Default for CoordinationState {
@@ -100,6 +101,7 @@ impl CoordinationState {
             start_revision: 1,
             start_identity: None,
             startup_rest_override: None,
+            planning: planning::PlanningState::new(),
         }
     }
 

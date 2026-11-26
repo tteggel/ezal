@@ -392,3 +392,43 @@ impl MotionMonitor {
             .map(|deadline| deadline.max(now_ms))
     }
 }
+
+wire_struct!(MotionConfig {
+    progress_timeout_ms,
+    progress_codes,
+    noise_codes,
+    speed_noise_codes
+});
+
+wire_struct!(Sample {
+    position_deg,
+    timestamp_ms
+});
+
+wire_struct!(Progress {
+    anchor_deg,
+    energized_ms
+});
+
+wire_struct!(AxisMonitor {
+    applied,
+    last_direction,
+    run_started_ms,
+    stopped_ms,
+    coast_observation_pending,
+    direction_extreme_deg,
+    speed_anchor,
+    sample,
+    progress
+});
+
+wire_struct!(MotionMonitor {
+    config,
+    travel,
+    azimuth,
+    elevation,
+    serviced_ms,
+    fault
+});
+
+wire_enum!(MotionFault { 0 => InvalidConfiguration, 1 => ClockWentBackwards, 2 => AzimuthNoProgress, 3 => ElevationNoProgress, 4 => AzimuthWrongDirection, 5 => ElevationWrongDirection, 6 => AzimuthImplausibleSpeed, 7 => ElevationImplausibleSpeed });

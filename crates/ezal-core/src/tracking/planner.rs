@@ -390,6 +390,13 @@ struct RunMetrics {
     truncated: bool,
 }
 
+struct Verification {
+    upload: super::offload::UploadedPlan,
+    // Start verification only between local candidates, so the workspace can
+    // be reused while the original report and all completed work stay intact.
+    resume: Option<(usize, bool)>,
+}
+
 /// One `step` performs at most one sky look-up and one simulator service, or
 /// bounded route bookkeeping. No allocation, waiting, networking or live GPIO.
 /// The caller yields between steps and can cancel at any phase.
@@ -403,6 +410,9 @@ pub struct Planner<E> {
     geometry_step_ms: u32,
     phase: Phase,
     candidate: usize,
+    single_candidate: bool,
+    verification: Option<Verification>,
+    verification_result: Option<bool>,
     route: Route,
     bridge: Option<Bridge>,
     build_index: usize,
@@ -499,6 +509,9 @@ impl<E: Ephemeris> Planner<E> {
             geometry_step_ms: 2_000,
             phase: Phase::Geometry,
             candidate: 0,
+            single_candidate: false,
+            verification: None,
+            verification_result: None,
             route: Route {
                 choice,
                 points: Vec::new(),
@@ -526,6 +539,114 @@ impl<E: Ephemeris> Planner<E> {
         })
     }
 
+    /// Restrict a fresh planner to a browser's chosen candidate. Geometry,
+    /// preparation, every scenario, recovery and final coast still run here.
+    pub fn verify_candidate(&mut self, candidate: u8, partial: bool) -> Result<(), PlanningError> {
+        if self.report.work_steps != 0 || usize::from(candidate) >= route::CANDIDATES {
+            return Err(PlanningError::Configuration);
+        }
+        self.candidate = usize::from(candidate);
+        self.route.choice = route::choice(self.candidate);
+        self.assessment = Assessment::new(self.route.choice);
+        self.partial_round = partial;
+        self.single_candidate = true;
+        Ok(())
+    }
+
+    /// Queue an uploaded candidate for the next local candidate boundary. The
+    /// same workspace validates it, retaining the local report and next route.
+    pub fn queue_verification(&mut self, upload: super::offload::UploadedPlan) -> bool {
+        if self.is_finished()
+            || self.single_candidate
+            || self.verification.is_some()
+            || usize::from(upload.candidate) >= route::CANDIDATES
+        {
+            return false;
+        }
+        self.verification = Some(Verification {
+            upload,
+            resume: None,
+        });
+        self.verification_result = None;
+        true
+    }
+
+    /// Consume the receipt's equivalence result. A rejected receipt has already
+    /// restored the next local candidate, with the original captured inputs.
+    pub fn take_verification_result(&mut self) -> Option<bool> {
+        self.verification_result.take()
+    }
+
+    fn verification_active(&self) -> bool {
+        self.verification
+            .as_ref()
+            .is_some_and(|v| v.resume.is_some())
+    }
+
+    fn finish_verification(&mut self, reception: Option<ReceptionCoverage>) {
+        let verification = self.verification.take().expect("active verification");
+        let matched = reception.is_some_and(|reception| {
+            super::offload::PlanIdentity {
+                route: &self.route,
+                window: &self.window,
+                config: &self.config,
+                calibration: &self.calibration,
+                actuator: self.start.actuator.configuration(),
+                assessment: &self.assessment,
+                reception,
+            }
+            .fingerprint()
+                == verification.upload.digest
+        });
+        self.verification_result = Some(matched);
+        if matched {
+            self.report.plan = Some(TrackingPlan {
+                reception: reception.unwrap(),
+                route: self.route.clone(),
+                window: self.window,
+                config: self.config.clone(),
+                calibration: self.calibration,
+                actuator: self.start.actuator.configuration(),
+                assessment: self.assessment.clone(),
+            });
+            self.phase = Phase::Complete;
+        } else {
+            let (candidate, partial_round) = verification.resume.expect("candidate boundary");
+            self.candidate = candidate;
+            self.partial_round = partial_round;
+            self.reset_candidate();
+        }
+    }
+
+    /// Read-only work counters. A phase may repeat for different candidates;
+    /// the total step count never goes backwards within one planner instance.
+    pub fn progress(&self) -> PlannerProgress {
+        PlannerProgress {
+            phase: match self.phase {
+                Phase::Geometry => "geometry",
+                Phase::Build => "route",
+                Phase::Probe => "preparation",
+                Phase::Verify => "scenarios",
+                Phase::PartialPrefix => "partial_prefix",
+                Phase::PartialSettle => "partial_settle",
+                Phase::PartialSearch => "partial_recovery",
+                Phase::Complete => "complete",
+            },
+            work_steps: self.report.work_steps,
+            candidates_done: self.report.evaluated_candidates + self.report.geometry_rejections,
+            candidates_total: route::CANDIDATES
+                * if self.partial_round && self.start.at_ms < self.window.aos_at_ms {
+                    2
+                } else {
+                    1
+                },
+            candidate: (self.candidate + 1).min(route::CANDIDATES),
+            scenario: (self.scenario + 1).min(self.config.scenarios.len()),
+            scenarios: self.config.scenarios.len(),
+            partial: self.partial_round,
+        }
+    }
+
     /// True after a terminal error, complete search or validated partial fallback.
     pub fn is_finished(&self) -> bool {
         self.phase == Phase::Complete || self.error.is_some()
@@ -533,6 +654,10 @@ impl<E: Ephemeris> Planner<E> {
     /// Borrow the exact immutable ephemeris captured for this work.
     pub const fn source(&self) -> &E {
         &self.source
+    }
+    /// Original serviced resting snapshot, retained throughout verification.
+    pub const fn resting_start(&self) -> RestingStart {
+        self.start
     }
     /// Move out the completed report without moving the large planner workspace.
     /// A failed job returns its error, an unfinished or already-taken one
@@ -555,6 +680,14 @@ impl<E: Ephemeris> Planner<E> {
         if self.phase == Phase::Complete {
             return Ok(());
         }
+        if self.phase == Phase::Build && self.build_index == 0 {
+            if let Some(verification) = self.verification.as_mut().filter(|v| v.resume.is_none()) {
+                verification.resume = Some((self.candidate, self.partial_round));
+                self.candidate = usize::from(verification.upload.candidate);
+                self.partial_round = verification.upload.partial;
+                self.reset_candidate();
+            }
+        }
         self.report.work_steps += 1;
         let result = if self.report.work_steps > MAX_PLANNING_STEPS {
             Err(PlanningError::WorkLimit)
@@ -574,6 +707,10 @@ impl<E: Ephemeris> Planner<E> {
             }
         };
         if let Err(error) = result {
+            if self.verification_active() && error != PlanningError::WorkLimit {
+                self.finish_verification(None);
+                return Ok(());
+            }
             self.error = Some(error);
             self.report.plan = None;
             self.sim = None;
@@ -644,13 +781,15 @@ impl<E: Ephemeris> Planner<E> {
     }
 
     fn next_candidate(&mut self) {
-        self.sim = None;
-        self.partial = None;
-        self.partial_cut = None;
+        if self.verification_active() {
+            self.finish_verification(None);
+            return;
+        }
+        if self.single_candidate {
+            self.phase = Phase::Complete;
+            return;
+        }
         self.candidate += 1;
-        self.build_index = 0;
-        self.scenario = 0;
-        self.route.points.clear();
         if self.candidate == route::CANDIDATES {
             if self.report.plan.is_none() && !self.partial_round {
                 self.partial_round = true;
@@ -660,6 +799,16 @@ impl<E: Ephemeris> Planner<E> {
                 return;
             }
         }
+        self.reset_candidate();
+    }
+
+    fn reset_candidate(&mut self) {
+        self.sim = None;
+        self.partial = None;
+        self.partial_cut = None;
+        self.build_index = 0;
+        self.scenario = 0;
+        self.route.points.clear();
         self.route.choice = route::choice(self.candidate);
         self.assessment = Assessment::new(self.route.choice);
         self.phase = Phase::Build;
@@ -670,7 +819,7 @@ impl<E: Ephemeris> Planner<E> {
             self.bridge = route::bridge(&self.geometry, self.route.choice);
             if matches!(self.route.choice.kind, RouteKind::OverTop { .. }) && self.bridge.is_none()
             {
-                self.report.geometry_rejections += 1;
+                self.report.geometry_rejections += usize::from(!self.verification_active());
                 self.next_candidate();
                 return;
             }
@@ -681,7 +830,7 @@ impl<E: Ephemeris> Planner<E> {
             self.bridge,
         );
         if !Pointing::new(point.az, point.el).is_valid_for(self.calibration) {
-            self.report.geometry_rejections += 1;
+            self.report.geometry_rejections += usize::from(!self.verification_active());
             self.next_candidate();
             return;
         }
@@ -692,7 +841,7 @@ impl<E: Ephemeris> Planner<E> {
             .expect("same capacity as geometry");
         self.build_index += 1;
         if self.build_index == self.geometry.len() {
-            self.report.evaluated_candidates += 1;
+            self.report.evaluated_candidates += usize::from(!self.verification_active());
             self.phase = Phase::Probe;
             if self.start.at_ms >= self.window.aos_at_ms && self.partial_round {
                 self.begin_partial(None);
@@ -1042,6 +1191,14 @@ impl<E: Ephemeris> Planner<E> {
     }
 
     fn finish_candidate(&mut self) {
+        if self.verification_active() {
+            if self.assessment.failure.is_none() {
+                self.finish_verification(Some(ReceptionCoverage::Complete));
+            } else if !self.try_partial() {
+                self.finish_verification(None);
+            }
+            return;
+        }
         if self
             .report
             .closest_attempt
@@ -1067,15 +1224,21 @@ impl<E: Ephemeris> Planner<E> {
                 assessment: self.assessment.clone(),
             });
         }
+        if !self.try_partial() {
+            self.next_candidate();
+        }
+    }
+
+    fn try_partial(&mut self) -> bool {
         if self.partial_round && self.partial.is_none() {
             match self.assessment.failure {
                 Some(CandidateFailure::PointingBudget) => {
                     self.begin_partial(self.partial_cut);
-                    return;
+                    return true;
                 }
                 Some(CandidateFailure::LatePreparation | CandidateFailure::PreparationTimeout) => {
                     self.begin_partial(None);
-                    return;
+                    return true;
                 }
                 Some(CandidateFailure::Simulation(_))
                     if self.assessment.failure_phase == Some(EvaluationPhase::Following)
@@ -1085,12 +1248,12 @@ impl<E: Ephemeris> Planner<E> {
                     // A different, inhibited recovery path must still pass every
                     // physical check; never carry the failed actuator into it.
                     self.begin_partial(self.partial_cut);
-                    return;
+                    return true;
                 }
                 _ => {}
             }
         }
-        self.next_candidate();
+        false
     }
 }
 
@@ -1119,4 +1282,39 @@ pub(super) fn intersample_bound(
     Ok(error.max(previous_error)
         + (libm::sqrtf(az * az + el * el) + config.sky_rate_bound_deg_per_s) * dt / 2.0
         + DEVIATION_SLACK_DEG)
+}
+
+wire_struct!(PlanningWindow {
+    aos_unix_s,
+    aos_at_ms,
+    duration_ms
+});
+
+wire_struct!(PlanningConfig {
+    preparation_timing,
+    tolerance_deg,
+    uncertainty_deg,
+    sky_rate_bound_deg_per_s,
+    step_ms,
+    reference,
+    deadband_deg,
+    preparation_tolerance_deg,
+    scenarios
+});
+
+wire_enum!(PreparationTiming { 0 => Scheduled, 1 => Immediate });
+
+/// Bounded planner diagnostics; no work or source reads occur on inspection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub struct PlannerProgress {
+    pub phase: &'static str,
+    pub work_steps: u64,
+    pub candidates_done: usize,
+    /// Candidate count in the rounds actually entered; late starts have one round.
+    pub candidates_total: usize,
+    pub candidate: usize,
+    pub scenario: usize,
+    pub scenarios: usize,
+    pub partial: bool,
 }

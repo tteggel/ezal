@@ -40,6 +40,8 @@ extern crate self as ezal_core;
 #[path = "../tests/common/mod.rs"]
 mod test_support;
 
+#[macro_use]
+mod wire;
 pub mod actuator;
 pub mod ads1015;
 pub mod catalog;

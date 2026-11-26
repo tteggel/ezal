@@ -530,3 +530,18 @@ fn quantize(axis: AxisCalibration, angle: f32, noise: i8) -> i32 {
     let code_mv = f64::from(FEEDBACK_FULL_SCALE.code_mv());
     (libm::round(mv / code_mv + f64::from(noise)) * code_mv) as i32
 }
+
+wire_struct!(Scenario {
+    motor,
+    latency_ms,
+    channel_skew_ms,
+    noise_codes,
+    alternate_noise,
+    initial_engagement
+});
+
+wire_struct!(RestingStart {
+    at_ms,
+    feedback,
+    actuator
+});

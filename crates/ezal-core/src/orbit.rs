@@ -511,3 +511,16 @@ impl Update {
         }
     }
 }
+
+wire_struct!(GroundStation {
+    position,
+    sin_lat,
+    cos_lat,
+    sin_lon,
+    cos_lon
+});
+
+wire_struct!(OrbitalState {
+    position_km,
+    velocity_km_s
+});

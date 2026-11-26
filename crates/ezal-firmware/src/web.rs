@@ -16,14 +16,15 @@ use heapless::String;
 use picoserve::io::{Read, Write as PicoserveWrite};
 use picoserve::response::ws::{Message, SocketRx, SocketTx, WebSocketCallback, WebSocketUpgrade};
 use picoserve::response::{Content, Response};
-use picoserve::routing::{get, PathRouter};
+use picoserve::routing::{get, get_service, PathRouter};
 
 use ezal_core::dashboard::{ClientConfig, CONFIG_PATH, INDEX_HTML};
 use ezal_core::drive::{Command, CommandEnvelope};
 use ezal_core::passes::Report;
 use ezal_core::protocol::{
     ClientMessage, TelemetryMessage, CONTROL_STATUS_CAPACITY, INPUT_REQUIRED_MESSAGE,
-    STARTUP_REST_REPLY_CAPACITY, TELEMETRY_CAPACITY, TRACKING_REPLY_CAPACITY, WS_PATH,
+    PLANNING_CHUNK_HEADER_SIZE, PLANNING_CHUNK_SIZE, STARTUP_REST_REPLY_CAPACITY,
+    TELEMETRY_CAPACITY, TRACKING_REPLY_CAPACITY, WS_PATH,
 };
 use ezal_core::session::{CommandFreshness, LeaseHeartbeat, TELEMETRY_PERIOD_MS};
 
@@ -46,7 +47,9 @@ static WEB_CONFIG: picoserve::Config = picoserve::Config::new(picoserve::Timeout
 /// Concurrent picoserve acceptors. Each acceptor owns one TCP socket; with
 /// `StackResources<14>` in `main`, background network services and the web pool have
 /// enough headroom for multiple dashboards plus browser preconnect sockets.
-const WEB_SERVER_TASKS: usize = 8;
+// Seven acceptors retain the 192 KiB stack reserve with the portable input
+// slot and per-connection offload transport state.
+const WEB_SERVER_TASKS: usize = 7;
 
 /// Per-connection HTTP request parsing buffer.
 const HTTP_BUFFER_SIZE: usize = 1536;
@@ -54,6 +57,18 @@ const HTTP_BUFFER_SIZE: usize = 1536;
 /// Per-connection TCP buffers.
 const TCP_RX_BUFFER_SIZE: usize = 2048;
 const TCP_TX_BUFFER_SIZE: usize = 4096;
+
+#[cfg(feature = "browser-planner")]
+#[allow(long_running_const_eval)]
+const PLANNER_MODULE: picoserve::response::File =
+    picoserve::response::File::with_content_type_and_headers(
+        "application/wasm",
+        include_bytes!(concat!(env!("OUT_DIR"), "/planner.wasm")),
+        &[("Cache-Control", "public, no-cache")],
+    );
+#[cfg(not(feature = "browser-planner"))]
+const PLANNER_MODULE: picoserve::response::File =
+    picoserve::response::File::with_content_type("application/wasm", &[]);
 
 /// Build the dashboard app. `report` is the owning acceptor task's slot for
 /// the `/api/passes` reply it is currently sending.
@@ -65,6 +80,13 @@ fn app<'a>(
         .route(
             "/",
             get(async || (("Content-Type", "text/html; charset=utf-8"), INDEX_HTML)),
+        )
+        .route("/planner.wasm", get_service(PLANNER_MODULE))
+        .route(
+            "/planner-worker.js",
+            get_service(picoserve::response::File::javascript(include_str!(
+                "../../ezal-core/src/planner-worker.js"
+            ))),
         )
         .route(
             CONFIG_PATH,
@@ -93,11 +115,20 @@ impl Content for DashboardConfig {
     }
 
     fn content_length(&self) -> usize {
-        format_args!("{}", ClientConfig).content_length()
+        format_args!(
+            "{}",
+            ClientConfig::with_browser_planner(cfg!(feature = "browser-planner"))
+        )
+        .content_length()
     }
 
     async fn write_content<W: PicoserveWrite>(self, mut writer: W) -> Result<(), W::Error> {
-        writer.write_fmt(format_args!("{}", ClientConfig)).await
+        writer
+            .write_fmt(format_args!(
+                "{}",
+                ClientConfig::with_browser_planner(cfg!(feature = "browser-planner"))
+            ))
+            .await
     }
 }
 
@@ -354,6 +385,49 @@ impl DashboardSocket {
                                 .map_err(|_| SocketError::Encoding)?;
                             tx.send_text(&payload).await?;
                             true
+                        }
+                        Some(ClientMessage::Planning(intent)) => {
+                            let mut accepted = state.with(|s| {
+                                s.request_planning(
+                                    client_id,
+                                    intent,
+                                    &freshness,
+                                    Instant::now().as_millis(),
+                                )
+                            });
+                            if accepted && intent.upload.is_none() {
+                                let mut offset = 0;
+                                loop {
+                                    let mut bytes =
+                                        [0u8; PLANNING_CHUNK_HEADER_SIZE + PLANNING_CHUNK_SIZE];
+                                    let chunk = state.with(|s| {
+                                        s.planning_chunk(
+                                            intent.job,
+                                            offset,
+                                            &mut bytes[PLANNING_CHUNK_HEADER_SIZE..],
+                                        )
+                                    });
+                                    let Some((count, total)) = chunk else {
+                                        accepted = false;
+                                        break;
+                                    };
+                                    bytes[..8].copy_from_slice(&intent.job.to_le_bytes());
+                                    bytes[8..10].copy_from_slice(&(offset as u16).to_le_bytes());
+                                    bytes[10..12].copy_from_slice(&(total as u16).to_le_bytes());
+                                    tx.send_binary(&bytes[..PLANNING_CHUNK_HEADER_SIZE + count])
+                                        .await?;
+                                    offset += count;
+                                    if offset == total {
+                                        break;
+                                    }
+                                    yield_now().await;
+                                }
+                            }
+                            let mut payload: String<192> = String::new();
+                            use core::fmt::Write as _;
+                            write!(&mut payload, "{{\"type\":\"planning_result\",\"job\":\"{}\",\"upload\":{},\"ok\":{}}}", intent.job, intent.upload.is_some(), accepted).map_err(|_| SocketError::Encoding)?;
+                            tx.send_text(&payload).await?;
+                            false
                         }
                         Some(ClientMessage::StartupRest(intent)) => {
                             let reply = state.request_startup_rest(client_id, intent, &freshness);

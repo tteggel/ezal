@@ -1,7 +1,8 @@
 //! Device-owned single-pass policy. It owns the Manual/Tracking mode, the operator lease and
 //! the command mailbox; [`crate::coordination`] serializes its inputs and delivers its commands.
 //! No method performs I/O or GPIO. `S` owns immutable execution inputs; `TrackingRuntime`
-//! supplies their gates. Transport never supplies those inputs or planning results directly.
+//! supplies their gates. Uploaded route selections are independently rebuilt
+//! and evaluated by the device worker before publication.
 
 use super::mailbox::CommandMailbox;
 use super::{
@@ -62,6 +63,11 @@ struct Rehearsal {
 }
 
 impl PlanTicket {
+    /// Boot-local immutable job identity for offload and diagnostics.
+    pub const fn serial(self) -> u64 {
+        self.serial
+    }
+
     /// Selected event whose complete window must be evaluated.
     pub const fn pass(self) -> PassEvent {
         self.pass

@@ -15,6 +15,11 @@ license.workspace      = true
 authors.workspace      = true
 repository.workspace   = true
 
+[features]
+# Firmware packaging enables this; ordinary check/clippy/doc/editor builds
+# need only the local planner and do not compile an embedded WASM artifact.
+browser-planner = []
+
 [dependencies]
 ezal-core = { path = "../ezal-core" }
 

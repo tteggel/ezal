@@ -47,3 +47,7 @@ rustflags = [
 #     DEFMT_LOG=ezal_firmware=trace,info cargo run -p ezal-firmware
 [env]
 DEFMT_LOG = "info"
+
+# The browser module is embedded in Pico flash; debug sections add megabytes.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--strip-debug"]

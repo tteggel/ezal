@@ -90,6 +90,7 @@ jobs:
         with:
           arguments: ".#dashboard"
       - run: ./scripts/test-dashboard.sh
+      - run: ./scripts/test-planning-wasm.sh
 
   # ── Cross-compile firmware + package UF2 ─────────────────────────────
   build-firmware:

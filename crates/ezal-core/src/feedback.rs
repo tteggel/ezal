@@ -224,3 +224,8 @@ impl FeedbackMonitor {
         }
     }
 }
+
+wire_struct!(FeedbackSample {
+    position,
+    sampled_at_ms
+});

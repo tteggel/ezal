@@ -93,7 +93,8 @@ pub(super) fn wrap(angle: f32) -> f32 {
     angle - 360.0 * libm::floorf(angle / 360.0)
 }
 
-pub(super) const CANDIDATES: usize = 24;
+/// Number of route choices in each finite planner round.
+pub const CANDIDATES: usize = 24;
 
 pub(super) fn choice(index: usize) -> RouteChoice {
     let family = index / 3;

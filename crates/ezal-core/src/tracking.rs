@@ -21,6 +21,7 @@ mod inputs;
 mod lifecycle;
 mod mailbox;
 mod model;
+pub mod offload;
 mod planner;
 mod reception;
 mod recovery;
@@ -35,7 +36,9 @@ pub use deviation::{
     REACQUISITION_LIMIT_MS, REACQUISITION_TOLERANCE_DEG,
 };
 pub use event::{reconcile_event, EventError, EventId, PassEvent};
-pub use inputs::{ExecutionInputs, InputError, InputSettings, PlanningClock, PlanningTrack};
+pub use inputs::{
+    ExecutionInputs, InputError, InputSettings, PlanningClock, PlanningTrack, PreparedTrack,
+};
 pub use lifecycle::{
     BoundTrackingPlan, LifecycleError, PlanProblem, PlanRevisions, PlanStatus, PlanTicket,
     RecoveryCause, RecoveryToken, RunToken, Selection, TrackingAction, TrackingLifecycle,
@@ -44,15 +47,15 @@ pub use lifecycle::{
 };
 pub use model::MotorModel;
 pub use planner::{
-    Assessment, CandidateFailure, EvaluationPhase, PlannedGap, Planner, PlanningConfig,
-    PlanningError, PlanningReport, PlanningWindow, PreparationTiming, TrackingPlan, MAX_GAPS,
-    MAX_PLANNING_STEPS, MAX_SCENARIOS,
+    Assessment, CandidateFailure, EvaluationPhase, PlannedGap, Planner, PlannerProgress,
+    PlanningConfig, PlanningError, PlanningReport, PlanningWindow, PreparationTiming, TrackingPlan,
+    MAX_GAPS, MAX_PLANNING_STEPS, MAX_SCENARIOS,
 };
 pub use reception::{ReceptionCoverage, ReceptionGap, ReceptionWindow, PARTIAL_ADMISSION_LEAD_MS};
 pub use recovery::{
     RecoveryHold, RecoveryStatus, INTERCEPT_GRID_MS, INTERCEPT_PLANNING_LEAD_MS, INTERCEPT_RETRY_MS,
 };
-pub use route::{Route, RouteChoice, RouteKind};
+pub use route::{Route, RouteChoice, RouteKind, CANDIDATES};
 pub use runtime::{RuntimeError, RuntimeObservation, TrackingRuntime, TrackingSummary};
 pub use simulation::{
     RestingStart, Scenario, Simulation, SimulationSample, SimulationSettings, SimulationSummary,
@@ -238,3 +241,16 @@ pub fn pointing_deviation_deg(left: Pointing, right: Pointing) -> Option<f32> {
     let cosine = a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     Some(libm::atan2(sine, cosine).to_degrees() as f32)
 }
+
+wire_struct!(AxisProfile {
+    rate_deg_per_s,
+    startup_ms,
+    coast_ms,
+    backlash_deg
+});
+
+wire_struct!(MotorProfile {
+    azimuth,
+    elevation,
+    duty
+});

@@ -12,6 +12,24 @@ mkdir -p "$TEST_ROOT/workspace/crates/firmware" "$TEST_ROOT/out" "$TEST_ROOT/bin
 rustc --edition=2021 "$REPO_ROOT/crates/ezal-firmware/build.rs" -o "$TEST_ROOT/build-script"
 export CARGO_MANIFEST_DIR="$TEST_ROOT/workspace/crates/firmware"
 export OUT_DIR="$TEST_ROOT/out"
+cat > "$TEST_ROOT/bin/planner-cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == *'--locked --release -p ezal-wasm --target wasm32-unknown-unknown --target-dir'* ]]
+[[ ! -v CARGO_ENCODED_RUSTFLAGS && ! -v RUSTFLAGS && ! -v RUSTC_WORKSPACE_WRAPPER && ! -v CLIPPY_ARGS ]]
+printf 'build\n' >> "$PLANNER_CALLS"
+planner_target="${!#}"
+mkdir -p "$planner_target/wasm32-unknown-unknown/release"
+printf '\0asm' > "$planner_target/wasm32-unknown-unknown/release/ezal_wasm.wasm"
+EOF
+chmod +x "$TEST_ROOT/bin/planner-cargo"
+export CARGO="$TEST_ROOT/bin/planner-cargo"
+export PLANNER_CALLS="$TEST_ROOT/planner-calls"
+unset CARGO_FEATURE_BROWSER_PLANNER
+"$TEST_ROOT/build-script" > /dev/null
+[[ ! -e "$PLANNER_CALLS" && ! -e "$OUT_DIR/planner.wasm" ]]
+CARGO_FEATURE_BROWSER_PLANNER=1 "$TEST_ROOT/build-script" > /dev/null
+[[ "$(cat "$PLANNER_CALLS")" == build && -f "$OUT_DIR/planner.wasm" ]]
 unset EZAL_LATITUDE_DEG EZAL_LONGITUDE_DEG EZAL_ALTITUDE_M
 unset EZAL_MIN_ELEVATION_DEG EZAL_MIN_PEAK_ELEVATION_DEG EZAL_INCLUDE_EXPERIMENTAL
 unset EZAL_N2YO_KEY
@@ -148,6 +166,7 @@ cat > "$TEST_ROOT/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ " $* " == *' --locked '* ]]
+[[ " $* " == *' --features browser-planner '* ]]
 [[ " $* " == *' --message-format=json-render-diagnostics '* ]]
 if [[ "${NO_ARTIFACT:-}" != 1 ]]; then
     jq -n --arg executable "$FIXTURE_ELF" '{

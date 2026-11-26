@@ -303,31 +303,81 @@ impl PlanningTrack {
 
 impl Ephemeris for PlanningTrack {
     fn look_at(&self, unix_s: f64) -> Option<LookAngle> {
-        let window = self.inputs.window;
-        let offset_ms = (unix_s - window.aos_unix_s) * 1000.0;
-        if !(0.0..=f64::from(window.duration_ms)).contains(&offset_ms) {
-            return None;
-        }
-        let last = window.duration_ms.div_ceil(KNOT_MS) as usize - 1;
-        let index = ((offset_ms / f64::from(KNOT_MS)) as usize).min(last);
-        let ((t0, a), (t1, b)) = (self.knot(index)?, self.knot(index + 1)?);
-        // Hermite basis on s in [0, 1]; velocities scale by the interval.
-        let h = t1 - t0;
-        let s = (unix_s - t0) / h;
-        let (s2, s3) = (s * s, s * s * s);
-        let [p0, m0, p1, m1] = [
-            2.0 * s3 - 3.0 * s2 + 1.0,
-            (s3 - 2.0 * s2 + s) * h,
-            3.0 * s2 - 2.0 * s3,
-            (s3 - s2) * h,
-        ];
-        let position_km = core::array::from_fn(|axis| {
-            p0 * a.position_km[axis]
-                + m0 * a.velocity_km_s[axis]
-                + p1 * b.position_km[axis]
-                + m1 * b.velocity_km_s[axis]
-        });
-        let look = self.inputs.station.look_at(position_km, unix_s);
-        (look.azimuth_deg.is_finite() && look.elevation_deg.is_finite()).then_some(look)
+        interpolate(self.inputs.window, &self.inputs.station, unix_s, |index| {
+            self.knot(index)
+        })
     }
 }
+
+fn interpolate(
+    window: PlanningWindow,
+    station: &GroundStation,
+    unix_s: f64,
+    knot: impl Fn(usize) -> Option<(f64, OrbitalState)>,
+) -> Option<LookAngle> {
+    let offset_ms = (unix_s - window.aos_unix_s) * 1000.0;
+    if !(0.0..=f64::from(window.duration_ms)).contains(&offset_ms) {
+        return None;
+    }
+    let last = window.duration_ms.div_ceil(KNOT_MS) as usize - 1;
+    let index = ((offset_ms / f64::from(KNOT_MS)) as usize).min(last);
+    let ((t0, a), (t1, b)) = (knot(index)?, knot(index + 1)?);
+    // Hermite basis on s in [0, 1]; velocities scale by the interval.
+    let h = t1 - t0;
+    let s = (unix_s - t0) / h;
+    let (s2, s3) = (s * s, s * s * s);
+    let [p0, m0, p1, m1] = [
+        2.0 * s3 - 3.0 * s2 + 1.0,
+        (s3 - 2.0 * s2 + s) * h,
+        3.0 * s2 - 2.0 * s3,
+        (s3 - s2) * h,
+    ];
+    let position_km = core::array::from_fn(|axis| {
+        p0 * a.position_km[axis]
+            + m0 * a.velocity_km_s[axis]
+            + p1 * b.position_km[axis]
+            + m1 * b.velocity_km_s[axis]
+    });
+    let look = station.look_at(position_km, unix_s);
+    (look.azimuth_deg.is_finite() && look.elevation_deg.is_finite()).then_some(look)
+}
+
+/// Device-propagated knots with the exact same observer and Hermite interpolation.
+/// Transporting IEEE float bits avoids any browser TLE or decimal conversion.
+#[derive(Clone, Debug)]
+pub struct PreparedTrack {
+    window: PlanningWindow,
+    station: GroundStation,
+    knots: heapless::Vec<OrbitalState, MAX_KNOTS>,
+}
+impl PlanningTrack {
+    /// Capture all knots once for a portable, immutable planner input.
+    pub fn prepare(&self) -> Option<PreparedTrack> {
+        let mut knots = heapless::Vec::new();
+        for index in 0..=self.inputs.window.duration_ms.div_ceil(KNOT_MS) as usize {
+            knots.push(self.knot(index)?.1).ok()?;
+        }
+        Some(PreparedTrack {
+            window: self.inputs.window,
+            station: self.inputs.station.clone(),
+            knots,
+        })
+    }
+}
+impl Ephemeris for PreparedTrack {
+    fn look_at(&self, unix_s: f64) -> Option<LookAngle> {
+        interpolate(self.window, &self.station, unix_s, |index| {
+            let offset =
+                (index as u64 * u64::from(KNOT_MS)).min(u64::from(self.window.duration_ms));
+            Some((
+                self.window.aos_unix_s + offset as f64 / 1000.0,
+                *self.knots.get(index)?,
+            ))
+        })
+    }
+}
+wire_struct!(PreparedTrack {
+    window,
+    station,
+    knots
+});

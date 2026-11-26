@@ -2,7 +2,7 @@
 # ezal — workspace manifest
 # ────────────────────────────────────────────────────────────────────────────
 #
-# The project is organised as a Cargo *workspace* with two member crates:
+# The project is organised as a Cargo *workspace* with three member crates:
 #
 #   crates/ezal-core
 #     Pure, no_std control, prediction and tracking policy; the crate doc in
@@ -14,13 +14,18 @@
 #     The embedded application for the Raspberry Pi Pico 2 W (RP2350). It
 #     depends on `ezal-core` and on the `embassy-rp` HAL.
 #
-# docs/ARCHITECTURE.md describes the boundary between the two.
+#   crates/ezal-wasm
+#     Thin browser ABI for the exact ezal-core planner. Firmware builds and
+#     embeds this module; no planner is reimplemented in JavaScript.
+#
+# docs/ARCHITECTURE.md describes the boundaries.
 
 [workspace]
 resolver = "2"
 members  = [
     "crates/ezal-core",
     "crates/ezal-firmware",
+    "crates/ezal-wasm",
 ]
 # The firmware cannot be built for the host, so a command without `-p` selects
 # only the core.

@@ -342,3 +342,17 @@ fn round_nearest(value: f32) -> i32 {
         (value - 0.5) as i32
     }
 }
+
+wire_struct!(Pointing {
+    azimuth_deg,
+    elevation_deg
+});
+
+wire_struct!(AxisCalibration {
+    angle_min_deg,
+    angle_max_deg,
+    voltage_min_mv,
+    voltage_max_mv
+});
+
+wire_struct!(PositionCalibration { azimuth, elevation });

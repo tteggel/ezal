@@ -351,9 +351,12 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     <p id="tracking-state" role="status">Waiting for device status…</p>
     <p id="tracking-selection">Select one predicted pass below to assess tracking.</p>
     <p id="tracking-plan"></p>
+    <p id="tracking-progress" role="status"></p>
+    <p id="tracking-browser" role="status"></p>
     <p id="tracking-reception"></p>
     <p id="tracking-schedule"></p>
     <div class="tracking-actions">
+      <button id="tracking-offload" type="button" disabled>Calculate in this browser</button>
       <button id="tracking-arm" type="button" disabled>Enter Tracking</button>
       <button id="tracking-manual" type="button" disabled>Return to Manual</button>
       <button id="tracking-prepare" type="button" disabled>Prepare now</button>
@@ -462,6 +465,11 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
       && [d.current.age_ms, d.current.degrees, d.current.uncertainty_deg].every(Number.isFinite)));
   const validTermination = (t) => t === null || (t && typeof t.reason === "string"
     && optionalIdentity(t.event) && optionalIdentity(t.run));
+  const validPlanningProgress = (p) => p && identity(p.job)
+    && [p.elapsed_ms, p.idle_ms, p.restarts, p.attempt, p.work_steps, p.candidates_done, p.candidate, p.scenario, p.scenarios].every((n) => Number.isSafeInteger(n) && n >= 0)
+    && [p.verifying, p.offload_ready, p.upload_error, p.partial].every((v) => typeof v === "boolean")
+    && typeof p.phase === "string" && typeof p.restart_reason === "string"
+    && [p.eta_ms, p.upper_ms].every((n) => n === null || (Number.isSafeInteger(n) && n >= 0));
   const validTracking = (t) => t && identity(t.revision) && optionalIdentity(t.operator)
     && (t.rehearsal === undefined || typeof t.rehearsal === "boolean")
     && (t.rehearsal_available_ms === undefined || t.rehearsal_available_ms === null
@@ -472,6 +480,7 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     && (t.selection === null || (t.selection && identity(t.selection.id) && identity(t.selection.norad_id)
       && [t.selection.aos_unix_s, t.selection.los_unix_s].every(Number.isFinite) && typeof t.selection.associated === "boolean"))
     && t.plan && ["unplanned", "planning", "supported", "partial", "frozen", "blocked"].includes(t.plan.status)
+    && (t.plan.progress === undefined || validPlanningProgress(t.plan.progress))
     && (t.plan.reason === null || typeof t.plan.reason === "string")
     && (t.plan.preview === null || (t.plan.preview && typeof t.plan.preview.route === "string"
       && [t.plan.preview.azimuth_turns, t.plan.preview.prepare_unix_s, t.plan.preview.preparation_lead_ms,
@@ -719,6 +728,66 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
   let state = { ...initialControl(), hidden: document.hidden };
   let ws;
   let repeat = 0;
+  let browserPlan = null;
+  let planningWorker = null;
+  const stopBrowserPlanning = (message) => {
+    planningWorker?.terminate(); planningWorker = null;
+    if (browserPlan) { browserPlan.active = false; browserPlan.message = message; }
+  };
+  const planningSend = (suffix) => {
+    const p = state.tracking?.plan.progress;
+    if (!browserPlan || !canTrack(state, performance.now()) || p?.job !== browserPlan.job
+      || state.tracking.operator !== browserPlan.lease || ws?.readyState !== WebSocket.OPEN) return false;
+    ws.send(`plan:${state.token}:${browserPlan.lease}:${browserPlan.job}:${suffix}`); return true;
+  };
+  const planningMessage = (message) => {
+    if (!browserPlan?.active || message.job !== browserPlan.job) return;
+    if (message.type === "planning_result") {
+      if (!message.ok) stopBrowserPlanning("Browser request was rejected or became stale. Device planning continues.");
+      else if (message.upload) {
+        browserPlan.awaitingValidation = true;
+        stopBrowserPlanning("Uploaded. The device is validating the browser route before acceptance.");
+      }
+      return;
+    }
+    if (message.type !== "planning_input") return;
+    const { offset, total, bytes } = message;
+    if (!Number.isSafeInteger(total) || total < 1 || total > config.planning.inputCapacity || !Number.isSafeInteger(offset)
+      || offset !== browserPlan.received || !(bytes instanceof Uint8Array) || bytes.length < 1
+      || bytes.length > config.planning.chunkSize || offset + bytes.length > total
+      || (browserPlan.total !== null && total !== browserPlan.total)) {
+      stopBrowserPlanning("Invalid planning snapshot received. Device planning continues."); return;
+    }
+    if (browserPlan.total === null) { browserPlan.total = total; browserPlan.bytes = new Uint8Array(total); }
+    browserPlan.bytes.set(bytes, offset);
+    browserPlan.received += bytes.length;
+    browserPlan.lastUpdate = performance.now();
+    if (browserPlan.received !== total) return;
+    try {
+      const current = browserPlan;
+      const worker = new Worker("/planner-worker.js"); planningWorker = worker;
+      current.message = "Loading the browser planner…";
+      worker.onerror = () => { if (planningWorker === worker) { stopBrowserPlanning("Browser worker failed. Device planning continues."); renderControl(); } };
+      worker.onmessage = ({ data }) => {
+        if (planningWorker !== worker || browserPlan !== current) return;
+        current.lastUpdate = performance.now();
+        if (!data || ![0, 1, 2, 3].includes(data.status)) { stopBrowserPlanning("Invalid browser planner result. Device planning continues."); return; }
+        if (data.status === 0) {
+          const done = data.candidates_done;
+          const remaining = Number.isSafeInteger(done) && done >= 2 && Number.isSafeInteger(data.candidates_total)
+            ? data.elapsed_ms * Math.max(0, data.candidates_total - done) / done : null;
+          current.message = `Browser: ${String(data.phase).replaceAll("_", " ")} · route ${data.candidate}/${config.planning.candidates} · scenario ${data.scenario}/${data.scenarios} · ${data.work_steps} steps · ${remaining === null ? "ETA estimating…" : `ETA about ${duration(remaining)}`}.`;
+        } else if (data.status === 1 && data.job === current.job && Number.isSafeInteger(data.candidate) && data.candidate >= 0 && data.candidate < config.planning.candidates && typeof data.partial === "boolean" && identity(data.digest)) {
+          if (planningSend(`put:${data.candidate}:${data.partial ? 1 : 0}:${data.digest}`)) {
+            current.message = "Uploading browser plan for device validation…";
+            worker.terminate(); planningWorker = null;
+          } else stopBrowserPlanning("The planning inputs or controller changed before upload. Device planning continues.");
+        } else stopBrowserPlanning(`Browser planning finished: ${data.error || "unsupported result"}. Device planning continues.`);
+        renderControl();
+      };
+      worker.postMessage(current.bytes.buffer, [current.bytes.buffer]);
+    } catch (_) { stopBrowserPlanning("Browser planning is unavailable. Device planning continues."); }
+  };
   const degrees = (tenths) => tenths === null || tenths === undefined ? "--" : (tenths / 10).toFixed(1);
   const duration = (ms) => {
     const seconds = Math.ceil(ms / 1000);
@@ -737,13 +806,15 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
       SourceInvalid: "Frozen plan data could not be evaluated", ClockOrCounter: "Device clock or counter fault",
       Lease: "Control lease expired or belongs to another connection", StaleObservation: "Observation expired",
       ForecastChanged: "That pass is no longer in the current forecast", Settling: "Waiting for the motors to settle",
-      NoIntercept: "No reachable intercept found; holding and retrying", WorkLimit: "Search reached its work limit",
+      NoIntercept: "No reachable intercept found; holding and retrying",
       MissedLaunch: "Intercept launch was missed; holding and retrying", ChangedStart: "Starting position changed; replanning",
       MissedIntercept: "Intercept did not establish recovery; retrying", MissedControlDeadline: "Recovery control was delayed; replanning",
       TooLate: "Too late for this preparation schedule", Expired: "Plan validity expired",
       StateRevision: "Plan changed; review the refreshed preview", NotReady: "No current supported plan for this action",
       Uncertainty: "Clock uncertainty exceeds the pointing allowance", PointingBudget: "Predicted pointing error exceeds the allowance",
       BeforeBoot: "Pass rose before the device started, so it cannot be joined",
+      WorkLimit: "Search failed: the bounded work limit was reached",
+      Source: "Planning failed: orbital propagation did not provide a valid direction",
       RevisionChanged: "The rotator moved from the pose planning started from; replanning",
       NoRecovery: "No supported route with a reachable recovery", Missing: "The selected pass is missing from the forecast",
       MissingOrbit: "Orbital data for the selected satellite is missing", Ambiguous: "The forecast cannot uniquely identify the selected pass",
@@ -751,10 +822,11 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
       LateAcquisition: "Partial plan starts with a late intercept", PlannedGap: "Planned gap in reception",
       RehearsalComplete: "Rehearsal complete", RehearsalDeadline: "Rehearsal stopped before live preparation",
     };
+    if (reason === "Unsupported(None)") return "No supported route found in the bounded search";
     return explanations[reason.match(/(\w+)\)*$/)?.[1]]
       ?? reason.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[()_]+/g, " ").trim();
   };
-  const trackElements = Object.fromEntries(["state", "selection", "plan", "reception", "schedule", "message", "deviation", "pointing", "recovery", "summary", "arm", "manual", "prepare", "rehearse", "rehearsal-help", "cancel"]
+  const trackElements = Object.fromEntries(["state", "selection", "plan", "progress", "browser", "offload", "reception", "schedule", "message", "deviation", "pointing", "recovery", "summary", "arm", "manual", "prepare", "rehearse", "rehearsal-help", "cancel"]
     .map((name) => [name, document.getElementById(`tracking-${name}`)]));
   const receptionText = (r) => {
     const interval = ([start, end]) => `${utc(r.aos_unix_s + start / 1000)}–${utc(r.aos_unix_s + end / 1000)} UTC`;
@@ -773,6 +845,26 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     trackElements.manual.disabled = !canCancel(state) || t?.mode !== "tracking";
     setText(trackElements.message, state.trackingMessage);
     setText(trackElements.arm, t?.plan.status === "partial" ? "Enter Tracking · partial pass" : "Enter Tracking");
+    const progress = t?.plan.progress;
+    trackElements.offload.disabled = !config?.planning?.available || t?.plan.status !== "planning" || !writable || typeof Worker === "undefined" || !progress?.offload_ready
+      || progress.verifying || progress.upload_error || Boolean(browserPlan?.active);
+    if (browserPlan?.active && (t?.plan.status !== "planning" || !known || state.hidden || progress?.job !== browserPlan.job || t.operator !== browserPlan.lease || !state.controller)) {
+      stopBrowserPlanning("Browser planning cancelled because the device job, connection or controller changed.");
+    }
+    if (browserPlan?.active && now - browserPlan.lastUpdate >= 30000) stopBrowserPlanning("Browser planning stopped reporting progress. Device planning continues.");
+    if (browserPlan?.awaitingValidation && !browserPlan.active && known) {
+      if (progress?.job === browserPlan.job && ["supported", "partial", "frozen"].includes(t.plan.status)) {
+        browserPlan.message = progress.upload_error ? "Browser result failed equivalence checks. The device completed a local plan."
+          : progress.verifying ? "Browser plan validated and accepted by the device." : "The device completed its local plan.";
+      } else if (progress?.job === browserPlan.job && progress.upload_error && t.plan.status === "planning") {
+        browserPlan.message = "Browser result failed equivalence checks. Device planning continues locally.";
+      } else if (t.plan.status === "blocked") {
+        browserPlan.message = `Device planning ended without an accepted route: ${trackingReason(t.plan.reason || "Unavailable")}.`;
+      } else if (t.plan.status === "unplanned" || progress?.job !== browserPlan.job) {
+        browserPlan.message = "The device planning job changed. The browser result is no longer pending validation.";
+      }
+    }
+    setText(trackElements.browser, browserPlan?.message || "");
     if (!t) return;
     const elapsed = Math.max(0, now - state.trackingAt);
     const ended = ["complete", "cancelled", "stopped"].includes(t.phase) && t.termination;
@@ -784,7 +876,29 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
       : "Select one predicted pass below to assess tracking.");
     const preview = t.plan.preview;
     const statusText = { unplanned: "Waiting for current inputs", planning: "Evaluating routes and motor limits; waiting for settled feedback if needed", supported: "Full pass supported by the current model", partial: "Partial reception supported by the current model", frozen: "Plan frozen for this run", blocked: `Tracking blocked: ${trackingReason(t.plan.reason || "Unavailable")}` }[t.plan.status];
-    setText(trackElements.plan, selection ? `${statusText}.${preview ? ` Route: ${preview.route}, azimuth offset ${preview.azimuth_turns * 360}°. Predicted bound ${preview.bound_deg.toFixed(2)}°; tolerance ${preview.tolerance_deg.toFixed(1)}°, reserved uncertainty ${preview.reserve_deg.toFixed(1)}°.` : ""}` : "");
+    setText(trackElements.plan, selection ? `${statusText}.${preview && progress?.verifying && !progress.upload_error ? " Calculated in a browser and validated by the device." : ""}${preview ? ` Route: ${preview.route}, azimuth offset ${preview.azimuth_turns * 360}°. Predicted bound ${preview.bound_deg.toFixed(2)}°; tolerance ${preview.tolerance_deg.toFixed(1)}°, reserved uncertainty ${preview.reserve_deg.toFixed(1)}°.` : ""}` : "");
+    let progressText = "";
+    if (t.plan.status === "planning") {
+      if (!known) progressText = "Planning status unavailable: device telemetry is stale.";
+      else if (!progress) progressText = "Waiting for the device planning worker.";
+      else {
+        const phase = progress.phase.replaceAll("_", " ");
+        const waiting = progress.phase === "waiting_for_rest";
+        const idle = progress.idle_ms + elapsed;
+        progressText = `${progress.verifying ? "Validating browser route" : "Device planning"} · attempt ${progress.attempt} · ${phase} · elapsed ${duration(progress.elapsed_ms + elapsed)}`;
+        if (waiting) progressText += ". Waiting for fresh, settled feedback and serviced motor history. ETA unavailable until those inputs are ready";
+        else {
+          progressText += ` · ${progress.partial ? "partial search · " : ""}route ${progress.candidate}/${config.planning.candidates} · scenario ${progress.scenario}/${progress.scenarios} · ${progress.work_steps} steps`;
+          progressText += progress.eta_ms === null ? " · ETA estimating…" : ` · ETA about ${duration(Math.max(0, progress.eta_ms - elapsed))} (estimate)`;
+          if (progress.upper_ms !== null) progressText += ` · work-limit ceiling about ${duration(Math.max(0, progress.upper_ms - elapsed))} at the measured rate`;
+          if (idle >= 10000) progressText += `. No work progress for ${duration(idle)}; the worker may be stalled or paused for recovery`;
+        }
+        if (progress.restarts) progressText += `. Restarted ${progress.restarts} time(s): ${progress.restart_reason}${progress.restarts >= 3 ? "; repeated input changes may prevent completion" : ""}`;
+        if (progress.upload_error) progressText += ". Browser result did not match device validation; local planning resumed";
+        progressText += ".";
+      }
+    }
+    setText(trackElements.progress, progressText);
     setText(trackElements.reception, preview ? receptionText(preview.reception) : "");
     setText(trackElements.schedule, t.rehearsal ? "Preparing now, then rehearsing the selected pass at real speed. The live pass stays selected."
       : preview ? `${t.mode === "manual" ? "If armed, preparation" : "Preparation"} at ${utc(preview.prepare_unix_s)} UTC · planned lead ${duration(preview.preparation_lead_ms)}. ${t.phase === "armed" ? "Prepare now starts at once from rested motors, otherwise after a new feasibility check." : ""}` : "");
@@ -915,16 +1029,38 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${proto}://${location.host}${config.wsPath}`);
     ws = socket;
+    socket.binaryType = "arraybuffer";
     socket.addEventListener("open", () => { if (socket === ws) dispatch({ type: "open" }); });
     socket.addEventListener("message", (event) => {
       if (socket !== ws) return;
+      if (event.data instanceof ArrayBuffer) {
+        if (event.data.byteLength <= config.planning.headerSize) {
+          if (browserPlan?.active) stopBrowserPlanning("Invalid planning snapshot received. Device planning continues.");
+        } else {
+          const header = new DataView(event.data);
+          planningMessage({ type: "planning_input", job: header.getBigUint64(0, true).toString(),
+            offset: header.getUint16(8, true), total: header.getUint16(10, true),
+            bytes: new Uint8Array(event.data, config.planning.headerSize) });
+        }
+        renderControl(); return;
+      }
       let message;
       try { message = JSON.parse(event.data); } catch (_) { return; }
-      if (message && typeof message === "object") dispatch({ type: "message", message });
+      if (message && typeof message === "object") {
+        if (message.type === "planning_result") { planningMessage(message); renderControl(); }
+        else dispatch({ type: "message", message });
+      }
     });
     socket.addEventListener("close", () => { if (socket === ws) dispatch({ type: "close" }); });
   };
 
+  trackElements.offload.addEventListener("click", () => {
+    if (trackElements.offload.disabled) return;
+    const progress = state.tracking.plan.progress;
+    browserPlan = { job: progress.job, lease: state.tracking.operator, active: true, received: 0, total: null, bytes: null, lastUpdate: performance.now(), message: "Receiving the exact planning inputs from the device…" };
+    if (!planningSend("get")) stopBrowserPlanning("Current device status is required to start browser planning.");
+    renderControl();
+  });
   take.addEventListener("click", () => dispatch({ type: "take" }));
   startupOverride.addEventListener("click", () => dispatch({ type: "startup-rest" }));
   for (const action of ["arm", "manual", "prepare", "rehearse", "cancel"]) {
@@ -961,7 +1097,10 @@ tr.selected { box-shadow: inset 3px 0 var(--teal); }
     });
     button.addEventListener("blur", () => keys.forEach(releaseKey));
   });
-  for (const ending of ["blur", "beforeunload", "pagehide"]) window.addEventListener(ending, () => dispatch({ type: "stop" }));
+  for (const ending of ["blur", "beforeunload", "pagehide"]) window.addEventListener(ending, () => {
+    if (ending !== "blur") stopBrowserPlanning("Browser planning stopped because the page closed.");
+    dispatch({ type: "stop" });
+  });
   document.addEventListener("visibilitychange", () => dispatch({ type: "visibility", hidden: document.hidden }));
   setInterval(() => dispatch({ type: "clock" }), 100);
 

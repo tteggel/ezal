@@ -293,3 +293,20 @@ impl Default for Actuator {
 
 #[cfg(test)]
 mod tests;
+
+wire_struct!(ActuatorConfig {
+    relays,
+    travel,
+    motion,
+    duty
+});
+
+wire_struct!(Actuator {
+    config,
+    configuration_valid,
+    guard,
+    motion,
+    duty,
+    network_generation,
+    network_required
+});

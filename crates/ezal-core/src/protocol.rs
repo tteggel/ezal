@@ -16,6 +16,8 @@
 use crate::coordination::TelemetrySnapshot;
 use core::fmt;
 
+mod planning;
+pub use planning::{PlanningIntent, PLANNING_CHUNK_HEADER_SIZE, PLANNING_CHUNK_SIZE};
 mod startup_rest;
 mod tracking;
 pub use startup_rest::{
@@ -42,6 +44,12 @@ pub const INPUT_REQUIRED_MESSAGE: &str = "{\"type\":\"input_required\"}";
 pub const CONTROL_STATUS_CAPACITY: usize = 320;
 
 use crate::session::{CommandToken, MovementRequest};
+
+pub(super) fn decimal<T: core::str::FromStr>(s: &str) -> Option<T> {
+    (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| s.parse().ok())
+        .flatten()
+}
 
 /// Decode only movement directions; freshness and ownership are separate policy.
 fn parse_drive(message: &str) -> Option<DriveCommand> {
@@ -87,6 +95,8 @@ pub enum ClientMessage {
     Tracking(TrackingIntent),
     /// Operator assertion that both motors were already rested at startup.
     StartupRest(StartupRestIntent),
+    /// Portable planning snapshot or a candidate to validate.
+    Planning(PlanningIntent),
 }
 
 impl ClientMessage {
@@ -96,6 +106,8 @@ impl ClientMessage {
             Some(Self::TakeControl)
         } else if message == "stop" {
             Some(Self::Stop)
+        } else if let Some(message) = message.strip_prefix("plan:") {
+            PlanningIntent::parse(message).map(Self::Planning)
         } else if let Some(message) = message.strip_prefix("track:") {
             TrackingIntent::parse(message).map(Self::Tracking)
         } else if let Some(message) = message.strip_prefix("startup-rest:") {
